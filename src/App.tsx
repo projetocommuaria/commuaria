@@ -851,7 +851,7 @@ const TasksView = ({ reports, onTabChange, onGoToProfile, onGoToSettings, onView
         {reports.length === 0 ? (
           <div className="mt-12 text-center flex flex-col items-center gap-4 py-8 px-6 bg-white/5 backdrop-blur-md rounded-[40px] border border-white/10 w-full max-w-sm">
             <ClipboardCheck size={48} className="text-white/20" />
-            <p className="text-white/60 font-serif italic text-lg">Você ainda não possui chamados registrados.</p>
+            <p className="text-white/60 text-lg">Você ainda não possui chamados registrados.</p>
             <button 
               onClick={() => onTabChange('report')}
               className="px-6 py-2 rounded-full bg-white/10 border border-white/20 text-white/80 text-sm hover:bg-white/20 transition-all"
@@ -899,7 +899,7 @@ const TasksView = ({ reports, onTabChange, onGoToProfile, onGoToSettings, onView
   );
 };
 
-const ReportView = ({ onTabChange, onGoToProfile, onGoToSettings, onRefresh, anonymous = false }: { onTabChange: (tab: 'home' | 'report' | 'tasks') => void, onGoToProfile: () => void, onGoToSettings: () => void, onRefresh: () => Promise<void>, anonymous?: boolean }) => {
+const ReportView = ({ onTabChange, onGoToProfile, onGoToSettings, onRefresh, onLogout, anonymous = false }: { onTabChange: (tab: 'home' | 'report' | 'tasks') => void, onGoToProfile: () => void, onGoToSettings: () => void, onRefresh: () => Promise<void>, onLogout: () => void, anonymous?: boolean }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
@@ -950,6 +950,12 @@ const ReportView = ({ onTabChange, onGoToProfile, onGoToSettings, onRefresh, ano
     setIsSending(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.user) {
+        alert('Sua sessão expirou. Por favor, entre novamente.');
+        onLogout();
+        return;
+      }
       
       // In a real app, you'd upload the file to Supabase Storage here
       // For this demo, we'll use a placeholder image if one isn't provided or just the description
@@ -1411,9 +1417,30 @@ export default function App() {
   };
 
   return (
-    <div className="fixed inset-0 sm:bg-zinc-950 flex justify-center sm:items-center overflow-hidden selection:bg-purple-500/30">
-      <div className="w-full h-full sm:h-[90vh] sm:max-h-[900px] sm:w-[420px] sm:rounded-[40px] sm:border-8 sm:border-zinc-800 sm:shadow-2xl overflow-hidden relative bg-deep-bg shadow-black/50 flex flex-col">
-        <div className="absolute inset-0 overflow-y-auto overflow-x-hidden">
+    <div className="fixed inset-0 bg-[#0c0e14] flex justify-center items-center overflow-hidden selection:bg-[#5A635C]/30 font-sans">
+      <div className="mesh-blob top-[-10%] left-[-10%] w-[50%] h-[50%] bg-[#5A635C]/10 opacity-30" />
+      <div className="mesh-blob bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-blue-600/5 opacity-20" />
+
+      <div className="w-full h-full sm:h-[90dvh] sm:max-h-[850px] sm:w-[393px] sm:rounded-[3.5rem] sm:border-[12px] sm:border-[#1a1c23] sm:shadow-[0_0_100px_rgba(0,0,0,0.8)] overflow-hidden relative bg-deep-bg flex flex-col transition-all duration-500 ring-1 ring-white/10">
+        {/* Mobile Status Bar Simulation */}
+        <div className="hidden sm:flex absolute top-0 left-0 right-0 h-10 z-[1000] pointer-events-none px-8 justify-between items-center text-[11px] font-bold text-white/50">
+          <span>9:41</span>
+          <div className="w-28 h-7 bg-[#1a1c23] rounded-b-[20px] absolute left-1/2 -translate-x-1/2 top-0" />
+          <div className="flex gap-2 items-center">
+            <div className="flex gap-0.5">
+              <div className="w-0.5 h-1.5 bg-white/40 rounded-full" />
+              <div className="w-0.5 h-2 bg-white/40 rounded-full" />
+              <div className="w-0.5 h-2.5 bg-white/40 rounded-full" />
+              <div className="w-0.5 h-3 bg-white/40 rounded-full" />
+            </div>
+            <span>LTE</span>
+            <div className="w-5 h-2.5 border border-white/30 rounded-[3px] p-[1px] flex items-center">
+              <div className="w-full h-full bg-white/60 rounded-[1px]" />
+            </div>
+          </div>
+        </div>
+
+        <div className="absolute inset-0 overflow-y-auto overflow-x-hidden scroll-smooth">
           <AnimatePresence mode="wait">
         {screen === 'landing' && (
           <motion.div
@@ -1520,6 +1547,7 @@ export default function App() {
                onGoToProfile={() => setScreen('profile')} 
                onGoToSettings={() => setScreen('settings')} 
                anonymous={currentUser.anonymous}
+               onLogout={() => setScreen('login')}
                onRefresh={async () => {
                  const { data: { session } } = await supabase.auth.getSession();
                  if (session?.user) {
