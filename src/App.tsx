@@ -737,8 +737,8 @@ const ProfileView = ({
 
 const BottomNav = ({ currentTab, onTabChange }: { currentTab: 'home' | 'report' | 'tasks', onTabChange: (tab: 'home' | 'report' | 'tasks') => void }) => {
   return (
-    <div className="fixed bottom-8 w-full px-4 sm:px-0 sm:w-auto sm:left-1/2 sm:-translate-x-1/2 z-50 flex justify-center">
-      <div className="px-10 py-5 rounded-[40px] drop-shadow-2xl border border-white/20 flex items-center justify-between gap-16 min-w-[320px]"
+    <div className="absolute bottom-8 w-full px-4 flex justify-center z-50">
+      <div className="px-10 py-5 rounded-[40px] drop-shadow-2xl border border-white/20 flex items-center justify-between gap-12 sm:gap-16 w-full max-w-[340px]"
         style={{ background: 'linear-gradient(to right, rgba(255,255,255,0.15), rgba(255,255,255,0.05))', backdropFilter: 'blur(16px)' }}
       >
         <button onClick={() => onTabChange('home')} className={`relative flex flex-col items-center group ${currentTab === 'home' ? 'text-white' : 'text-white/50 hover:text-white transition-colors'}`}>
@@ -763,7 +763,7 @@ const FloatingMenu = ({ onGoToProfile, onGoToSettings }: { onGoToProfile: () => 
   return (
     <motion.div 
       layout
-      className="fixed top-8 right-6 z-50 flex flex-col items-center overflow-hidden border border-white/40 shadow-2xl"
+      className="absolute top-8 right-6 z-50 flex flex-col items-center overflow-hidden border border-white/40 shadow-2xl"
       style={{ 
         background: 'linear-gradient(135deg, rgba(255,255,255,0.2), rgba(0,0,0,0.1))',
         backdropFilter: 'blur(24px)',
@@ -828,6 +828,7 @@ const TasksView = ({ reports, onTabChange, onGoToProfile, onGoToSettings, onView
   return (
     <div className="relative min-h-[100dvh] sm:min-h-full w-full bg-[#5A635C] overflow-y-auto overflow-x-hidden font-sans text-white pb-32">
       <div className="relative w-full h-[35vh] min-h-[300px] flex flex-col justify-end pb-8">
+
         <div 
           className="absolute inset-0 z-0 bg-cover bg-center"
           style={{ backgroundImage: `url('https://images.unsplash.com/photo-1517436073-3b12361ac952?q=80&w=1600&auto=format&fit=crop')`, filter: 'brightness(0.7) saturate(0.8)' }}
@@ -839,8 +840,6 @@ const TasksView = ({ reports, onTabChange, onGoToProfile, onGoToSettings, onView
           <img src="Logo%20minimalista.png" alt="Logo" className="w-10 h-10 object-contain drop-shadow-md" referrerPolicy="no-referrer" />
           <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white drop-shadow-md">COMMUÁRIA</h1>
         </div>
-
-        <FloatingMenu onGoToProfile={onGoToProfile} onGoToSettings={onGoToSettings} />
 
         <div className="relative z-10 px-8 text-left mt-auto">
           <h2 className="text-[3rem] font-serif text-white tracking-tight drop-shadow-lg leading-none">Meus<br/>Chamados</h2>
@@ -1022,8 +1021,6 @@ const ReportView = ({ onTabChange, onGoToProfile, onGoToSettings, onRefresh, onL
           <img src="Logo%20minimalista.png" alt="Logo" className="w-10 h-10 object-contain drop-shadow-md" referrerPolicy="no-referrer" />
           <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white drop-shadow-md">COMMUÁRIA</h1>
         </div>
-
-        <FloatingMenu onGoToProfile={onGoToProfile} onGoToSettings={onGoToSettings} />
         
         <h2 className="relative z-10 text-[40px] sm:text-[48px] font-serif font-bold leading-[1.05] tracking-tight mt-auto px-6 sm:px-10">
           Relate algum<br/>problema
@@ -1161,7 +1158,7 @@ const MainFeed = ({ onGoToSettings, onGoToProfile, onTabChange, isAdmin = false,
       <div className="relative w-full h-[45vh] lg:h-[50vh] flex flex-col justify-end pb-8 px-6 sm:px-10 overflow-hidden">
         <div 
           onClick={() => onViewImage('pexels-nandhukumar-339614.jpg', 'Transformando Araucária')}
-          className="absolute inset-0 z-0 bg-cover bg-center sm:bg-top scale-125 cursor-pointer"
+          className="absolute inset-0 z-0 bg-cover bg-center scale-110 cursor-pointer"
           style={{ backgroundImage: 'url("pexels-nandhukumar-339614.jpg")' }}
         />
         <div className="absolute inset-0 z-0 bg-gradient-to-b from-black/20 via-black/10 to-[#5A635C] pointer-events-none" />
@@ -1189,7 +1186,7 @@ const MainFeed = ({ onGoToSettings, onGoToProfile, onTabChange, isAdmin = false,
         {/* Decorative Image bleeding to right */}
         <div 
           onClick={() => onViewImage('pexels-jerson-martins-1514473344-35599871.jpg', 'Araucária Colaborativa')}
-          className="w-[100vw] h-64 bg-cover bg-center rounded-l-[40px] ml-12 mb-12 shadow-2xl relative cursor-pointer group overflow-hidden" 
+          className="w-full h-64 bg-cover bg-center rounded-l-[40px] ml-12 mb-12 shadow-2xl relative cursor-pointer group overflow-hidden" 
           style={{ backgroundImage: 'url("pexels-jerson-martins-1514473344-35599871.jpg")' }} 
         >
           {/* Subtle dark overlay for the image to blend better */}
@@ -1202,8 +1199,7 @@ const MainFeed = ({ onGoToSettings, onGoToProfile, onTabChange, isAdmin = false,
       </div>
 
       {/* Fixed Sticky UI Elements */}
-      <FloatingMenu onGoToProfile={onGoToProfile} onGoToSettings={onGoToSettings} />
-    </div>
+      </div>
   );
 };
 
@@ -1424,6 +1420,9 @@ export default function App() {
 
       <div className="w-full h-full sm:h-[852px] sm:max-h-[95dvh] sm:w-[393px] sm:rounded-[3rem] sm:shadow-[0_0_100px_rgba(0,0,0,0.6)] overflow-hidden relative bg-deep-bg flex flex-col transition-all duration-500 border border-white/5">
         <div className="absolute inset-0 flex flex-col overflow-hidden">
+          {(screen === 'feed' || screen === 'report' || screen === 'tasks') && (
+            <FloatingMenu onGoToProfile={() => setScreen('profile')} onGoToSettings={() => setScreen('settings')} />
+          )}
           <AnimatePresence mode="wait">
         {screen === 'landing' && (
           <motion.div
