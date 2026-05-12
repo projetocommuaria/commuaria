@@ -479,7 +479,7 @@ const LoginView = ({ onBack, onLogin, onGoToSignup, onForgotPassword }: { onBack
 
 const LandingView = ({ onEnter, onSignup }: { onEnter: () => void, onSignup: () => void }) => {
   return (
-    <div className="relative min-h-[100dvh] sm:min-h-full w-full flex flex-col items-center justify-center overflow-hidden font-sans bg-deep-bg">
+    <div className="relative h-full w-full flex flex-col items-center justify-center overflow-hidden font-sans bg-deep-bg">
       {/* Background Image - Using the uploaded local file */}
       <div 
         className="absolute inset-0 z-0 bg-cover bg-center"
@@ -487,14 +487,15 @@ const LandingView = ({ onEnter, onSignup }: { onEnter: () => void, onSignup: () 
           backgroundImage: 'url("fundo%20tela%20de%20inicio.png")',
         }}
       />
+      {/* Subtle overlay to improve contrast */}
+      <div className="absolute inset-0 bg-black/10 z-[1]" />
 
       {/* Content */}
       <div className="relative z-10 flex flex-col items-center text-center px-6 w-full max-w-md">
-        {/* Logo image - using the uploaded local file */}
         <img 
           src="logo.png" 
           alt="Commuária Logo" 
-          className="w-48 h-auto mx-auto mb-12 relative z-20"
+          className="w-40 h-auto mx-auto mb-10 relative z-20"
           referrerPolicy="no-referrer"
         />
 
@@ -1417,30 +1418,12 @@ export default function App() {
   };
 
   return (
-    <div className="fixed inset-0 bg-[#0c0e14] flex justify-center items-center overflow-hidden selection:bg-[#5A635C]/30 font-sans">
-      <div className="mesh-blob top-[-10%] left-[-10%] w-[50%] h-[50%] bg-[#5A635C]/10 opacity-30" />
-      <div className="mesh-blob bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-blue-600/5 opacity-20" />
+    <div className="fixed inset-0 bg-[#050608] flex justify-center items-center overflow-hidden selection:bg-[#5A635C]/30 font-sans">
+      <div className="mesh-blob top-[-10%] left-[-10%] w-[60%] h-[60%] bg-[#5A635C]/5 opacity-20" />
+      <div className="mesh-blob bottom-[-10%] right-[-10%] w-[70%] h-[70%] bg-blue-900/5 opacity-10" />
 
-      <div className="w-full h-full sm:h-[90dvh] sm:max-h-[850px] sm:w-[393px] sm:rounded-[3.5rem] sm:border-[12px] sm:border-[#1a1c23] sm:shadow-[0_0_100px_rgba(0,0,0,0.8)] overflow-hidden relative bg-deep-bg flex flex-col transition-all duration-500 ring-1 ring-white/10">
-        {/* Mobile Status Bar Simulation */}
-        <div className="hidden sm:flex absolute top-0 left-0 right-0 h-10 z-[1000] pointer-events-none px-8 justify-between items-center text-[11px] font-bold text-white/50">
-          <span>9:41</span>
-          <div className="w-28 h-7 bg-[#1a1c23] rounded-b-[20px] absolute left-1/2 -translate-x-1/2 top-0" />
-          <div className="flex gap-2 items-center">
-            <div className="flex gap-0.5">
-              <div className="w-0.5 h-1.5 bg-white/40 rounded-full" />
-              <div className="w-0.5 h-2 bg-white/40 rounded-full" />
-              <div className="w-0.5 h-2.5 bg-white/40 rounded-full" />
-              <div className="w-0.5 h-3 bg-white/40 rounded-full" />
-            </div>
-            <span>LTE</span>
-            <div className="w-5 h-2.5 border border-white/30 rounded-[3px] p-[1px] flex items-center">
-              <div className="w-full h-full bg-white/60 rounded-[1px]" />
-            </div>
-          </div>
-        </div>
-
-        <div className="absolute inset-0 overflow-y-auto overflow-x-hidden scroll-smooth">
+      <div className="w-full h-full sm:h-[852px] sm:max-h-[95dvh] sm:w-[393px] sm:rounded-[3rem] sm:shadow-[0_0_100px_rgba(0,0,0,0.6)] overflow-hidden relative bg-deep-bg flex flex-col transition-all duration-500 border border-white/5">
+        <div className="absolute inset-0 flex flex-col overflow-hidden">
           <AnimatePresence mode="wait">
         {screen === 'landing' && (
           <motion.div
@@ -1450,6 +1433,7 @@ export default function App() {
             animate="animate"
             exit="exit"
             transition={pageTransition}
+            className="h-full w-full"
           >
             <LandingView 
               onEnter={() => setScreen('login')} 
@@ -1466,6 +1450,7 @@ export default function App() {
             animate="animate"
             exit="exit"
             transition={pageTransition}
+            className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
           >
             <LoginView 
               onBack={() => setScreen('landing')} 
@@ -1490,6 +1475,7 @@ export default function App() {
             animate="animate"
             exit="exit"
             transition={pageTransition}
+            className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
           >
             <ForgotPasswordView onBack={() => setScreen('login')} />
           </motion.div>
@@ -1503,6 +1489,7 @@ export default function App() {
             animate="animate"
             exit="exit"
             transition={pageTransition}
+            className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
           >
             <SignupView 
               onBack={() => setScreen('landing')} 
@@ -1522,6 +1509,7 @@ export default function App() {
             animate="animate"
             exit="exit"
             transition={pageTransition}
+            className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
           >
             <MainFeed 
               onGoToSettings={() => setScreen('settings')} 
@@ -1541,6 +1529,7 @@ export default function App() {
             animate="animate"
             exit="exit"
             transition={pageTransition}
+            className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
           >
              <ReportView 
                onTabChange={handleTabChange} 
@@ -1566,6 +1555,7 @@ export default function App() {
             animate="animate"
             exit="exit"
             transition={pageTransition}
+            className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
           >
              <ProfileView 
                user={currentUser} 
@@ -1599,6 +1589,7 @@ export default function App() {
             animate="animate"
             exit="exit"
             transition={pageTransition}
+            className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
           >
             <SettingsView 
               anonymous={currentUser.anonymous || false}
@@ -1631,6 +1622,7 @@ export default function App() {
             animate="animate"
             exit="exit"
             transition={pageTransition}
+            className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
           >
              <TasksView 
                reports={userReports}
