@@ -27,3 +27,13 @@ CREATE POLICY "Anyone can read reports" ON reports FOR SELECT USING (true);
 
 -- If users update their own stuff
 CREATE POLICY "Users can update their own reports" ON reports FOR UPDATE USING (auth.uid() = user_id);
+
+-- Allow users to delete their own reports
+CREATE POLICY "Users can delete their own reports" ON reports FOR DELETE USING (auth.uid() = user_id);
+
+-- Allow admins to delete any report
+CREATE POLICY "Admins can delete any reports" ON reports FOR DELETE USING (
+  EXISTS (
+    SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.is_admin = true
+  )
+);

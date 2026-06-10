@@ -2,5 +2,5 @@
   "name": "Commuária",
   "description": "Uma plataforma para conectar e fortalecer comunidades locais.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
