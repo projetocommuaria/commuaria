@@ -1132,7 +1132,7 @@ const TasksView = ({
         </div>
 
         <div className="relative z-10 px-8 text-left mt-auto">
-          <h2 className="text-[32.5px] font-serif font-bold text-white tracking-tight drop-shadow-lg leading-tight uppercase">
+          <h2 className="text-[32.5px] font-sans font-bold text-white tracking-tight drop-shadow-lg leading-tight uppercase">
             Meus
             <br />
             Chamados

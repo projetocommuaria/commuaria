@@ -1,36 +1,45 @@
-CREATE TABLE profiles (
-    id UUID REFERENCES auth.users(id) PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT,
-    is_admin BOOLEAN DEFAULT false,
+-- Create the reports table
+CREATE TABLE IF NOT EXISTS reports (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT,
+    address TEXT NOT NULL,
+    latitude DOUBLE PRECISION NOT NULL,
+    longitude DOUBLE PRECISION NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unresolved',
+    image_url TEXT,
+    anonymous BOOLEAN DEFAULT false,
+    user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+-- Enable Row Level Security (RLS)
+ALTER TABLE reports ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Users can read their own profile" ON profiles FOR SELECT USING (auth.uid() = id);
-CREATE POLICY "Users can update their own profile" ON profiles FOR UPDATE USING (auth.uid() = id);
+-- Drop existing policies if they exist to prevent errors
+DROP POLICY IF EXISTS "Anyone can insert reports" ON reports;
+DROP POLICY IF EXISTS "Anyone can read reports" ON reports;
+DROP POLICY IF EXISTS "Users can update their own reports" ON reports;
+DROP POLICY IF EXISTS "Users can delete their own reports" ON reports;
+DROP POLICY IF EXISTS "Admins can delete any reports" ON reports;
 
--- Function to handle new user signup
-CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS trigger AS $$
-BEGIN
-  INSERT INTO public.profiles (id, name, email)
-  VALUES (new.id, new.raw_user_meta_data->>'name', new.email);
-  RETURN new;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+-- Anyone (including guests) can insert a report
+CREATE POLICY "Anyone can insert reports" ON reports FOR INSERT WITH CHECK (true);
 
--- Trigger for new user
-CREATE TRIGGER on_auth_user_created
-  AFTER INSERT ON auth.users
-  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+-- Anyone can read reports (public feed)
+CREATE POLICY "Anyone can read reports" ON reports FOR SELECT USING (true);
 
--- Function to allow users to delete their own account
-CREATE OR REPLACE FUNCTION public.delete_user()
-RETURNS void AS $$
-BEGIN
-  DELETE FROM auth.users WHERE id = auth.uid();
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+-- Users can update only their own reports
+CREATE POLICY "Users can update their own reports" ON reports FOR UPDATE USING (auth.uid() = user_id);
+
+-- Users can delete only their own reports
+CREATE POLICY "Users can delete their own reports" ON reports FOR DELETE USING (auth.uid() = user_id);
+
+-- Admin users (checked against the profiles table) can delete any report
+CREATE POLICY "Admins can delete any reports" ON reports FOR DELETE USING (
+  EXISTS (
+    SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.is_admin = true
+  )
+);
+
 

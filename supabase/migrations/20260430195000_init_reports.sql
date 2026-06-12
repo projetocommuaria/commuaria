@@ -1,39 +1,49 @@
--- Enable Row Level Security
-CREATE TABLE reports (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    title TEXT NOT NULL,
-    description TEXT,
-    address TEXT NOT NULL,
-    latitude DOUBLE PRECISION NOT NULL,
-    longitude DOUBLE PRECISION NOT NULL,
-    status TEXT NOT NULL DEFAULT 'unresolved',
-    image_url TEXT,
-    anonymous BOOLEAN DEFAULT false,
-    user_id UUID REFERENCES auth.users(id),
+-- Create the profiles table (must be created first to prevent dependency issues with reports policies)
+CREATE TABLE IF NOT EXISTS profiles (
+    id UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT,
+    is_admin BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Turn on RLS
-ALTER TABLE reports ENABLE ROW LEVEL SECURITY;
+-- Enable Row Level Security
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 
--- Allow anonymous users to create reports (if your app logic allows it)
-CREATE POLICY "Anyone can insert reports" ON reports FOR INSERT WITH CHECK (true);
+-- Drop existing policies if they exist to prevent errors
+DROP POLICY IF EXISTS "Users can read their own profile" ON profiles;
+DROP POLICY IF EXISTS "Users can update their own profile" ON profiles;
 
--- Allow users to read all reports (or only their own, tweak as necessary)
-CREATE POLICY "Anyone can read reports" ON reports FOR SELECT USING (true);
+-- Create Policies
+CREATE POLICY "Users can read their own profile" ON profiles FOR SELECT USING (auth.uid() = id);
+CREATE POLICY "Users can update their own profile" ON profiles FOR UPDATE USING (auth.uid() = id);
 
--- Allow users to read their own tasks
--- CREATE POLICY "Users can read their own reports" ON reports FOR SELECT USING (auth.uid() = user_id);
-
--- If users update their own stuff
-CREATE POLICY "Users can update their own reports" ON reports FOR UPDATE USING (auth.uid() = user_id);
-
--- Allow users to delete their own reports
-CREATE POLICY "Users can delete their own reports" ON reports FOR DELETE USING (auth.uid() = user_id);
-
--- Allow admins to delete any report
-CREATE POLICY "Admins can delete any reports" ON reports FOR DELETE USING (
-  EXISTS (
-    SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.is_admin = true
+-- Function to handle new user signup automatically
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger AS $$
+BEGIN
+  INSERT INTO public.profiles (id, name, email)
+  VALUES (
+    new.id, 
+    COALESCE(new.raw_user_meta_data->>'name', 'Usuário'), 
+    new.email
   )
-);
+  ON CONFLICT (id) DO NOTHING;
+  RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger to hook auth signup to profile creation
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+-- Helper function to delete user
+CREATE OR REPLACE FUNCTION public.delete_user()
+RETURNS void AS $$
+BEGIN
+  DELETE FROM auth.users WHERE id = auth.uid();
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
