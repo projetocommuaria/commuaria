@@ -97,3 +97,41 @@ BEGIN
   DELETE FROM auth.users WHERE id = auth.uid();
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+-- 6. CREATE NEWS TABLE
+CREATE TABLE IF NOT EXISTS public.news (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Enable RLS on News
+ALTER TABLE public.news ENABLE ROW LEVEL SECURITY;
+
+-- Drop existing policies if they exist
+DROP POLICY IF EXISTS "Anyone can read news" ON public.news;
+DROP POLICY IF EXISTS "Admins can insert news" ON public.news;
+DROP POLICY IF EXISTS "Admins can update news" ON public.news;
+DROP POLICY IF EXISTS "Admins can delete news" ON public.news;
+
+-- Policies for News
+CREATE POLICY "Anyone can read news" ON public.news FOR SELECT USING (true);
+CREATE POLICY "Admins can insert news" ON public.news FOR INSERT WITH CHECK (
+  EXISTS (
+    SELECT 1 FROM public.profiles WHERE public.profiles.id = auth.uid() AND public.profiles.is_admin = true
+  )
+);
+CREATE POLICY "Admins can update news" ON public.news FOR UPDATE USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles WHERE public.profiles.id = auth.uid() AND public.profiles.is_admin = true
+  )
+);
+CREATE POLICY "Admins can delete news" ON public.news FOR DELETE USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles WHERE public.profiles.id = auth.uid() AND public.profiles.is_admin = true
+  )
+);
+

@@ -18,6 +18,24 @@ function createMockSupabaseClient(): any {
         { id: 'u2', name: 'Administrador Municipal', email: 'admin@commuaria.com', is_admin: true, created_at: new Date().toISOString() }
       ]));
     }
+    if (!localStorage.getItem('commuaria_news')) {
+      localStorage.setItem('commuaria_news', JSON.stringify([
+        {
+          id: 'news-3',
+          title: 'Mutirão de zeladoria melhora praças públicas no centro',
+          description: 'Em ação cooperativa entre moradores voluntários e equipes públicas municipais, duas praças históricas receberam reparos nos bancos e nova pintura de calçadas.',
+          category: 'Comunidade',
+          created_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+        },
+        {
+          id: 'news-2',
+          title: 'Nova iluminação de LED chega ao bairro Costeira',
+          description: 'A prefeitura iniciou a substituição de lâmpadas antigas por tecnologia LED na avenida principal do bairro Costeira, garantindo mais segurança e economia.',
+          category: 'Serviços',
+          created_at: new Date().toISOString()
+        }
+      ]));
+    }
     if (!localStorage.getItem('commuaria_reports')) {
       localStorage.setItem('commuaria_reports', JSON.stringify([
         {

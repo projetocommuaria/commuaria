@@ -29,6 +29,8 @@ import {
   Map,
   Filter,
   Trash2,
+  Maximize2,
+  Plus,
 } from "lucide-react";
 import {
   MapContainer,
@@ -1486,11 +1488,13 @@ const AdminTasksView = ({
   onResolveReport,
   onViewImage,
   onDeleteReport,
+  onViewDetails,
 }: {
   reports: any[];
   onResolveReport: (id: string) => Promise<void>;
   onViewImage: (url: string, title: string) => void;
   onDeleteReport: (id: string) => Promise<void>;
+  onViewDetails?: (report: any) => void;
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<
@@ -1608,14 +1612,16 @@ const AdminTasksView = ({
             filteredReports.map((report) => (
               <div
                 key={report.id}
-                className="w-full max-w-sm bg-white/5 backdrop-blur-md rounded-[40px] border border-white/10 p-5 shadow-2xl flex flex-col gap-4 hover:border-white/20 transition-all group overflow-hidden relative"
+                onClick={() => onViewDetails && onViewDetails(report)}
+                className="w-full max-w-sm bg-white/5 backdrop-blur-md rounded-[40px] border border-white/10 p-5 shadow-2xl flex flex-col gap-4 hover:border-white/20 transition-all group overflow-hidden relative cursor-pointer"
               >
                 <div className="flex gap-4 items-start">
                   {report.image_url ? (
                     <div
-                      onClick={() =>
-                        onViewImage(report.image_url, report.title)
-                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onViewImage(report.image_url, report.title);
+                      }}
                       className="w-20 h-20 rounded-2xl bg-cover bg-center shrink-0 cursor-pointer border border-white/10 shadow-md group-hover:scale-95 transition-transform"
                       style={{ backgroundImage: `url("${report.image_url}")` }}
                     />
@@ -1672,6 +1678,17 @@ const AdminTasksView = ({
 
                 {/* Actions for Admins */}
                 <div className="pt-1 flex gap-2 w-full mt-1 border-t border-white/5">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onViewDetails) onViewDetails(report);
+                    }}
+                    className="flex-1 px-4 py-2.5 text-xs rounded-full bg-white/10 border border-white/20 text-white/90 font-bold hover:bg-white/20 transition-all flex items-center justify-center gap-1.5"
+                  >
+                    <Maximize2 size={14} />
+                    <span>Detalhes</span>
+                  </button>
+
                   {report.status !== "resolved" && (
                     <button
                       onClick={(e) => {
@@ -1705,11 +1722,12 @@ const AdminTasksView = ({
                       }
                     }}
                     className={`px-4 py-2.5 text-xs rounded-full bg-red-500/15 border border-red-500/25 text-red-300 font-bold hover:bg-red-600 hover:text-white hover:border-red-500 transition-all flex items-center justify-center gap-1.5 ${
-                      report.status === "resolved" ? "w-full" : "flex-1"
+                      report.status === "resolved" ? "flex-1" : "px-3 shrink-0"
                     }`}
+                    title="Apagar"
                   >
                     <Trash2 size={14} />
-                    <span>Apagar</span>
+                    {report.status === "resolved" && <span>Apagar</span>}
                   </button>
                 </div>
               </div>
@@ -2091,6 +2109,9 @@ const MainFeed = ({
   resolvedCount = 0,
   pendingReports = [],
   onResolveReport,
+  newsList = [],
+  onAddNews,
+  onDeleteNews,
 }: {
   onGoToSettings: () => void;
   onGoToProfile: () => void;
@@ -2102,7 +2123,16 @@ const MainFeed = ({
   resolvedCount?: number;
   pendingReports?: any[];
   onResolveReport?: (reportId: string) => Promise<void>;
+  newsList?: any[];
+  onAddNews?: (title: string, description: string, category: string) => Promise<void>;
+  onDeleteNews?: (newsId: string) => Promise<void>;
 }) => {
+  const [showNewsModal, setShowNewsModal] = useState(false);
+  const [newsTitle, setNewsTitle] = useState("");
+  const [newsDescription, setNewsDescription] = useState("");
+  const [newsCategory, setNewsCategory] = useState("Serviços");
+  const [isAddingNews, setIsAddingNews] = useState(false);
+
   return (
     <div className="relative min-h-[100dvh] sm:min-h-full w-full bg-[#5A635C] overflow-y-auto overflow-x-hidden font-sans text-white">
       {/* Top Image Section */}
@@ -2110,15 +2140,13 @@ const MainFeed = ({
         <div
           onClick={() =>
             onViewImage(
-              isAdmin
-                ? "pexels-nandhukumar-339614.jpg"
-                : "fundo%20tela%20de%20inicio.png",
+              "pexels-nandhukumar-339614.jpg",
               isAdmin ? "Transformando Araucária" : "Notícias de Araucária",
             )
           }
           className="absolute inset-0 z-0 bg-cover bg-center scale-110 cursor-pointer"
           style={{
-            backgroundImage: `url(${isAdmin ? '"pexels-nandhukumar-339614.jpg"' : '"fundo%20tela%20de%20inicio.png"'})`,
+            backgroundImage: 'url("pexels-nandhukumar-339614.jpg")',
           }}
         />
         <div className="absolute inset-0 z-0 bg-gradient-to-b from-black/20 via-black/10 to-[#5A635C] pointer-events-none" />
@@ -2248,6 +2276,79 @@ const MainFeed = ({
               </p>
             </div>
 
+            {/* News Management Card */}
+            <div className="bg-white/5 backdrop-blur-md rounded-[32px] border border-white/10 p-6 mb-8 shadow-xl">
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <span className="text-white/60 text-xs font-mono uppercase tracking-wider block">
+                    Comunicados & Imprensa
+                  </span>
+                  <h4 className="text-lg font-serif font-bold text-white mt-1">
+                    Painel de Notícias de Araucária
+                  </h4>
+                </div>
+                <button
+                  onClick={() => setShowNewsModal(true)}
+                  className="px-4 py-2 text-xs rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold hover:bg-emerald-500 hover:text-white hover:border-emerald-500 transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
+                >
+                  <Plus size={14} />
+                  <span>Publicar</span>
+                </button>
+              </div>
+
+              {newsList.length === 0 ? (
+                <p className="text-xs text-white/40 italic font-mono py-2">
+                  Nenhuma notícia publicada. Crie seu primeiro comunicado acima!
+                </p>
+              ) : (
+                <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
+                  {newsList.map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between p-3.5 rounded-2xl bg-white/5 border border-white/5 hover:border-white/10 transition-all text-xs"
+                    >
+                      <div className="flex flex-col gap-1 pr-4 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider ${
+                            item.category === "Serviços"
+                              ? "bg-blue-500/20 text-blue-300"
+                              : item.category === "Comunidade"
+                              ? "bg-amber-500/20 text-amber-300"
+                              : "bg-emerald-500/20 text-emerald-300"
+                          }`}>
+                            {item.category}
+                          </span>
+                          <span className="text-[10px] text-white/40 font-mono">
+                            {item.created_at ? new Date(item.created_at).toLocaleDateString("pt-BR") : "Hoje"}
+                          </span>
+                        </div>
+                        <h5 className="font-bold text-white truncate min-w-0">
+                          {item.title}
+                        </h5>
+                        <p className="text-white/60 line-clamp-1 min-w-0">
+                          {item.description}
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={async () => {
+                          if (onDeleteNews) {
+                            if (confirm("Tem certeza que deseja apagar este comunicado?")) {
+                              await onDeleteNews(item.id);
+                            }
+                          }
+                        }}
+                        className="p-2 rounded-xl bg-red-500/15 text-red-300 border border-red-500/20 hover:bg-red-500 hover:text-white transition-all cursor-pointer shrink-0"
+                        title="Apagar comunicado"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Pending list or action area */}
             <div className="mt-10">
               <h4 className="text-xl font-bold font-serif mb-4 flex items-center gap-2">
@@ -2364,24 +2465,16 @@ const MainFeed = ({
             </div>
 
             {/* Featured Article - About the App */}
-            <div className="bg-white/5 backdrop-blur-md rounded-[32px] border border-white/10 overflow-hidden shadow-2xl">
-              <div
-                onClick={() =>
-                  onViewImage("cidade%20entrar.png", "Sobre o App")
-                }
-                className="w-full h-64 bg-cover bg-center cursor-pointer group overflow-hidden relative"
-                style={{ backgroundImage: 'url("cidade%20entrar.png")' }}
-              >
-                <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent flex flex-col justify-end p-6">
-                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-500 text-white w-fit uppercase tracking-wider mb-2">
-                    Destaque • Sobre o App
-                  </span>
-                  <h4 className="text-2xl font-bold font-serif leading-snug text-white">
-                    Commuária: A Ponte Entre Você e a Zeladoria de Araucária
-                  </h4>
-                </div>
+            <div className="bg-white/5 backdrop-blur-md rounded-[32px] border border-white/10 overflow-hidden shadow-2xl p-6 flex flex-col gap-4">
+              <div>
+                <span className="text-[10px] font-mono font-bold px-2.5 py-1 rounded-full bg-emerald-500 text-white w-fit uppercase tracking-wider mb-3 inline-block">
+                  Destaque • Sobre o App
+                </span>
+                <h4 className="text-2xl font-bold font-serif leading-snug text-white">
+                  Commuária: A Ponte Entre Você e a Zeladoria de Araucária
+                </h4>
               </div>
-              <div className="p-6 space-y-4">
+              <div className="space-y-4">
                 <p className="text-base leading-[1.6] text-white/90 font-medium">
                   Em um município dinâmico como Araucária, manter a zeladoria
                   urbana em dia é um desafio constante que exige uma comunicação
@@ -2406,46 +2499,163 @@ const MainFeed = ({
               </h4>
 
               <div className="grid grid-cols-1 gap-4">
-                {/* News Card 2 */}
-                <div className="bg-white/5 backdrop-blur-md rounded-[24px] border border-white/10 p-5 flex flex-col gap-2 shadow-lg">
-                  <div className="flex justify-between items-center text-[10px] font-mono text-white/40">
-                    <span className="bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
-                      Serviços
-                    </span>
-                    <span>Hoje</span>
-                  </div>
-                  <h5 className="font-serif font-bold text-lg text-white">
-                    Nova iluminação de LED chega ao bairro Costeira
-                  </h5>
-                  <p className="text-sm text-white/70">
-                    A prefeitura iniciou a substituição de lâmpadas antigas por
-                    tecnologia LED na avenida principal do bairro Costeira,
-                    garantindo mais segurança e economia.
-                  </p>
-                </div>
+                {newsList.map((item) => {
+                  const dateStr = item.created_at
+                    ? new Date(item.created_at).toLocaleDateString("pt-BR", {
+                        day: "2-digit",
+                        month: "2-digit",
+                      })
+                    : "Hoje";
+                  return (
+                    <div
+                      key={item.id}
+                      className="bg-white/5 backdrop-blur-md rounded-[24px] border border-white/10 p-5 flex flex-col gap-2 shadow-lg hover:border-white/20 transition-all"
+                    >
+                      <div className="flex justify-between items-center text-[10px] font-mono text-white/40">
+                        <span className={`px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                          item.category === "Serviços"
+                            ? "bg-blue-500/20 text-blue-300"
+                            : item.category === "Comunidade"
+                            ? "bg-amber-500/20 text-amber-300"
+                            : "bg-emerald-500/20 text-emerald-300"
+                        }`}>
+                          {item.category}
+                        </span>
+                        <span>{dateStr}</span>
+                      </div>
+                      <h5 className="font-serif font-bold text-lg text-white">
+                        {item.title}
+                      </h5>
+                      <p className="text-sm text-white/70 leading-relaxed">
+                        {item.description}
+                      </p>
+                    </div>
+                  );
+                })}
 
-                {/* News Card 3 */}
-                <div className="bg-white/5 backdrop-blur-md rounded-[24px] border border-white/10 p-5 flex flex-col gap-2 shadow-lg">
-                  <div className="flex justify-between items-center text-[10px] font-mono text-white/40">
-                    <span className="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
-                      Comunidade
-                    </span>
-                    <span>Ontem</span>
-                  </div>
-                  <h5 className="font-serif font-bold text-lg text-white">
-                    Mutirão de zeladoria melhora praças públicas no centro
-                  </h5>
-                  <p className="text-sm text-white/70">
-                    Em ação cooperativa entre moradores voluntários e equipes
-                    públicas municipais, duas praças históricas receberam
-                    reparos nos bancos e nova pintura de calçadas.
+                {newsList.length === 0 && (
+                  <p className="text-center py-6 text-sm text-white/40 font-mono italic">
+                    Nenhuma notícia cadastrada no momento.
                   </p>
-                </div>
+                )}
               </div>
             </div>
           </div>
         )}
       </div>
+
+      {/* News Creation Modal */}
+      <AnimatePresence>
+        {showNewsModal && (
+          <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-[9999] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-[#2E332F] border border-white/10 p-6 sm:p-8 rounded-[40px] w-full max-w-lg shadow-2xl relative flex flex-col gap-5 text-white"
+            >
+              <button
+                onClick={() => setShowNewsModal(false)}
+                className="absolute top-6 right-6 p-2 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 transition-all cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+
+              <div>
+                <h4 className="text-2xl font-serif font-bold tracking-tight">
+                  Publicar Nova Notícia
+                </h4>
+                <p className="text-xs text-white/50 font-mono">
+                  Seu comunicado aparecerá imediatamente no painel dos cidadãos
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-mono font-bold tracking-wider text-white/50 uppercase">
+                    Título do Comunicado
+                  </label>
+                  <input
+                    type="text"
+                    value={newsTitle}
+                    onChange={(e) => setNewsTitle(e.target.value)}
+                    placeholder="Ex: Nova praça inaugurada ou mutirão..."
+                    className="w-full px-5 py-3.5 bg-white/5 border border-white/10 rounded-[20px] focus:outline-none focus:border-emerald-500 text-sm placeholder-white/20 transition-all text-white font-medium"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-mono font-bold tracking-wider text-white/50 uppercase">
+                    Categoria
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {["Serviços", "Comunidade", "Avisos"].map((cat) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => setNewsCategory(cat)}
+                        className={`py-2.5 px-3 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
+                          newsCategory === cat
+                            ? "bg-white text-[#5A635C] border-white shadow-md"
+                            : "bg-white/5 text-white/75 border-white/10 hover:bg-white/10"
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-mono font-bold tracking-wider text-white/50 uppercase">
+                    Conteúdo da Notícia
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={newsDescription}
+                    onChange={(e) => setNewsDescription(e.target.value)}
+                    placeholder="Descreva os detalhes importantes para os moradores..."
+                    className="w-full px-5 py-3.5 bg-white/5 border border-white/10 rounded-[20px] focus:outline-none focus:border-emerald-500 text-sm placeholder-white/20 resize-none transition-all text-white font-medium"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowNewsModal(false)}
+                  className="flex-1 py-3 px-4 text-xs font-bold rounded-full bg-white/5 border border-white/10 hover:bg-white/10 transition-all cursor-pointer text-center text-white/80"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={isAddingNews || !newsTitle.trim() || !newsDescription.trim()}
+                  onClick={async () => {
+                    if (onAddNews) {
+                      setIsAddingNews(true);
+                      try {
+                        await onAddNews(newsTitle, newsDescription, newsCategory);
+                        setNewsTitle("");
+                        setNewsDescription("");
+                        setNewsCategory("Serviços");
+                        setShowNewsModal(false);
+                      } catch (err) {
+                        console.error(err);
+                      } finally {
+                        setIsAddingNews(false);
+                      }
+                    }
+                  }}
+                  className="flex-1 py-3 px-4 text-xs font-bold rounded-full bg-emerald-500 text-white hover:bg-emerald-400 transition-all cursor-pointer disabled:opacity-40 text-center shadow-lg shadow-emerald-500/20 font-bold"
+                >
+                  {isAddingNews ? "Publicando..." : "Publicar"}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
@@ -2859,10 +3069,78 @@ export default function App() {
   const [systemResolvedCount, setSystemResolvedCount] = useState(0);
   const [systemPendingReports, setSystemPendingReports] = useState<any[]>([]);
   const [allSystemReports, setAllSystemReports] = useState<any[]>([]);
+  const [newsList, setNewsList] = useState<any[]>([]);
+
+  const fetchNewsList = async () => {
+    if (!supabase) return;
+    try {
+      const { data, error } = await supabase
+        .from("news")
+        .select("*")
+        .order("created_at", { ascending: false });
+      
+      if (data && data.length > 0) {
+        setNewsList(data);
+      } else {
+        const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+        setNewsList(local);
+      }
+    } catch (err) {
+      console.error("Erro ao carregar notícias:", err);
+      const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+      setNewsList(local);
+    }
+  };
+
+  const handleAddNews = async (title: string, description: string, category: string) => {
+    if (!supabase) return;
+    try {
+      const { data, error } = await supabase
+        .from("news")
+        .insert({ title, description, category });
+
+      if (error) throw error;
+      await fetchNewsList();
+    } catch (err) {
+      console.error("Erro ao adicionar notícia:", err);
+      // Fallback update in local storage for robust offline use
+      const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+      const newRecord = {
+        id: 'news_' + Math.random().toString(36).substring(2, 9),
+        title,
+        description,
+        category,
+        created_at: new Date().toISOString()
+      };
+      local.unshift(newRecord);
+      localStorage.setItem("commuaria_news", JSON.stringify(local));
+      setNewsList(local);
+    }
+  };
+
+  const handleDeleteNews = async (newsId: string) => {
+    if (!supabase) return;
+    try {
+      const { error } = await supabase
+        .from("news")
+        .delete()
+        .eq("id", newsId);
+
+      if (error) throw error;
+      await fetchNewsList();
+    } catch (err) {
+      console.error("Erro ao apagar notícia:", err);
+      const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+      const filtered = local.filter((n: any) => n.id !== newsId);
+      localStorage.setItem("commuaria_news", JSON.stringify(filtered));
+      setNewsList(filtered);
+    }
+  };
 
   const fetchSystemStatistics = async () => {
     if (!supabase) return;
     try {
+      await fetchNewsList();
       const { data } = await supabase
         .from("reports")
         .select("*")
@@ -3168,6 +3446,9 @@ export default function App() {
                   resolvedCount={systemResolvedCount}
                   pendingReports={systemPendingReports}
                   onResolveReport={handleResolveReport}
+                  newsList={newsList}
+                  onAddNews={handleAddNews}
+                  onDeleteNews={handleDeleteNews}
                 />
               </motion.div>
             )}
@@ -3302,6 +3583,7 @@ export default function App() {
                     onResolveReport={handleResolveReport}
                     onViewImage={(url, title) => setActiveImage({ url, title })}
                     onDeleteReport={handleDeleteReport}
+                    onViewDetails={(report) => setActiveReport(report)}
                   />
                 ) : (
                   <TasksView
