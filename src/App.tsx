@@ -31,6 +31,7 @@ import {
   Trash2,
   Maximize2,
   Plus,
+  AlertTriangle,
 } from "lucide-react";
 import {
   MapContainer,
@@ -60,26 +61,29 @@ const GlassButton = ({
   variant = "primary",
   className = "",
   type = "button",
+  disabled = false,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   variant?: "primary" | "secondary";
   className?: string;
   type?: "button" | "submit" | "reset";
+  disabled?: boolean;
 }) => {
   return (
     <motion.button
-      whileHover={{ scale: 1.02 }}
-      whileTap={{ scale: 0.98 }}
-      onClick={onClick}
+      whileHover={disabled ? {} : { scale: 1.02 }}
+      whileTap={disabled ? {} : { scale: 0.98 }}
+      onClick={disabled ? undefined : onClick}
       type={type}
+      disabled={disabled}
       className={`
         w-full py-3 px-8 rounded-full flex items-center justify-center gap-3
         backdrop-blur-[2px] border border-white/20 text-white font-medium text-lg
         transition-all duration-300
         shadow-[0_8px_32px_0_rgba(0,0,0,0.3)]
         relative overflow-hidden
-        bg-[#d2d2d2]/10 hover:bg-[#d2d2d2]/20
+        ${disabled ? "bg-white/5 opacity-50 cursor-not-allowed pointer-events-none" : "bg-[#d2d2d2]/10 hover:bg-[#d2d2d2]/20"}
         ${className}
       `}
     >
@@ -244,49 +248,148 @@ const SignupView = ({
   );
 };
 
-const ForgotPasswordView = ({ onBack }: { onBack: () => void }) => {
-  const [step, setStep] = useState<"email" | "code" | "reset">("email");
+const ForgotPasswordView = ({
+  onBack,
+  initialStep = "email",
+  onChangeStep,
+}: {
+  onBack: () => void;
+  initialStep?: "email" | "code" | "reset";
+  onChangeStep?: (step: "email" | "code" | "reset") => void;
+}) => {
+  const [step, setStep] = useState<"email" | "code" | "reset">(initialStep);
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleEmailSubmit = (e: React.FormEvent) => {
+  useEffect(() => {
+    setStep(initialStep);
+  }, [initialStep]);
+
+  const handleStepChange = (newStep: "email" | "code" | "reset") => {
+    setStep(newStep);
+    if (onChangeStep) {
+      onChangeStep(newStep);
+    }
+  };
+
+  const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim()) {
       setError("Por favor, insira seu e-mail.");
       return;
     }
     setError("");
-    setSuccessMsg("Código enviado para " + email);
-    setTimeout(() => setSuccessMsg(""), 3000);
-    setStep("code");
+    setIsSubmitting(true);
+    try {
+      if (supabase) {
+        const { error: supaError } = await supabase.auth.resetPasswordForEmail(
+          email.trim(),
+          {
+            redirectTo: window.location.origin,
+          }
+        );
+        if (supaError) {
+          setError(supaError.message);
+        } else {
+          setSuccessMsg("E-mail de recuperação enviado com sucesso!");
+          setTimeout(() => setSuccessMsg(""), 5000);
+          handleStepChange("code");
+        }
+      } else {
+        setSuccessMsg("Código enviado para " + email);
+        setTimeout(() => setSuccessMsg(""), 3000);
+        handleStepChange("code");
+      }
+    } catch (err: any) {
+      setError("Erro ao enviar recuperação: " + err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleCodeSubmit = (e: React.FormEvent) => {
+  const handleCodeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (code !== "123456") {
-      setError('Código incorreto. Tente usar "123456".');
+    if (!code.trim()) {
+      setError("Por favor, digite o código de verificação.");
       return;
     }
     setError("");
-    setSuccessMsg("Código verificado com sucesso!");
-    setTimeout(() => setSuccessMsg(""), 3000);
-    setStep("reset");
+    setIsSubmitting(true);
+    try {
+      if (supabase) {
+        // Primeiro tenta verificar o código real via Supabase OTP
+        const { error: supaError } = await supabase.auth.verifyOtp({
+          email: email.trim(),
+          token: code.trim(),
+          type: "recovery",
+        });
+
+        if (supaError) {
+          // Fallback para código de teste 123456 se falhar o real
+          if (code.trim() === "123456") {
+            setSuccessMsg("Código de teste verificado!");
+            setTimeout(() => setSuccessMsg(""), 3000);
+            handleStepChange("reset");
+          } else {
+            setError("Código de verificação inválido ou expirado. Detalhes: " + supaError.message);
+          }
+        } else {
+          setSuccessMsg("Código verificado com sucesso!");
+          setTimeout(() => setSuccessMsg(""), 3000);
+          handleStepChange("reset");
+        }
+      } else {
+        if (code.trim() === "123456") {
+          setSuccessMsg("Código verificado com sucesso!");
+          setTimeout(() => setSuccessMsg(""), 3000);
+          handleStepChange("reset");
+        } else {
+          setError('Código incorreto. Tente usar o código de teste "123456".');
+        }
+      }
+    } catch (err: any) {
+      setError("Erro ao verificar código: " + err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleResetSubmit = (e: React.FormEvent) => {
+  const handleResetSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPassword.trim()) {
-      setError("A nova senha não pode estar vazia.");
+    if (!newPassword.trim() || newPassword.length < 6) {
+      setError("A nova senha deve ter pelo menos 6 caracteres.");
       return;
     }
     setError("");
-    setSuccessMsg("Senha alterada com sucesso! Redirecionando...");
-    setTimeout(() => {
-      onBack();
-    }, 2000);
+    setIsSubmitting(true);
+    try {
+      if (supabase) {
+        const { error: supaError } = await supabase.auth.updateUser({
+          password: newPassword,
+        });
+        if (supaError) {
+          setError(supaError.message);
+        } else {
+          setSuccessMsg("Senha alterada com sucesso! Redirecionando...");
+          setTimeout(() => {
+            onBack();
+          }, 2500);
+        }
+      } else {
+        setSuccessMsg("Senha alterada com sucesso! Redirecionando...");
+        setTimeout(() => {
+          onBack();
+        }, 2000);
+      }
+    } catch (err: any) {
+      setError("Erro ao redefinir senha: " + err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -324,15 +427,14 @@ const ForgotPasswordView = ({ onBack }: { onBack: () => void }) => {
         >
           <h2 className="text-3xl font-serif italic mb-2">
             {step === "email" && "Recuperar Senha"}
-            {step === "code" && "Inserir Código"}
+            {step === "code" && "E-mail Enviado!"}
             {step === "reset" && "Nova Senha"}
           </h2>
           <p className="text-white/60 text-sm">
             {step === "email" &&
-              "Insira seu e-mail para receber um código de recuperação."}
-            {step === "code" &&
-              `Enviamos um código de 6 dígitos para o seu e-mail.`}
-            {step === "reset" && "Crie uma nova senha de acesso forte."}
+              "Insira seu e-mail para receber o link e o código de recuperação no seu e-mail."}
+            {step === "code" && ""}
+            {step === "reset" && "Crie uma nova senha de acesso forte de no mínimo 6 caracteres."}
           </p>
         </motion.div>
 
@@ -383,7 +485,7 @@ const ForgotPasswordView = ({ onBack }: { onBack: () => void }) => {
             {step === "code" && (
               <input
                 type="text"
-                placeholder="Código (ex: 123456)"
+                placeholder="Código"
                 value={code}
                 onChange={(e) =>
                   setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
@@ -406,15 +508,21 @@ const ForgotPasswordView = ({ onBack }: { onBack: () => void }) => {
           <div className="pt-4">
             <GlassButton
               onClick={() => {}}
+              type="submit"
+              disabled={isSubmitting}
               className="border-white/30 shadow-[0_20px_50px_rgba(0,0,0,0.4)] py-4 text-xl font-serif w-full"
             >
-              {step === "email" && "Enviar Código "}
-              {step === "code" && "Verificar "}
-              {step === "reset" && "Alterar Senha "}
-              {step !== "reset" && (
+              {isSubmitting
+                ? "Processando..."
+                : step === "email"
+                  ? "Enviar Link"
+                  : step === "code"
+                    ? "Verificar"
+                    : "Alterar Senha"}
+              {!isSubmitting && step !== "reset" && (
                 <ArrowRight size={24} className="ml-2 inline-block" />
               )}
-              {step === "reset" && (
+              {!isSubmitting && step === "reset" && (
                 <Check size={24} className="ml-2 inline-block" />
               )}
             </GlassButton>
@@ -656,23 +764,29 @@ const LandingView = ({
 
 const CustomToggle = ({ label, value, offText, onText, onChange }: any) => {
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-[26px] font-serif font-bold leading-tight drop-shadow-md">
+    <div className="flex items-center justify-between gap-4 py-1">
+      <span className="text-xl sm:text-[26px] font-serif font-bold leading-tight text-white/95 drop-shadow-md select-none">
         {label}
       </span>
       <div
-        className="relative w-[72px] h-8 bg-black/80 rounded-full cursor-pointer flex items-center shadow-inner"
+        className="relative w-[72px] h-8 bg-black/80 rounded-full cursor-pointer flex items-center shadow-inner shrink-0"
         onClick={() => onChange(!value)}
       >
         <motion.div
-          initial={false}
           animate={{ x: value ? 32 : -8 }}
-          className="w-12 h-12 absolute rounded-full flex items-center justify-center shadow-[inset_0_2px_4px_rgba(255,255,255,0.3),0_4px_8px_rgba(0,0,0,0.6)] border border-white/20"
+          transition={{ type: "spring", stiffness: 350, damping: 25 }}
+          className={`w-12 h-12 absolute rounded-full flex items-center justify-center border transition-all duration-300 ${
+            value 
+              ? "border-emerald-300 shadow-[0_0_18px_rgba(52,211,153,0.6)] text-emerald-950" 
+              : "border-white/20 shadow-[inset_0_2px_4px_rgba(255,255,255,0.3),0_4px_8px_rgba(0,0,0,0.6)] text-white"
+          }`}
           style={{
-            background: "linear-gradient(145deg, #7b8882, #555f5a)",
+            background: value 
+              ? "linear-gradient(145deg, #f0fdf4, #86efac)" 
+              : "linear-gradient(145deg, #7b8882, #555f5a)",
           }}
         >
-          <span className="text-[10px] font-bold text-white drop-shadow-md tracking-wider">
+          <span className="text-[10px] font-black drop-shadow-sm tracking-wider uppercase font-mono">
             {value ? onText : offText}
           </span>
         </motion.div>
@@ -737,45 +851,47 @@ const SettingsView = ({
         </h2>
       </div>
 
-      <div className="px-10 pt-10 space-y-14 max-w-sm mx-auto">
-        {/* Toggles */}
-        <CustomToggle
-          label="Notificação"
-          value={notifications}
-          offText="OFF"
-          onText="ON"
-          onChange={setNotifications}
-        />
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pt-10 space-y-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+          <div className="bg-white/5 backdrop-blur-md p-6 sm:p-8 rounded-[32px] border border-white/10 shadow-lg space-y-8">
+            <h4 className="text-xl font-serif font-bold text-white/90 border-b border-white/10 pb-2">Preferências</h4>
+            
+            <CustomToggle
+              label="Receber Notificações"
+              value={notifications}
+              offText="OFF"
+              onText="ON"
+              onChange={setNotifications}
+            />
 
-        <CustomToggle
-          label={
-            <>
-              Relato
-              <br />
-              Anônimo
-            </>
-          }
-          value={anonymous}
-          offText="OFF"
-          onText="ON"
-          onChange={setAnonymous}
-        />
+            <CustomToggle
+              label="Relatar de Forma Anônima"
+              value={anonymous}
+              offText="OFF"
+              onText="ON"
+              onChange={setAnonymous}
+            />
+          </div>
 
-        <div className="pt-20 space-y-8 flex flex-col items-center">
-          {/* Added Log Out button based on user request */}
-          <button
-            onClick={onLogout}
-            className="px-12 py-4 rounded-[40px] bg-white/20 border border-white/20 text-white text-[22px] font-serif font-bold shadow-xl backdrop-blur-md w-full active:scale-95 transition-transform"
-          >
-            Sair da conta
-          </button>
-          <button
-            onClick={handleDeleteAccount}
-            disabled={isDeleting}
-            className="px-12 py-4 rounded-[40px] bg-[#6c766e]/40 border border-white/10 text-[#a32a2a] text-[22px] font-serif font-bold shadow-xl backdrop-blur-md w-full active:scale-95 transition-transform disabled:opacity-50"
-          >
-            {isDeleting ? "Excluindo..." : "Excluir conta"}
-          </button>
+          <div className="bg-white/5 backdrop-blur-md p-6 sm:p-8 rounded-[32px] border border-white/10 shadow-lg space-y-6">
+            <h4 className="text-xl font-serif font-bold text-white/90 border-b border-white/10 pb-2">Segurança & Conta</h4>
+            
+            <div className="space-y-4 flex flex-col items-center">
+              <button
+                onClick={onLogout}
+                className="px-6 py-3.5 rounded-full bg-white/15 border border-white/20 text-white text-md font-serif font-bold shadow-md hover:bg-white/25 transition-all w-full active:scale-[0.98]"
+              >
+                Sair da conta
+              </button>
+              <button
+                onClick={handleDeleteAccount}
+                disabled={isDeleting}
+                className="px-6 py-3.5 rounded-full bg-red-600/10 border border-red-500/20 text-red-400 text-md font-serif font-bold shadow-md hover:bg-red-600 hover:text-white transition-all w-full active:scale-[0.98] disabled:opacity-50"
+              >
+                {isDeleting ? "Excluindo..." : "Excluir conta definitivamente"}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -832,72 +948,77 @@ const ProfileView = ({
         </h2>
       </div>
 
-      <div className="px-10 pt-6 space-y-6 max-w-sm mx-auto">
-        <h3 className="text-[28px] font-serif font-bold mb-6 drop-shadow-md">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 space-y-6">
+        <h3 className="text-[28px] font-serif font-bold mb-6 drop-shadow-md text-center sm:text-left">
           Meus dados
         </h3>
 
-        <div className="space-y-4">
-          <input
-            type="text"
-            placeholder="Nome"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full bg-[#7a817c]/50 border border-white/20 rounded-[20px] px-6 py-4 text-white placeholder:text-white/70 focus:outline-none focus:border-white/50 shadow-inner"
-          />
-          <input
-            type="email"
-            placeholder="E-mail"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full bg-[#7a817c]/50 border border-white/20 rounded-[20px] px-6 py-4 text-white placeholder:text-white/70 focus:outline-none focus:border-white/50 shadow-inner"
-          />
-          <input
-            type="password"
-            placeholder="Senha"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full bg-[#7a817c]/50 border border-white/20 rounded-[20px] px-6 py-4 text-white placeholder:text-white/70 focus:outline-none focus:border-white/50 shadow-inner"
-          />
-        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+          <div className="space-y-4 bg-white/5 backdrop-blur-md p-6 sm:p-8 rounded-[32px] border border-white/10 shadow-lg">
+            <div className="space-y-4">
+              <input
+                type="text"
+                placeholder="Nome"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full bg-[#7a817c]/50 border border-white/20 rounded-[20px] px-6 py-4 text-white placeholder:text-white/70 focus:outline-none focus:border-white/50 shadow-inner animate-fade-in"
+              />
+              <input
+                type="email"
+                placeholder="E-mail"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full bg-[#7a817c]/50 border border-white/20 rounded-[20px] px-6 py-4 text-white placeholder:text-white/70 focus:outline-none focus:border-white/50 shadow-inner"
+              />
+              <input
+                type="password"
+                placeholder="Senha"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full bg-[#7a817c]/50 border border-white/20 rounded-[20px] px-6 py-4 text-white placeholder:text-white/70 focus:outline-none focus:border-white/50 shadow-inner"
+              />
+            </div>
 
-        <div className="flex justify-center pt-2">
-          <button
-            onClick={handleSave}
-            className="px-10 py-3 rounded-[30px] bg-[#7a817c]/50 border border-white/20 text-white font-medium hover:bg-white/20 transition-colors shadow-lg"
-          >
-            Salvar
-          </button>
-        </div>
-
-        <div className="w-full h-px bg-gradient-to-r from-transparent via-white/30 to-transparent my-10"></div>
-
-        <div className="space-y-8 pb-10">
-          <div className="flex items-center justify-between">
-            <span className="text-[22px] font-serif font-bold leading-tight drop-shadow-md w-32">
-              Chamados
-              <br />
-              Abertos
-            </span>
-            <div className="flex items-center gap-6">
-              <div className="w-px h-12 bg-white/50"></div>
-              <span className="text-[40px] font-serif font-bold tracking-wider">
-                {user.open.toString().padStart(2, "0")}
-              </span>
+            <div className="flex justify-center pt-2">
+              <button
+                onClick={handleSave}
+                className="px-10 py-3 rounded-[30px] bg-white text-[#5A635C] font-bold hover:bg-white/90 transition-colors shadow-lg w-full sm:w-auto"
+              >
+                Salvar Alterações
+              </button>
             </div>
           </div>
 
-          <div className="flex items-center justify-between">
-            <span className="text-[22px] font-serif font-bold leading-tight drop-shadow-md w-32">
-              Problemas
-              <br />
-              Resolvidos
-            </span>
-            <div className="flex items-center gap-6">
-              <div className="w-px h-12 bg-white/50"></div>
-              <span className="text-[40px] font-serif font-bold tracking-wider">
-                {user.resolved.toString().padStart(2, "0")}
-              </span>
+          <div className="space-y-6 bg-white/5 backdrop-blur-md p-6 sm:p-8 rounded-[32px] border border-white/10 shadow-lg">
+            <h4 className="text-xl font-serif font-bold mb-4 text-white/90 border-b border-white/10 pb-2">Estatísticas de Zeladoria</h4>
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <span className="text-[18px] sm:text-[22px] font-serif font-bold leading-tight drop-shadow-md">
+                  Chamados
+                  <br />
+                  Abertos
+                </span>
+                <div className="flex items-center gap-6">
+                  <div className="w-px h-12 bg-white/30"></div>
+                  <span className="text-[36px] sm:text-[40px] font-serif font-bold tracking-wider text-orange-300">
+                    {user.open.toString().padStart(2, "0")}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-[18px] sm:text-[22px] font-serif font-bold leading-tight drop-shadow-md">
+                  Problemas
+                  <br />
+                  Resolvidos
+                </span>
+                <div className="flex items-center gap-6">
+                  <div className="w-px h-12 bg-white/30"></div>
+                  <span className="text-[36px] sm:text-[40px] font-serif font-bold tracking-wider text-emerald-300">
+                    {user.resolved.toString().padStart(2, "0")}
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1145,9 +1266,9 @@ const TasksView = ({
         </div>
       </div>
 
-      <div className="relative z-10 px-6 mt-2 space-y-6 flex flex-col items-center">
+      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
         {reports.length === 0 ? (
-          <div className="mt-12 text-center flex flex-col items-center gap-4 py-8 px-6 bg-white/5 backdrop-blur-md rounded-[40px] border border-white/10 w-full max-w-sm">
+          <div className="mt-12 text-center flex flex-col items-center gap-4 py-8 px-6 bg-white/5 backdrop-blur-md rounded-[40px] border border-white/10 w-full max-w-sm mx-auto">
             <ClipboardCheck size={48} className="text-white/20" />
             <p className="text-white/60 text-lg">
               Você ainda não possui chamados registrados.
@@ -1160,58 +1281,60 @@ const TasksView = ({
             </button>
           </div>
         ) : (
-          reports.map((report) => (
-            <div
-              key={report.id}
-              onClick={() => onViewDetails(report)}
-              className="w-full max-w-sm rounded-[40px] overflow-hidden relative shadow-2xl border border-white/20 aspect-square sm:aspect-[4/3] bg-zinc-800 cursor-pointer group"
-            >
-              {report.image_url ? (
-                <img
-                  src={report.image_url}
-                  alt={report.title}
-                  className="absolute inset-0 w-full h-full object-cover filter brightness-90 saturate-50 group-hover:scale-105 transition-transform duration-500"
-                />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center bg-zinc-700">
-                  <Megaphone size={48} className="text-white/20" />
-                </div>
-              )}
-              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-60" />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full">
+            {reports.map((report) => (
+              <div
+                key={report.id}
+                onClick={() => onViewDetails(report)}
+                className="w-full rounded-[32px] overflow-hidden relative shadow-2xl border border-white/10 aspect-[4/3] bg-zinc-800/80 cursor-pointer group hover:border-white/20 hover:bg-zinc-800/90 transition-all duration-300"
+              >
+                {report.image_url ? (
+                  <img
+                    src={report.image_url}
+                    alt={report.title}
+                    className="absolute inset-0 w-full h-full object-cover filter brightness-90 saturate-50 group-hover:scale-105 transition-transform duration-500"
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center bg-zinc-700">
+                    <Megaphone size={48} className="text-white/20" />
+                  </div>
+                )}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
 
-              <div className="absolute top-6 left-6 right-6 flex justify-between items-start gap-4">
-                <h4 className="text-white font-serif font-bold text-xl drop-shadow-md truncate max-w-[80%]">
-                  {report.title}
-                </h4>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (confirm("Deseja realmente apagar o seu relato?")) {
-                      onDeleteReport(report.id);
-                    }
-                  }}
-                  className="p-2.5 rounded-full bg-red-600/30 hover:bg-red-600 border border-red-500/30 text-white transition-all shadow-md active:scale-95 z-20"
-                  title="Apagar Chamado"
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
+                <div className="absolute top-6 left-6 right-6 flex justify-between items-start gap-4 z-10">
+                  <h4 className="text-white font-serif font-bold text-xl drop-shadow-md truncate max-w-[80%]">
+                    {report.title}
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm("Deseja realmente apagar o seu relato?")) {
+                        onDeleteReport(report.id);
+                      }
+                    }}
+                    className="p-2.5 rounded-full bg-red-600/30 hover:bg-red-600 border border-red-500/30 text-white transition-all shadow-md active:scale-95 z-20"
+                    title="Apagar Chamado"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
 
-              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-[30px] p-[2px] bg-gradient-to-b from-white/40 to-white/10 shadow-lg backdrop-blur-md">
-                <div className="bg-black/20 rounded-[inherit] px-6 py-2 flex items-center gap-3">
-                  <span className="text-white font-medium text-xl font-serif tracking-wide whitespace-nowrap">
-                    {report.status === "resolved" ? "Resolvido" : "Em Aberto"}
-                  </span>
-                  {report.status === "resolved" ? (
-                    <Check size={28} className="text-white stroke-[4px]" />
-                  ) : (
-                    <Calendar size={28} className="text-white stroke-[2px]" />
-                  )}
+                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-[30px] p-[2px] bg-gradient-to-b from-white/30 to-white/10 shadow-lg backdrop-blur-md z-10">
+                  <div className="bg-black/35 rounded-[inherit] px-5 py-2 flex items-center gap-2.5">
+                    <span className="text-white font-medium text-sm font-sans tracking-wide whitespace-nowrap">
+                      {report.status === "resolved" ? "Resolvido" : "Em Aberto"}
+                    </span>
+                    {report.status === "resolved" ? (
+                      <Check size={18} className="text-emerald-400 stroke-[3px]" />
+                    ) : (
+                      <Calendar size={18} className="text-amber-400 stroke-[2px]" />
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
       </div>
     </div>
@@ -1305,179 +1428,183 @@ const AdminMapView = ({
         </div>
       </div>
 
-      <div className="px-6 space-y-6">
-        {/* Real-time Map Area */}
-        <div className="w-full h-80 rounded-[40px] overflow-hidden shadow-2xl border border-white/20 bg-white/5 relative z-10">
-          <MapContainer
-            center={mapCenter}
-            zoom={13}
-            minZoom={11}
-            maxBounds={[
-              [-25.8, -49.7],
-              [-25.4, -49.2],
-            ]}
-            maxBoundsViscosity={1.0}
-            zoomControl={false}
-            attributionControl={false}
-            style={{
-              height: "100%",
-              width: "100%",
-              filter: "saturate(0.8) contrast(1.1) brightness(0.9)",
-            }}
-          >
-            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            {reports.map((report) => {
-              if (!report.latitude || !report.longitude) return null;
-              return (
-                <Marker
-                  key={report.id}
-                  position={[report.latitude, report.longitude]}
-                  icon={customMarkerIcon(report.status)}
-                  eventHandlers={{
-                    click: () => {
-                      setSelectedReport(report);
-                    },
-                  }}
-                >
-                  <Popup className="custom-popup">
-                    <div className="p-2 text-zinc-800 font-sans max-w-[170px]">
-                      <h4 className="font-bold text-sm truncate">
-                        {report.title}
-                      </h4>
-                      <p className="text-xs text-zinc-500 truncate mb-1">
-                        {report.address}
-                      </p>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Real-time Map Area */}
+          <div className="lg:col-span-7 xl:col-span-8 w-full h-[380px] lg:h-[550px] rounded-[32px] overflow-hidden shadow-2xl border border-white/20 bg-white/5 relative z-10">
+            <MapContainer
+              center={mapCenter}
+              zoom={13}
+              minZoom={11}
+              maxBounds={[
+                [-25.8, -49.7],
+                [-25.4, -49.2],
+              ]}
+              maxBoundsViscosity={1.0}
+              zoomControl={false}
+              attributionControl={false}
+              style={{
+                height: "100%",
+                width: "100%",
+                filter: "saturate(0.8) contrast(1.1) brightness(0.9)",
+              }}
+            >
+              <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              {reports.map((report) => {
+                if (!report.latitude || !report.longitude) return null;
+                return (
+                  <Marker
+                    key={report.id}
+                    position={[report.latitude, report.longitude]}
+                    icon={customMarkerIcon(report.status)}
+                    eventHandlers={{
+                      click: () => {
+                        setSelectedReport(report);
+                      },
+                    }}
+                  >
+                    <Popup className="custom-popup">
+                      <div className="p-2 text-zinc-800 font-sans max-w-[170px]">
+                        <h4 className="font-bold text-sm truncate">
+                          {report.title}
+                        </h4>
+                        <p className="text-xs text-zinc-500 truncate mb-1">
+                          {report.address}
+                        </p>
+                        <span
+                          className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${report.status === "resolved" ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700"}`}
+                        >
+                          {report.status === "resolved"
+                            ? "Resolvido"
+                            : "Pendente"}
+                        </span>
+                      </div>
+                    </Popup>
+                  </Marker>
+                );
+              })}
+            </MapContainer>
+          </div>
+
+          {/* Selected Ticket Details Side Panel */}
+          <div className="lg:col-span-5 xl:col-span-4 w-full">
+            {selectedReport ? (
+              <div className="bg-white/5 backdrop-blur-md rounded-[32px] border border-white/20 p-6 shadow-2xl space-y-4">
+                <div className="flex gap-4 items-start">
+                  {selectedReport.image_url ? (
+                    <div
+                      onClick={() =>
+                        onViewImage(selectedReport.image_url, selectedReport.title)
+                      }
+                      className="w-24 h-24 rounded-3xl bg-cover bg-center shrink-0 border border-white/25 shadow-md hover:scale-95 transition-transform cursor-pointer"
+                      style={{
+                        backgroundImage: `url("${selectedReport.image_url}")`,
+                      }}
+                    />
+                  ) : (
+                    <div className="w-24 h-24 rounded-3xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
+                      <Megaphone size={32} className="text-white/20" />
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <span
-                        className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${report.status === "resolved" ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700"}`}
+                        className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                          selectedReport.status === "resolved"
+                            ? "bg-emerald-500/20 text-emerald-300"
+                            : "bg-orange-500/20 text-orange-300"
+                        }`}
                       >
-                        {report.status === "resolved"
+                        {selectedReport.status === "resolved"
                           ? "Resolvido"
                           : "Pendente"}
                       </span>
+                      <span className="text-[10px] text-white/40 font-mono">
+                        {new Date(selectedReport.created_at).toLocaleDateString(
+                          "pt-BR",
+                        )}
+                      </span>
                     </div>
-                  </Popup>
-                </Marker>
-              );
-            })}
-          </MapContainer>
-        </div>
 
-        {/* Selected Ticket Details Side Panel */}
-        {selectedReport ? (
-          <div className="bg-white/5 backdrop-blur-md rounded-[40px] border border-white/20 p-6 shadow-2xl space-y-4">
-            <div className="flex gap-4 items-start">
-              {selectedReport.image_url ? (
-                <div
-                  onClick={() =>
-                    onViewImage(selectedReport.image_url, selectedReport.title)
-                  }
-                  className="w-24 h-24 rounded-3xl bg-cover bg-center shrink-0 border border-white/25 shadow-md hover:scale-95 transition-transform cursor-pointer"
-                  style={{
-                    backgroundImage: `url("${selectedReport.image_url}")`,
-                  }}
-                />
-              ) : (
-                <div className="w-24 h-24 rounded-3xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
-                  <Megaphone size={32} className="text-white/20" />
+                    <h3 className="text-xl font-bold font-serif leading-snug text-white truncate">
+                      {selectedReport.title}
+                    </h3>
+                    <p className="text-sm text-white/70 italic mt-1 line-clamp-2">
+                      {selectedReport.description || "Sem descrição fornecida."}
+                    </p>
+                  </div>
                 </div>
-              )}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                  <span
-                    className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
-                      selectedReport.status === "resolved"
-                        ? "bg-emerald-500/20 text-emerald-300"
-                        : "bg-orange-500/20 text-orange-300"
-                    }`}
+
+                <div className="space-y-2 pt-3 border-t border-white/5 text-sm">
+                  <div className="flex items-start gap-2">
+                    <MapPin size={16} className="text-white/40 shrink-0 mt-0.5" />
+                    <span className="text-white/80 font-mono text-xs">
+                      {selectedReport.address || "Endereço indisponível"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <User size={16} className="text-white/40" />
+                    <span className="text-xs text-white/50">
+                      Relatado por:{" "}
+                      <strong className="text-white/95 font-serif font-medium">
+                        {selectedReport.anonimo
+                          ? "Morador Anônimo"
+                          : "Morador de Araucária"}
+                      </strong>
+                    </span>
+                  </div>
+                </div>
+
+                <div className="pt-3 flex flex-col gap-3">
+                  {selectedReport.status !== "resolved" && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (
+                          confirm("Marcar este chamado como resolvido e concluído?")
+                        ) {
+                          onResolveReport(selectedReport.id);
+                        }
+                      }}
+                      className="w-full py-4 rounded-full bg-emerald-500/20 border border-emerald-500/35 hover:bg-emerald-500 text-emerald-300 hover:text-white hover:border-emerald-400 font-bold tracking-wide transition-all shadow-lg flex items-center justify-center gap-2 text-md"
+                    >
+                      <Check size={20} className="stroke-[3px]" />
+                      <span>Concluir Zeladoria</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (
+                        confirm(
+                          "ADM: Tem certeza que deseja apagar DEFINITIVAMENTE este chamado do sistema?",
+                        )
+                      ) {
+                        onDeleteReport(selectedReport.id).then(() => {
+                          setSelectedReport(null);
+                        });
+                      }
+                    }}
+                    className="w-full py-4 rounded-full bg-red-500/10 border border-red-500/25 hover:bg-red-600 text-red-400 hover:text-white font-bold transition-all shadow-lg flex items-center justify-center gap-2 text-md"
                   >
-                    {selectedReport.status === "resolved"
-                      ? "Resolvido"
-                      : "Pendente"}
-                  </span>
-                  <span className="text-[10px] text-white/40 font-mono">
-                    {new Date(selectedReport.created_at).toLocaleDateString(
-                      "pt-BR",
-                    )}
-                  </span>
+                    <Trash2 size={18} />
+                    <span>Apagar Chamado</span>
+                  </button>
                 </div>
-
-                <h3 className="text-xl font-bold font-serif leading-snug text-white truncate">
-                  {selectedReport.title}
-                </h3>
-                <p className="text-sm text-white/70 italic mt-1 line-clamp-2">
-                  {selectedReport.description || "Sem descrição fornecida."}
+              </div>
+            ) : (
+              <div className="bg-white/5 backdrop-blur-md rounded-[32px] border border-white/10 p-8 text-center flex flex-col items-center justify-center gap-3">
+                <ClipboardCheck className="text-emerald-400 w-12 h-12 bg-emerald-400/10 p-2.5 rounded-full" />
+                <p className="font-serif italic text-white/80 text-lg">
+                  Sem Relatos Registrados
+                </p>
+                <p className="text-xs text-white/50">
+                  Selecione um chamado no mapa para gerenciar o atendimento.
                 </p>
               </div>
-            </div>
-
-            <div className="space-y-2 pt-3 border-t border-white/5 text-sm">
-              <div className="flex items-start gap-2">
-                <MapPin size={16} className="text-white/40 shrink-0 mt-0.5" />
-                <span className="text-white/80 font-mono text-xs">
-                  {selectedReport.address || "Endereço indisponível"}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <User size={16} className="text-white/40" />
-                <span className="text-xs text-white/50">
-                  Relatado por:{" "}
-                  <strong className="text-white/95 font-serif font-medium">
-                    {selectedReport.anonimo
-                      ? "Morador Anônimo"
-                      : "Morador de Araucária"}
-                  </strong>
-                </span>
-              </div>
-            </div>
-
-            <div className="pt-3 flex flex-col gap-3">
-              {selectedReport.status !== "resolved" && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (
-                      confirm("Marcar este chamado como resolvido e concluído?")
-                    ) {
-                      onResolveReport(selectedReport.id);
-                    }
-                  }}
-                  className="w-full py-4 rounded-full bg-emerald-500/20 border border-emerald-500/35 hover:bg-emerald-500 text-emerald-300 hover:text-white hover:border-emerald-400 font-bold tracking-wide transition-all shadow-lg flex items-center justify-center gap-2 text-md"
-                >
-                  <Check size={20} className="stroke-[3px]" />
-                  <span>Concluir Atendimento de Zeladoria</span>
-                </button>
-              )}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (
-                    confirm(
-                      "ADM: Tem certeza que deseja apagar DEFINITIVAMENTE este chamado do sistema?",
-                    )
-                  ) {
-                    onDeleteReport(selectedReport.id).then(() => {
-                      setSelectedReport(null);
-                    });
-                  }
-                }}
-                className="w-full py-4 rounded-full bg-red-500/10 border border-red-500/25 hover:bg-red-600 text-red-400 hover:text-white font-bold transition-all shadow-lg flex items-center justify-center gap-2 text-md"
-              >
-                <Trash2 size={18} />
-                <span>Apagar Chamado</span>
-              </button>
-            </div>
+            )}
           </div>
-        ) : (
-          <div className="bg-white/5 backdrop-blur-md rounded-[40px] border border-white/10 p-8 text-center flex flex-col items-center justify-center gap-3">
-            <ClipboardCheck className="text-emerald-400 w-12 h-12 bg-emerald-400/10 p-2.5 rounded-full" />
-            <p className="font-serif italic text-white/80 text-lg">
-              Sem Relatos Registrados
-            </p>
-            <p className="text-xs text-white/50">
-              Nenhum chamado no mapa no momento.
-            </p>
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );
@@ -1557,22 +1684,22 @@ const AdminTasksView = ({
         </div>
       </div>
 
-      <div className="px-6 space-y-6">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
         {/* Search Bar & Filtering controls */}
-        <div className="space-y-4">
-          <div className="relative flex items-center w-full max-w-sm mx-auto">
+        <div className="flex flex-col md:flex-row gap-4 items-center justify-between bg-white/5 backdrop-blur-md p-4 sm:p-6 rounded-[32px] border border-white/10 shadow-lg">
+          <div className="relative flex items-center w-full md:max-w-md">
             <Search size={18} className="absolute left-4 text-white/40" />
             <input
               type="text"
               placeholder="Pesquisar por título ou endereço..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-white/5 border border-white/20 rounded-full py-3.5 pl-12 pr-4 text-sm text-white placeholder-white/40 focus:outline-none focus:bg-white/10 focus:border-white/40 transition-all font-mono"
+              className="w-full bg-white/5 border border-white/20 rounded-full py-3 pl-12 pr-4 text-sm text-white placeholder-white/40 focus:outline-none focus:bg-white/10 focus:border-white/40 transition-all font-mono"
             />
           </div>
 
           {/* Status Filters */}
-          <div className="flex justify-center items-center gap-2 max-w-sm mx-auto">
+          <div className="flex flex-wrap justify-center items-center gap-2">
             {(["all", "pending", "resolved"] as const).map((filter) => (
               <button
                 key={filter}
@@ -1583,7 +1710,7 @@ const AdminTasksView = ({
                     : "bg-white/5 text-white/60 border-white/10 hover:bg-white/15 hover:text-white"
                 }`}
               >
-                {filter === "all" && "Todos"}
+                {filter === "all" && "Todos os Chamados"}
                 {filter === "pending" && "Pendentes"}
                 {filter === "resolved" && "Resolvidos"}
               </button>
@@ -1592,28 +1719,28 @@ const AdminTasksView = ({
         </div>
 
         {/* Results Info */}
-        <div className="flex justify-between items-center w-full max-w-sm mx-auto pt-2">
+        <div className="flex justify-between items-center pt-2">
           <span className="text-xs text-white/50 font-mono">
-            Mostrando {filteredReports.length} chamado
+            Mostrando <strong>{filteredReports.length}</strong> chamado
             {filteredReports.length !== 1 && "s"}
           </span>
         </div>
 
         {/* List of Tickets */}
-        <div className="space-y-4 flex flex-col items-center">
-          {filteredReports.length === 0 ? (
-            <div className="w-full max-w-sm text-center py-12 px-6 bg-white/5 backdrop-blur-md rounded-[40px] border border-white/10 flex flex-col items-center justify-center gap-4">
-              <Filter className="text-white/20 w-12 h-12 stroke-[1.5px]" />
-              <p className="text-white/50 text-md">
-                Nenhum chamado corresponde aos filtros aplicados.
-              </p>
-            </div>
-          ) : (
-            filteredReports.map((report) => (
+        {filteredReports.length === 0 ? (
+          <div className="w-full text-center py-20 px-6 bg-white/5 backdrop-blur-md rounded-[40px] border border-white/10 flex flex-col items-center justify-center gap-4">
+            <Filter className="text-white/20 w-12 h-12 stroke-[1.5px]" />
+            <p className="text-white/50 text-md">
+              Nenhum chamado corresponde aos filtros aplicados.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6 w-full">
+            {filteredReports.map((report) => (
               <div
                 key={report.id}
                 onClick={() => onViewDetails && onViewDetails(report)}
-                className="w-full max-w-sm bg-white/5 backdrop-blur-md rounded-[40px] border border-white/10 p-5 shadow-2xl flex flex-col gap-4 hover:border-white/20 transition-all group overflow-hidden relative cursor-pointer"
+                className="w-full bg-white/5 backdrop-blur-md rounded-[32px] border border-white/10 p-5 shadow-2xl flex flex-col gap-4 hover:border-white/20 hover:bg-white/10 transition-all group overflow-hidden relative cursor-pointer"
               >
                 <div className="flex gap-4 items-start">
                   {report.image_url ? (
@@ -1631,7 +1758,7 @@ const AdminTasksView = ({
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
-                    <h5 className="font-serif font-bold text-lg text-white group-hover:text-amber-100 transition-colors truncate">
+                    <h5 className="font-serif font-bold text-lg text-white group-hover:text-emerald-300 transition-colors truncate">
                       {report.title}
                     </h5>
                     <p className="text-xs text-white/60 mb-2 truncate">
@@ -1677,15 +1804,15 @@ const AdminTasksView = ({
                 </div>
 
                 {/* Actions for Admins */}
-                <div className="pt-1 flex gap-2 w-full mt-1 border-t border-white/5">
+                <div className="pt-1 flex gap-2 w-full mt-auto border-t border-white/5">
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       if (onViewDetails) onViewDetails(report);
                     }}
-                    className="flex-1 px-4 py-2.5 text-xs rounded-full bg-white/10 border border-white/20 text-white/90 font-bold hover:bg-white/20 transition-all flex items-center justify-center gap-1.5"
+                    className="flex-1 px-3 py-2.5 text-xs rounded-full bg-white/10 border border-white/20 text-white/90 font-bold hover:bg-white/20 transition-all flex items-center justify-center gap-1"
                   >
-                    <Maximize2 size={14} />
+                    <Maximize2 size={13} />
                     <span>Detalhes</span>
                   </button>
 
@@ -1701,10 +1828,10 @@ const AdminTasksView = ({
                           onResolveReport(report.id);
                         }
                       }}
-                      className="flex-1 px-4 py-2.5 text-xs rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 font-bold hover:bg-emerald-500 hover:text-white hover:border-emerald-400 transition-all flex items-center justify-center gap-1.5 group/btn"
+                      className="flex-1 px-3 py-2.5 text-xs rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 font-bold hover:bg-emerald-500 hover:text-white hover:border-emerald-400 transition-all flex items-center justify-center gap-1 group/btn"
                     >
                       <Check
-                        size={14}
+                        size={13}
                         className="group-hover/btn:scale-125 transition-transform"
                       />
                       <span>Resolver</span>
@@ -1721,19 +1848,19 @@ const AdminTasksView = ({
                         onDeleteReport(report.id);
                       }
                     }}
-                    className={`px-4 py-2.5 text-xs rounded-full bg-red-500/15 border border-red-500/25 text-red-300 font-bold hover:bg-red-600 hover:text-white hover:border-red-500 transition-all flex items-center justify-center gap-1.5 ${
-                      report.status === "resolved" ? "flex-1" : "px-3 shrink-0"
+                    className={`px-3 py-2.5 text-xs rounded-full bg-red-500/15 border border-red-500/25 text-red-300 font-bold hover:bg-red-600 hover:text-white hover:border-red-500 transition-all flex items-center justify-center gap-1 ${
+                      report.status === "resolved" ? "flex-1" : "shrink-0"
                     }`}
                     title="Apagar"
                   >
-                    <Trash2 size={14} />
+                    <Trash2 size={13} />
                     {report.status === "resolved" && <span>Apagar</span>}
                   </button>
                 </div>
               </div>
-            ))
-          )}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1917,7 +2044,7 @@ const ReportView = ({
 
   return (
     <div className="relative min-h-[100dvh] sm:min-h-full w-full bg-[#5A635C] overflow-y-auto overflow-x-hidden font-sans text-white pb-32">
-      <div className="relative w-full h-[40vh] min-h-[300px] flex flex-col pb-8">
+      <div className="relative w-full h-[35vh] min-h-[250px] flex flex-col pb-8">
         <div
           className="absolute inset-0 z-0 bg-cover bg-center"
           style={{
@@ -1939,156 +2066,183 @@ const ReportView = ({
           </h1>
         </div>
 
-        <h2 className="relative z-10 text-[40px] sm:text-[48px] font-serif font-bold leading-[1.05] tracking-tight mt-auto px-6 sm:px-10">
+        <h2 className="relative z-10 text-[36px] sm:text-[48px] font-serif font-bold leading-[1.05] tracking-tight mt-auto px-6 sm:px-10 lg:pl-16">
           Relate algum
           <br />
           problema
         </h2>
       </div>
 
-      <div className="relative z-10 px-6 sm:px-10 mt-6 flex flex-col gap-10">
-        <div className="w-full max-w-lg mx-auto">
-          <input
-            type="text"
-            placeholder="Relate seu problema"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="w-full bg-white/20 border border-white/40 rounded-[30px] px-8 py-4 text-white text-lg font-serif placeholder:text-white/90 focus:outline-none focus:bg-white/30 shadow-lg backdrop-blur-xl transition-all"
-          />
-        </div>
-
-        <div className="flex flex-col items-center gap-4">
-          <span className="text-xl font-serif font-bold tracking-wide drop-shadow-md">
-            Anexar foto ou vídeo
-          </span>
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileChange}
-            accept="image/*,video/*"
-            className="hidden"
-          />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="w-24 h-12 rounded-[24px] bg-white/10 border border-white/40 backdrop-blur-xl flex items-center justify-center shadow-lg hover:bg-white/20 transition-all group overflow-hidden relative"
-          >
-            {selectedFile ? (
-              <div className="absolute inset-0 flex items-center justify-center bg-white/20">
-                <Check size={24} className="text-white drop-shadow-md" />
-              </div>
-            ) : (
-              <Camera
-                size={24}
-                className="text-white/80 group-hover:text-white transition-colors"
-              />
-            )}
-          </button>
-          {selectedFile && (
-            <div className="flex items-center gap-2 mt-2 bg-white/10 px-3 py-1.5 rounded-full border border-white/20">
-              <span className="text-sm font-medium text-white/80 max-w-[200px] truncate">
-                {selectedFile.name}
+      <div className="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-start">
+          
+          {/* Coluna 1: Informações e Anexos */}
+          <div className="space-y-8 bg-white/5 backdrop-blur-md p-6 sm:p-8 rounded-[32px] border border-white/10 shadow-lg">
+            <div className="space-y-3">
+              <span className="text-xl font-serif font-bold tracking-wide block text-white/95 drop-shadow-sm">
+                Descreva o problema
               </span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedFile(null);
-                  if (fileInputRef.current) fileInputRef.current.value = "";
+              <p className="text-xs text-white/70 font-sans">
+                Seja claro e específico sobre o que precisa de zeladoria ou manutenção.
+              </p>
+              <input
+                type="text"
+                placeholder="Ex: Buraco na via, poste sem luz, entulho acumulado..."
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="w-full bg-white/10 border border-white/20 rounded-2xl px-6 py-4 text-white text-base font-sans placeholder:text-white/60 focus:outline-none focus:bg-white/20 focus:border-white/40 shadow-inner transition-all mt-2"
+              />
+            </div>
+
+            <div className="w-full h-px bg-white/10 my-6"></div>
+
+            <div className="flex flex-col gap-4">
+              <span className="text-xl font-serif font-bold tracking-wide text-white/95 drop-shadow-sm">
+                Anexar foto ou vídeo
+              </span>
+              <p className="text-xs text-white/70 font-sans">
+                O registro visual ajuda os administradores a entenderem o problema com mais rapidez.
+              </p>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileChange}
+                accept="image/*,video/*"
+                className="hidden"
+              />
+              <div className="flex flex-col sm:flex-row items-center gap-4 pt-1">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full sm:w-28 h-14 rounded-2xl bg-white/10 border border-white/30 backdrop-blur-xl flex items-center justify-center shadow-md hover:bg-white/20 active:scale-95 transition-all group overflow-hidden relative"
+                >
+                  {selectedFile ? (
+                    <div className="absolute inset-0 flex items-center justify-center bg-emerald-500/30">
+                      <Check size={24} className="text-emerald-300 drop-shadow-md" />
+                    </div>
+                  ) : (
+                    <Camera
+                      size={24}
+                      className="text-white/80 group-hover:text-white transition-colors"
+                    />
+                  )}
+                </button>
+                {selectedFile ? (
+                  <div className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-xl border border-white/25 w-full sm:w-auto overflow-hidden">
+                    <span className="text-xs font-medium text-white/85 truncate max-w-[150px]">
+                      {selectedFile.name}
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedFile(null);
+                        if (fileInputRef.current) fileInputRef.current.value = "";
+                      }}
+                      className="text-white/50 hover:text-white transition-colors p-1"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ) : (
+                  <span className="text-xs text-white/50 italic font-mono">
+                    Nenhum arquivo selecionado
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Coluna 2: Endereço e Mapa */}
+          <div className="space-y-6 bg-white/5 backdrop-blur-md p-6 sm:p-8 rounded-[32px] border border-white/10 shadow-lg relative group">
+            <div className="flex flex-col gap-1 w-full">
+              <span className="text-xl font-serif font-bold tracking-wide text-white/95 drop-shadow-sm">
+                Informe o local do ocorrido
+              </span>
+              <span className="text-xs text-white/70 font-sans">
+                Arraste o mapa para posicionar o pin vermelho exatamente no local do problema.
+              </span>
+            </div>
+
+            <div className="w-full bg-black/30 border border-white/15 rounded-2xl px-5 py-3.5 min-h-[48px] flex items-center justify-center text-white text-xs font-mono shadow-inner backdrop-blur-md">
+              <MapPin className="mr-3 text-red-400 shrink-0" size={18} />
+              <span className="truncate flex-1 font-medium leading-tight text-white/90">
+                {isLoadingAddress
+                  ? "Buscando endereço exato..."
+                  : locationQuery || "Nenhum endereço encontrado"}
+              </span>
+            </div>
+
+            <div className="w-full h-80 lg:h-[350px] rounded-[24px] overflow-hidden shadow-2xl border border-white/20 bg-white/5 relative z-10 mt-1">
+              <MapContainer
+                center={mapCenter}
+                zoom={15}
+                minZoom={12}
+                maxBounds={[
+                  [-25.8, -49.7],
+                  [-25.4, -49.2],
+                ]}
+                maxBoundsViscosity={1.0}
+                zoomControl={false}
+                attributionControl={false}
+                style={{
+                  height: "100%",
+                  width: "100%",
+                  filter: "saturate(0.8) contrast(1.1) brightness(0.9)",
                 }}
-                className="text-white/60 hover:text-white transition-colors"
               >
-                <X size={16} />
+                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                <MapWatcher onMoveEnd={handleMapMove} />
+                <MapRecenter center={mapCenter} />
+              </MapContainer>
+              
+              {/* Center Pin overlay */}
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none drop-shadow-lg flex flex-col items-center z-[1000]">
+                <div className="bg-red-500 text-white rounded-full p-2 mb-1 shadow-lg shadow-red-500/20 animate-bounce">
+                  <MapPin size={24} strokeWidth={2} />
+                </div>
+                <div className="w-2 h-1 bg-black/40 rounded-[100%] blur-[1px]"></div>
+              </div>
+
+              <button
+                onClick={() => {
+                  const btn = document.getElementById("btn-confirm-location");
+                  if (btn) {
+                    btn.innerHTML =
+                      '<span class="flex items-center gap-2"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> Localização Confirmada</span>';
+                    btn.classList.add(
+                      "bg-emerald-500/90",
+                      "border-emerald-400",
+                      "text-white",
+                    );
+                    btn.classList.remove("bg-white/20", "border-white/30");
+                    setTimeout(() => {
+                      btn.innerHTML = "Confirmar Localização";
+                      btn.classList.remove("bg-emerald-500/90", "border-emerald-400");
+                      btn.classList.add("bg-white/20", "border-white/30");
+                    }, 3000);
+                  }
+                }}
+                id="btn-confirm-location"
+                className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/40 backdrop-blur-md border border-white/20 text-white font-bold text-xs px-6 py-2.5 rounded-full shadow-lg hover:bg-black/60 transition-all z-[1000] tracking-wide"
+              >
+                Confirmar Localização
               </button>
             </div>
-          )}
+          </div>
+
         </div>
 
-        <div className="flex flex-col items-center gap-4 w-full max-w-lg mx-auto relative group">
-          <div className="text-center flex flex-col gap-1 w-full mb-2">
-            <span className="text-xl font-serif font-bold tracking-wide drop-shadow-md">
-              Informe o local do ocorrido
-            </span>
-            <span className="text-[15px] font-sans text-white/80 drop-shadow-md">
-              Arraste o mapa para selecionar
-            </span>
-          </div>
-
-          <div className="w-full bg-white/10 border border-white/20 rounded-[20px] px-6 py-3 min-h-[48px] flex items-center justify-center text-white text-[15px] font-sans shadow-inner backdrop-blur-md transition-all">
-            <MapPin className="mr-3 text-white/70 shrink-0" size={20} />
-            <span className="truncate flex-1 text-center font-medium leading-tight">
-              {isLoadingAddress
-                ? "Buscando endereço..."
-                : locationQuery || "Nenhum endereço encontrado"}
-            </span>
-          </div>
-
-          <div className="w-full h-72 rounded-[40px] overflow-hidden shadow-2xl border border-white/20 bg-white/5 relative z-10 mt-1">
-            <MapContainer
-              center={mapCenter}
-              zoom={15}
-              minZoom={12}
-              maxBounds={[
-                [-25.8, -49.7],
-                [-25.4, -49.2],
-              ]}
-              maxBoundsViscosity={1.0}
-              zoomControl={false}
-              attributionControl={false}
-              style={{
-                height: "100%",
-                width: "100%",
-                filter: "saturate(0.8) contrast(1.1) brightness(0.9)",
-              }}
-            >
-              <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-              <MapWatcher onMoveEnd={handleMapMove} />
-              <MapRecenter center={mapCenter} />
-            </MapContainer>
-            {/* Center Pin overlay */}
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none drop-shadow-lg flex flex-col items-center z-[1000]">
-              <div className="bg-red-500 text-white rounded-full p-2 mb-1 shadow-lg shadow-red-500/20">
-                <MapPin size={24} strokeWidth={2} />
-              </div>
-              <div className="w-2 h-1 bg-black/40 rounded-[100%] blur-[1px]"></div>
-            </div>
-
-            <button
-              onClick={() => {
-                const btn = document.getElementById("btn-confirm-location");
-                if (btn) {
-                  btn.innerHTML =
-                    '<span class="flex items-center gap-2"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> Localização Adicionada</span>';
-                  btn.classList.add(
-                    "bg-green-500/80",
-                    "border-green-400",
-                    "text-white",
-                  );
-                  btn.classList.remove("bg-white/20", "border-white/30");
-                  setTimeout(() => {
-                    btn.innerHTML = "Confirmar Localização";
-                    btn.classList.remove("bg-green-500/80", "border-green-400");
-                    btn.classList.add("bg-white/20", "border-white/30");
-                  }, 3000);
-                }
-              }}
-              id="btn-confirm-location"
-              className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-white/20 backdrop-blur-md border border-white/30 text-white font-medium px-6 py-2 rounded-full shadow-lg hover:bg-white/30 transition-colors z-[1000]"
-            >
-              Confirmar Localização
-            </button>
-          </div>
-        </div>
-
-        <div className="flex justify-center mt-6 mb-10">
+        {/* Botão de Envio Centralizado */}
+        <div className="flex justify-center mt-12 mb-10">
           <button
             onClick={handleSendReport}
             disabled={isSending}
-            className="w-full max-w-sm py-4 rounded-[30px] bg-white text-[#5A635C] font-bold text-lg shadow-xl shadow-black/10 hover:bg-white/90 transition-all flex items-center justify-center gap-2 group disabled:opacity-50"
+            className="w-full max-w-md py-4.5 rounded-[30px] bg-white text-[#5A635C] font-extrabold text-lg shadow-xl shadow-black/25 hover:bg-white/90 active:scale-[0.98] transition-all flex items-center justify-center gap-3 group disabled:opacity-50"
           >
-            {isSending ? "Enviando..." : "Enviar problema"}
+            {isSending ? "Enviando Relato..." : "Enviar Problema"}
             {!isSending && (
               <ArrowRight
                 size={20}
-                className="group-hover:translate-x-1 transition-transform"
+                className="group-hover:translate-x-1.5 transition-transform"
               />
             )}
           </button>
@@ -2112,6 +2266,7 @@ const MainFeed = ({
   newsList = [],
   onAddNews,
   onDeleteNews,
+  newsDbError = null,
 }: {
   onGoToSettings: () => void;
   onGoToProfile: () => void;
@@ -2126,12 +2281,18 @@ const MainFeed = ({
   newsList?: any[];
   onAddNews?: (title: string, description: string, category: string) => Promise<void>;
   onDeleteNews?: (newsId: string) => Promise<void>;
+  newsDbError?: string | null;
 }) => {
   const [showNewsModal, setShowNewsModal] = useState(false);
   const [newsTitle, setNewsTitle] = useState("");
   const [newsDescription, setNewsDescription] = useState("");
   const [newsCategory, setNewsCategory] = useState("Serviços");
   const [isAddingNews, setIsAddingNews] = useState(false);
+
+  const [showAllNewsPanel, setShowAllNewsPanel] = useState(false);
+  const [newsSearchQuery, setNewsSearchQuery] = useState("");
+  const [selectedNewsCategory, setSelectedNewsCategory] = useState("Todos");
+  const [activeNewsDetail, setActiveNewsDetail] = useState<any | null>(null);
 
   return (
     <div className="relative min-h-[100dvh] sm:min-h-full w-full bg-[#5A635C] overflow-y-auto overflow-x-hidden font-sans text-white">
@@ -2277,77 +2438,132 @@ const MainFeed = ({
             </div>
 
             {/* News Management Card */}
-            <div className="bg-white/5 backdrop-blur-md rounded-[32px] border border-white/10 p-6 mb-8 shadow-xl">
-              <div className="flex justify-between items-center mb-4">
-                <div>
-                  <span className="text-white/60 text-xs font-mono uppercase tracking-wider block">
-                    Comunicados & Imprensa
-                  </span>
-                  <h4 className="text-lg font-serif font-bold text-white mt-1">
-                    Painel de Notícias de Araucária
-                  </h4>
+            {isAdmin && (
+              <div className="bg-white/5 backdrop-blur-md rounded-[32px] border border-white/10 p-6 mb-8 shadow-xl">
+                <div className="flex justify-between items-center mb-4">
+                  <div>
+                    <span className="text-white/60 text-xs font-mono uppercase tracking-wider block">
+                      Comunicados & Imprensa (Administrador)
+                    </span>
+                    <h4 className="text-lg font-serif font-bold text-white mt-1">
+                      Painel de Notícias de Araucária
+                    </h4>
+                  </div>
+                  <button
+                    onClick={() => setShowNewsModal(true)}
+                    className="px-4 py-2 text-xs rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold hover:bg-emerald-500 hover:text-white hover:border-emerald-500 transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
+                  >
+                    <Plus size={14} />
+                    <span>Publicar</span>
+                  </button>
                 </div>
-                <button
-                  onClick={() => setShowNewsModal(true)}
-                  className="px-4 py-2 text-xs rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold hover:bg-emerald-500 hover:text-white hover:border-emerald-500 transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
-                >
-                  <Plus size={14} />
-                  <span>Publicar</span>
-                </button>
-              </div>
 
-              {newsList.length === 0 ? (
-                <p className="text-xs text-white/40 italic font-mono py-2">
-                  Nenhuma notícia publicada. Crie seu primeiro comunicado acima!
-                </p>
-              ) : (
-                <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
-                  {newsList.map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex items-center justify-between p-3.5 rounded-2xl bg-white/5 border border-white/5 hover:border-white/10 transition-all text-xs"
-                    >
-                      <div className="flex flex-col gap-1 pr-4 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider ${
-                            item.category === "Serviços"
-                              ? "bg-blue-500/20 text-blue-300"
-                              : item.category === "Comunidade"
-                              ? "bg-amber-500/20 text-amber-300"
-                              : "bg-emerald-500/20 text-emerald-300"
-                          }`}>
-                            {item.category}
-                          </span>
-                          <span className="text-[10px] text-white/40 font-mono">
-                            {item.created_at ? new Date(item.created_at).toLocaleDateString("pt-BR") : "Hoje"}
-                          </span>
-                        </div>
-                        <h5 className="font-bold text-white truncate min-w-0">
-                          {item.title}
-                        </h5>
-                        <p className="text-white/60 line-clamp-1 min-w-0">
-                          {item.description}
-                        </p>
-                      </div>
-
-                      <button
-                        onClick={async () => {
-                          if (onDeleteNews) {
-                            if (confirm("Tem certeza que deseja apagar este comunicado?")) {
-                              await onDeleteNews(item.id);
-                            }
-                          }
-                        }}
-                        className="p-2 rounded-xl bg-red-500/15 text-red-300 border border-red-500/20 hover:bg-red-500 hover:text-white transition-all cursor-pointer shrink-0"
-                        title="Apagar comunicado"
-                      >
-                        <Trash2 size={12} />
-                      </button>
+                {newsDbError && (
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 text-xs text-amber-200 leading-relaxed space-y-3 flex flex-col mb-4">
+                    <div className="flex items-center gap-2 font-bold text-amber-300">
+                      <AlertTriangle size={15} />
+                      <span>Configuração Pendente no Supabase</span>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                    <p className="font-sans">
+                      A tabela de comunicados não foi localizada no seu banco. Atualmente as notícias estão salvas apenas de forma temporária no navegador local. Para habilitar a sincronização definitiva e nuvem, copie o código abaixo e execute no <strong>SQL Editor</strong> do seu painel do Supabase:
+                    </p>
+                    <div className="bg-black/30 p-3 rounded-xl font-mono text-[10px] text-white/90 overflow-x-auto whitespace-pre select-all border border-white/5 max-h-40">
+{`CREATE TABLE IF NOT EXISTS public.news (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.news ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Anyone can read news" ON public.news FOR SELECT USING (true);
+CREATE POLICY "Admins can insert news" ON public.news FOR INSERT WITH CHECK (
+  EXISTS (
+    SELECT 1 FROM public.profiles WHERE public.profiles.id = auth.uid() AND public.profiles.is_admin = true
+  )
+);
+CREATE POLICY "Admins can update news" ON public.news FOR UPDATE USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles WHERE public.profiles.id = auth.uid() AND public.profiles.is_admin = true
+  )
+);
+CREATE POLICY "Admins can delete news" ON public.news FOR DELETE USING (
+  EXISTS (
+    SELECT 1 FROM public.profiles WHERE public.profiles.id = auth.uid() AND public.profiles.is_admin = true
+  )
+);`}
+                    </div>
+                    <p className="text-[10px] text-amber-300/80 italic">
+                      Dica: Clique três vezes no código acima para selecionar tudo, copie e cole no painel do Supabase!
+                    </p>
+                  </div>
+                )}
+
+                {newsList.length === 0 ? (
+                  <p className="text-xs text-white/40 italic font-mono py-2">
+                    Nenhuma notícia publicada. Crie seu primeiro comunicado acima!
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
+                      {newsList.slice(0, 3).map((item) => (
+                        <div
+                          key={item.id}
+                          className="flex items-center justify-between p-3.5 rounded-2xl bg-white/5 border border-white/5 hover:border-white/10 transition-all text-xs"
+                        >
+                          <div className="flex flex-col gap-1 pr-4 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider ${
+                                item.category === "Serviços"
+                                  ? "bg-blue-500/20 text-blue-300"
+                                  : item.category === "Comunidade"
+                                  ? "bg-amber-500/20 text-amber-300"
+                                  : "bg-emerald-500/20 text-emerald-300"
+                              }`}>
+                                {item.category}
+                              </span>
+                              <span className="text-[10px] text-white/40 font-mono">
+                                {item.created_at ? new Date(item.created_at).toLocaleDateString("pt-BR") : "Hoje"}
+                              </span>
+                            </div>
+                            <h5 className="font-bold text-white truncate min-w-0">
+                              {item.title}
+                            </h5>
+                            <p className="text-white/60 line-clamp-1 min-w-0">
+                              {item.description}
+                            </p>
+                          </div>
+
+                          <button
+                            onClick={async () => {
+                              if (onDeleteNews) {
+                                if (confirm("Tem certeza que deseja apagar este comunicado?")) {
+                                  await onDeleteNews(item.id);
+                                }
+                              }
+                            }}
+                            className="p-2 rounded-xl bg-red-500/15 text-red-300 border border-red-500/20 hover:bg-red-500 hover:text-white transition-all cursor-pointer shrink-0"
+                            title="Apagar comunicado"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={() => setShowAllNewsPanel(true)}
+                      className="w-full mt-2 py-3 px-4 text-xs font-bold rounded-2xl bg-white/5 border border-white/10 text-white hover:bg-white/10 hover:border-white/20 transition-all flex items-center justify-center gap-1.5 group cursor-pointer shadow-sm"
+                    >
+                      <span>Acessar Painel de Comunicados Completo ({newsList.length})</span>
+                      <ArrowRight size={13} className="group-hover:translate-x-0.5 transition-transform text-emerald-400" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Pending list or action area */}
             <div className="mt-10">
@@ -2494,12 +2710,28 @@ const MainFeed = ({
 
             {/* More Local News items */}
             <div className="space-y-6">
-              <h4 className="text-xl font-bold font-serif flex items-center gap-2 border-b border-white/10 pb-2">
+              <h4 className="text-xl font-bold font-serif flex items-center justify-between gap-2 border-b border-white/10 pb-2">
                 <span>Últimas Atualizações</span>
+                {newsList.length > 0 && (
+                  <button
+                    onClick={() => setShowAllNewsPanel(true)}
+                    className="text-xs font-mono font-bold text-emerald-400 hover:text-emerald-300 transition-colors uppercase tracking-wider flex items-center gap-1 cursor-pointer bg-white/5 px-3 py-1.5 rounded-full border border-white/10 shadow-sm"
+                  >
+                    <span>Ver Todos</span>
+                    <ArrowRight size={12} />
+                  </button>
+                )}
               </h4>
 
               <div className="grid grid-cols-1 gap-4">
-                {newsList.map((item) => {
+                {newsDbError && !isAdmin && (
+                  <div className="bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs p-3.5 rounded-2xl flex items-center gap-2 font-medium">
+                    <AlertTriangle size={14} className="shrink-0" />
+                    <span>Os comunicados estão carregados temporariamente neste dispositivo. Sincronização em nuvem pendente.</span>
+                  </div>
+                )}
+
+                {newsList.slice(0, 3).map((item) => {
                   const dateStr = item.created_at
                     ? new Date(item.created_at).toLocaleDateString("pt-BR", {
                         day: "2-digit",
@@ -2509,7 +2741,8 @@ const MainFeed = ({
                   return (
                     <div
                       key={item.id}
-                      className="bg-white/5 backdrop-blur-md rounded-[24px] border border-white/10 p-5 flex flex-col gap-2 shadow-lg hover:border-white/20 transition-all"
+                      onClick={() => setActiveNewsDetail(item)}
+                      className="bg-white/5 backdrop-blur-md rounded-[24px] border border-white/10 p-5 flex flex-col gap-2 shadow-lg hover:border-white/20 hover:bg-white/10 transition-all cursor-pointer group"
                     >
                       <div className="flex justify-between items-center text-[10px] font-mono text-white/40">
                         <span className={`px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
@@ -2521,12 +2754,14 @@ const MainFeed = ({
                         }`}>
                           {item.category}
                         </span>
-                        <span>{dateStr}</span>
+                        <span className="flex items-center gap-1 text-white/50 group-hover:text-emerald-400 font-bold transition-colors">
+                          Ler Comunicado <ArrowRight size={10} className="group-hover:translate-x-0.5 transition-transform" />
+                        </span>
                       </div>
-                      <h5 className="font-serif font-bold text-lg text-white">
+                      <h5 className="font-serif font-bold text-lg text-white group-hover:text-emerald-300 transition-colors">
                         {item.title}
                       </h5>
-                      <p className="text-sm text-white/70 leading-relaxed">
+                      <p className="text-sm text-white/70 leading-relaxed line-clamp-2">
                         {item.description}
                       </p>
                     </div>
@@ -2537,6 +2772,19 @@ const MainFeed = ({
                   <p className="text-center py-6 text-sm text-white/40 font-mono italic">
                     Nenhuma notícia cadastrada no momento.
                   </p>
+                )}
+
+                {newsList.length > 3 && (
+                  <button
+                    onClick={() => setShowAllNewsPanel(true)}
+                    className="w-full mt-2 py-4 px-6 text-sm font-bold rounded-[20px] bg-white/5 border border-white/10 text-white hover:bg-white/10 hover:border-white/20 transition-all flex items-center justify-center gap-2 group cursor-pointer shadow-md"
+                  >
+                    <span>Acessar Painel Completo de Comunicados</span>
+                    <ArrowRight
+                      size={16}
+                      className="group-hover:translate-x-1 transition-transform text-emerald-400"
+                    />
+                  </button>
                 )}
               </div>
             </div>
@@ -2652,6 +2900,259 @@ const MainFeed = ({
                   {isAddingNews ? "Publicando..." : "Publicar"}
                 </button>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* All News/Announcements Full Screen Panel */}
+      <AnimatePresence>
+        {showAllNewsPanel && (
+          <motion.div
+            initial={{ opacity: 0, scale: 1.02 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 1.02 }}
+            className="fixed inset-0 bg-[#5A635C] z-[9900] flex flex-col overflow-y-auto text-white"
+          >
+            {/* Elegant Header Background Cover */}
+            <div className="relative w-full py-12 px-6 sm:px-10 border-b border-white/10 shrink-0">
+              <div 
+                className="absolute inset-0 z-0 bg-cover bg-center brightness-[0.45] saturate-[0.8]"
+                style={{ backgroundImage: 'url("pexels-nandhukumar-339614.jpg")' }}
+              />
+              <div className="absolute inset-0 z-0 bg-gradient-to-t from-[#5A635C] via-[#5A635C]/80 to-black/20" />
+              
+              <div className="relative z-10 max-w-4xl mx-auto flex flex-col gap-5">
+                <button
+                  type="button"
+                  onClick={() => setShowAllNewsPanel(false)}
+                  className="flex items-center gap-2 text-white/80 hover:text-white transition-all text-xs font-mono mb-2 uppercase tracking-wider bg-white/5 hover:bg-white/10 px-4 py-2.5 rounded-full border border-white/10 self-start cursor-pointer shadow-md"
+                >
+                  <ArrowRight size={14} className="rotate-180" />
+                  <span>Voltar ao início</span>
+                </button>
+
+                <div>
+                  <span className="text-[10px] font-mono font-bold px-3 py-1 rounded-full bg-emerald-500 text-white w-fit uppercase tracking-wider mb-2.5 inline-block">
+                    Painel Oficial
+                  </span>
+                  <h3 className="text-3xl sm:text-5xl font-serif font-bold tracking-tight text-white mb-2 leading-none">
+                    Todos os Comunicados
+                  </h3>
+                  <p className="text-sm text-white/70 font-sans max-w-xl font-medium">
+                    Fique sabendo de tudo que acontece em Araucária. Encontre abaixo notícias oficiais, avisos municipais e ações comunitárias.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Filter and Search controls */}
+            <div className="w-full bg-[#5A635C] py-6 px-6 sm:px-10 border-b border-white/5 sticky top-0 z-50 backdrop-blur-md bg-opacity-95 shadow-lg">
+              <div className="max-w-4xl mx-auto flex flex-col md:flex-row gap-4">
+                <div className="relative flex-1">
+                  <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-white/40" size={18} />
+                  <input
+                    type="text"
+                    placeholder="Buscar comunicados por título ou conteúdo..."
+                    value={newsSearchQuery}
+                    onChange={(e) => setNewsSearchQuery(e.target.value)}
+                    className="w-full pl-12 pr-12 py-3.5 bg-white/5 border border-white/10 rounded-[24px] text-sm focus:outline-none focus:border-emerald-500 placeholder-white/30 transition-all font-medium text-white"
+                  />
+                  {newsSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setNewsSearchQuery("")}
+                      className="absolute right-5 top-1/2 -translate-y-1/2 text-white/40 hover:text-white text-xs cursor-pointer font-mono"
+                    >
+                      Limpar
+                    </button>
+                  )}
+                </div>
+
+                {/* Horizontal Category Selector */}
+                <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none shrink-0">
+                  {["Todos", "Serviços", "Comunidade", "Avisos"].map((cat) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setSelectedNewsCategory(cat)}
+                      className={`px-5 py-3 rounded-full text-xs font-bold border transition-all cursor-pointer whitespace-nowrap ${
+                        selectedNewsCategory === cat
+                          ? "bg-white text-[#5A635C] border-white shadow-md shadow-black/20"
+                          : "bg-white/5 text-white/80 border-white/10 hover:bg-white/10"
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* News List Container */}
+            <div className="flex-1 w-full max-w-4xl mx-auto py-10 px-6 sm:px-10">
+              {newsDbError && (
+                <div className="mb-6 bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 text-xs text-amber-200 leading-relaxed flex items-start gap-3 shadow-md">
+                  <AlertTriangle size={16} className="shrink-0 text-amber-400 mt-0.5" />
+                  <div>
+                    <span className="font-bold text-amber-300 block mb-1">Aviso de Sincronização</span>
+                    <span>{newsDbError} Os avisos que você vê aqui podem estar salvos temporariamente no seu navegador e não sincronizados com a nuvem devido a ausência da tabela 'news' no Supabase.</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-5">
+                {newsList
+                  .filter((item) => {
+                    const matchesCategory =
+                      selectedNewsCategory === "Todos" ||
+                      item.category === selectedNewsCategory;
+                    const matchesSearch =
+                      item.title.toLowerCase().includes(newsSearchQuery.toLowerCase()) ||
+                      item.description.toLowerCase().includes(newsSearchQuery.toLowerCase());
+                    return matchesCategory && matchesSearch;
+                  })
+                  .map((item, idx) => {
+                    const dateStr = item.created_at
+                      ? new Date(item.created_at).toLocaleDateString("pt-BR", {
+                          day: "2-digit",
+                          month: "long",
+                          year: "numeric"
+                        })
+                      : "Hoje";
+                    return (
+                      <motion.div
+                        initial={{ opacity: 0, y: 15 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: idx * 0.05 }}
+                        key={item.id}
+                        onClick={() => setActiveNewsDetail(item)}
+                        className="bg-white/5 backdrop-blur-md rounded-[32px] border border-white/10 p-6 flex flex-col gap-4 hover:border-white/20 hover:bg-white/10 transition-all cursor-pointer group shadow-lg"
+                      >
+                        <div className="flex justify-between items-start">
+                          <span className={`px-3 py-1 rounded-full text-[10px] font-mono font-bold uppercase tracking-wider ${
+                            item.category === "Serviços"
+                              ? "bg-blue-500/20 text-blue-300"
+                              : item.category === "Comunidade"
+                              ? "bg-amber-500/20 text-amber-300"
+                              : "bg-emerald-500/20 text-emerald-300"
+                          }`}>
+                            {item.category}
+                          </span>
+                          <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                            <span className="text-[11px] text-white/40 font-mono">
+                              {dateStr}
+                            </span>
+                            {isAdmin && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (onDeleteNews) {
+                                    if (confirm("Tem certeza que deseja apagar este comunicado definitivamente no painel do administrador?")) {
+                                      await onDeleteNews(item.id);
+                                    }
+                                  }
+                                }}
+                                className="p-2 rounded-xl bg-red-500/15 text-red-300 border border-red-500/20 hover:bg-red-500 hover:text-white hover:border-red-500 transition-all cursor-pointer shadow-md"
+                                title="Apagar comunicado"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <h4 className="text-xl sm:text-2xl font-serif font-bold text-white group-hover:text-emerald-300 transition-colors leading-snug">
+                            {item.title}
+                          </h4>
+                          <p className="text-sm sm:text-base text-white/70 leading-relaxed font-sans font-medium line-clamp-3">
+                            {item.description}
+                          </p>
+                        </div>
+                        <div className="pt-2 flex items-center gap-1.5 text-xs text-emerald-400 font-bold tracking-wide uppercase font-mono group-hover:text-emerald-300 transition-all">
+                          <span>Ler comunicado completo</span>
+                          <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+
+                {newsList.filter((item) => {
+                  const matchesCategory =
+                    selectedNewsCategory === "Todos" ||
+                    item.category === selectedNewsCategory;
+                  const matchesSearch =
+                    item.title.toLowerCase().includes(newsSearchQuery.toLowerCase()) ||
+                    item.description.toLowerCase().includes(newsSearchQuery.toLowerCase());
+                  return matchesCategory && matchesSearch;
+                }).length === 0 && (
+                  <div className="text-center py-20 bg-white/5 rounded-[32px] border border-white/5">
+                    <p className="text-white/40 font-mono italic text-sm">
+                      Nenhum comunicado encontrado para os critérios selecionados.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* News Detail Full View Dialog */}
+      <AnimatePresence>
+        {activeNewsDetail && (
+          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-[10000] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-[#2E332F] border border-white/10 p-6 sm:p-10 rounded-[36px] w-full max-w-2xl shadow-2xl relative flex flex-col gap-6 text-white max-h-[85vh] overflow-y-auto"
+            >
+              <button
+                type="button"
+                onClick={() => setActiveNewsDetail(null)}
+                className="absolute top-6 right-6 p-2 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 transition-all cursor-pointer text-white/75"
+              >
+                <X size={18} />
+              </button>
+
+              <div>
+                <div className="flex items-center gap-3 mb-4">
+                  <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-bold uppercase tracking-wider ${
+                    activeNewsDetail.category === "Serviços"
+                      ? "bg-blue-500/20 text-blue-300"
+                      : activeNewsDetail.category === "Comunidade"
+                      ? "bg-amber-500/20 text-amber-300"
+                      : "bg-emerald-500/20 text-emerald-300"
+                  }`}>
+                    {activeNewsDetail.category}
+                  </span>
+                  <span className="text-xs text-white/40 font-mono">
+                    {activeNewsDetail.created_at ? new Date(activeNewsDetail.created_at).toLocaleDateString("pt-BR", {
+                      day: "2-digit",
+                      month: "long",
+                      year: "numeric"
+                    }) : "Hoje"}
+                  </span>
+                </div>
+                <h4 className="text-2xl sm:text-3xl font-serif font-bold leading-tight tracking-tight">
+                  {activeNewsDetail.title}
+                </h4>
+              </div>
+
+              <div className="h-[1px] bg-white/15 w-full" />
+
+              <p className="text-white/95 text-base leading-[1.65] font-medium font-sans whitespace-pre-wrap">
+                {activeNewsDetail.description}
+              </p>
+
+              <button
+                type="button"
+                onClick={() => setActiveNewsDetail(null)}
+                className="mt-4 w-full py-3.5 px-6 text-xs font-bold rounded-full bg-white/10 hover:bg-white/15 border border-white/10 transition-all cursor-pointer text-center text-white/90"
+              >
+                Voltar
+              </button>
             </motion.div>
           </div>
         )}
@@ -3063,6 +3564,7 @@ export default function App() {
     anonymous: false,
   });
   const [userReports, setUserReports] = useState<any[]>([]);
+  const [forgotPasswordStep, setForgotPasswordStep] = useState<"email" | "code" | "reset">("email");
 
   // System statistics states
   const [systemPendingCount, setSystemPendingCount] = useState(0);
@@ -3070,70 +3572,128 @@ export default function App() {
   const [systemPendingReports, setSystemPendingReports] = useState<any[]>([]);
   const [allSystemReports, setAllSystemReports] = useState<any[]>([]);
   const [newsList, setNewsList] = useState<any[]>([]);
+  const [newsDbError, setNewsDbError] = useState<string | null>(null);
 
   const fetchNewsList = async () => {
-    if (!supabase) return;
+    const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+    
+    if (!supabase) {
+      setNewsList(local);
+      return;
+    }
+
     try {
       const { data, error } = await supabase
         .from("news")
         .select("*")
         .order("created_at", { ascending: false });
       
-      if (data && data.length > 0) {
-        setNewsList(data);
+      if (error) throw error;
+
+      if (data) {
+        setNewsDbError(null);
+        // Combinar os itens do banco com os do localStorage para não perder nada de teste local
+        const merged = [...data];
+        
+        local.forEach((localItem: any) => {
+          const exists = merged.some(
+            (dbItem: any) => 
+              dbItem.id === localItem.id || 
+              (dbItem.title === localItem.title && dbItem.description === localItem.description)
+          );
+          if (!exists) {
+            merged.push(localItem);
+          }
+        });
+
+        // Ordenar as notícias combinadas pela data de criação descrescente
+        merged.sort((a, b) => {
+          const dateA = new Date(a.created_at || 0).getTime();
+          const dateB = new Date(b.created_at || 0).getTime();
+          return dateB - dateA;
+        });
+
+        // Salvar cópia mesclada atualizada no cache local do navegador
+        localStorage.setItem("commuaria_news", JSON.stringify(merged));
+        setNewsList(merged);
       } else {
-        const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
         setNewsList(local);
       }
-    } catch (err) {
-      console.error("Erro ao carregar notícias:", err);
-      const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+    } catch (err: any) {
+      console.error("Erro ao carregar notícias do Supabase, usando local:", err);
+      if (err && (err.code === "42P01" || (err.message && err.message.includes("relation \"news\" does not exist")))) {
+        setNewsDbError("A tabela 'news' não existe no banco de dados do Supabase. Use o script SQL fornecido para criá-la.");
+      } else {
+        setNewsDbError("Não foi possível conectar ao banco de dados para sincronizar as notícias. Carregando dados do navegador.");
+      }
       setNewsList(local);
     }
   };
 
   const handleAddNews = async (title: string, description: string, category: string) => {
+    const newRecord = {
+      id: "news_" + Math.random().toString(36).substring(2, 9),
+      title,
+      description,
+      category,
+      created_at: new Date().toISOString()
+    };
+
+    // 1. Sempre salvar no LocalStorage primeiro para garantir persistência imediata e robusta à falhas
+    const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+    local.unshift(newRecord);
+    localStorage.setItem("commuaria_news", JSON.stringify(local));
+    setNewsList(local);
+
     if (!supabase) return;
+
     try {
-      const { data, error } = await supabase
+      // 2. Tentar enviar para a tabela oficial do Supabase
+      const { error } = await supabase
         .from("news")
         .insert({ title, description, category });
 
       if (error) throw error;
+      
+      // Se foi inserido com sucesso, recarrega do banco para sincronizar ids oficiais
       await fetchNewsList();
     } catch (err) {
-      console.error("Erro ao adicionar notícia:", err);
-      // Fallback update in local storage for robust offline use
-      const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
-      const newRecord = {
-        id: 'news_' + Math.random().toString(36).substring(2, 9),
-        title,
-        description,
-        category,
-        created_at: new Date().toISOString()
-      };
-      local.unshift(newRecord);
-      localStorage.setItem("commuaria_news", JSON.stringify(local));
-      setNewsList(local);
+      console.error("Erro ao sincronizar notícia no Supabase (salvo no cache do navegador):", err);
+      // Já está persistido localmente e visível para o usuário, não há perda de dados!
     }
   };
 
   const handleDeleteNews = async (newsId: string) => {
+    // 1. Remover do cache local do navegador imediatamente
+    const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+    const filtered = local.filter((n: any) => n.id !== newsId);
+    localStorage.setItem("commuaria_news", JSON.stringify(filtered));
+    setNewsList(filtered);
+
     if (!supabase) return;
+
     try {
+      // 2. Apagar no Supabase
       const { error } = await supabase
         .from("news")
         .delete()
         .eq("id", newsId);
 
-      if (error) throw error;
+      if (error) {
+        // Se falhou por o ID local ser diferente ou RLS, tentamos apagar por título correspondente
+        const itemToDelete = local.find((n: any) => n.id === newsId);
+        if (itemToDelete) {
+          await supabase
+            .from("news")
+            .delete()
+            .eq("title", itemToDelete.title)
+            .eq("description", itemToDelete.description);
+        }
+      }
+      
       await fetchNewsList();
     } catch (err) {
-      console.error("Erro ao apagar notícia:", err);
-      const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
-      const filtered = local.filter((n: any) => n.id !== newsId);
-      localStorage.setItem("commuaria_news", JSON.stringify(filtered));
-      setNewsList(filtered);
+      console.error("Erro ao apagar notícia no Supabase:", err);
     }
   };
 
@@ -3284,17 +3844,53 @@ export default function App() {
     if (!supabase) return;
     fetchSystemStatistics();
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    // Check for password recovery parameters in the URL hash or search parameters on startup
+    const checkRecoveryFlow = () => {
+      const hash = window.location.hash || "";
+      const search = window.location.search || "";
+      if (
+        hash.includes("type=recovery") ||
+        hash.includes("recovery") ||
+        search.includes("type=recovery") ||
+        search.includes("recovery")
+      ) {
+        console.log("Fluxo de recuperação de senha detectado na URL inicial!");
+        setForgotPasswordStep("reset");
+        setScreen("forgot-password");
+        // Clear recovery parameters from URL so they don't trigger again on reload
+        try {
+          window.history.replaceState(null, "", window.location.pathname);
+        } catch (_) {}
+      }
+    };
+    checkRecoveryFlow();
+
+    supabase.auth.getSession().then(async ({ data: { session }, error }) => {
+      if (error) {
+        console.warn("Sessão inválida detectada, limpando para evitar erros de token expirado:", error);
+        try {
+          await supabase.auth.signOut();
+        } catch (_) {}
+        return;
+      }
       if (session?.user) {
         await fetchUserData(session.user.id);
       }
+    }).catch(async (err) => {
+      console.warn("Erro ao buscar sessão inicial:", err);
+      try {
+        await supabase.auth.signOut();
+      } catch (_) {}
     });
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       fetchSystemStatistics();
-      if (session?.user) {
+      if (event === "PASSWORD_RECOVERY") {
+        setForgotPasswordStep("reset");
+        setScreen("forgot-password");
+      } else if (session?.user) {
         fetchUserData(session.user.id);
       } else {
         setIsAdmin(false);
@@ -3318,11 +3914,15 @@ export default function App() {
     if (tab === "tasks") {
       setScreen("tasks");
       // Refresh user reports when moving to tasks tab
-      supabase.auth.getSession().then(({ data: { session } }) => {
+      supabase.auth.getSession().then(({ data: { session }, error }) => {
+        if (error) {
+          console.warn("Erro ao buscar sessão ao mudar de aba:", error);
+          return;
+        }
         if (session?.user) {
           fetchUserData(session.user.id);
         }
-      });
+      }).catch(() => {});
     }
   };
 
@@ -3381,7 +3981,10 @@ export default function App() {
                     setScreen("feed");
                   }}
                   onGoToSignup={() => setScreen("signup")}
-                  onForgotPassword={() => setScreen("forgot-password")}
+                  onForgotPassword={() => {
+                    setForgotPasswordStep("email");
+                    setScreen("forgot-password");
+                  }}
                 />
               </motion.div>
             )}
@@ -3396,7 +3999,14 @@ export default function App() {
                 transition={pageTransition}
                 className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
               >
-                <ForgotPasswordView onBack={() => setScreen("login")} />
+                <ForgotPasswordView
+                  onBack={() => {
+                    setForgotPasswordStep("email");
+                    setScreen("login");
+                  }}
+                  initialStep={forgotPasswordStep}
+                  onChangeStep={(s) => setForgotPasswordStep(s)}
+                />
               </motion.div>
             )}
 
@@ -3449,6 +4059,7 @@ export default function App() {
                   newsList={newsList}
                   onAddNews={handleAddNews}
                   onDeleteNews={handleDeleteNews}
+                  newsDbError={newsDbError}
                 />
               </motion.div>
             )}
