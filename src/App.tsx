@@ -488,7 +488,7 @@ const ForgotPasswordView = ({
                 placeholder="Código"
                 value={code}
                 onChange={(e) =>
-                  setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+                  setCode(e.target.value.replace(/\D/g, "").slice(0, 8))
                 }
                 className="w-full bg-[#d2d2d2]/10 backdrop-blur-[2px] border border-white/15 rounded-full px-8 py-3.5 text-white placeholder:text-white/60 focus:outline-none focus:ring-1 focus:ring-white/20 transition-all font-serif italic text-2xl shadow-inner text-center tracking-[0.5em]"
               />
