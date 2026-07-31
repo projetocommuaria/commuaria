@@ -3620,7 +3620,7 @@ export default function App() {
         setNewsList(local);
       }
     } catch (err: any) {
-      console.error("Erro ao carregar notícias do Supabase, usando local:", err);
+      console.warn("Erro ao carregar notícias do Supabase, usando local:", err);
       if (err && (err.code === "42P01" || (err.message && err.message.includes("relation \"news\" does not exist")))) {
         setNewsDbError("A tabela 'news' não existe no banco de dados do Supabase. Use o script SQL fornecido para criá-la.");
       } else {
