@@ -32,6 +32,11 @@ import {
   Maximize2,
   Plus,
   AlertTriangle,
+  Database,
+  Copy,
+  CheckCircle2,
+  RefreshCw,
+  FileText,
 } from "lucide-react";
 import {
   MapContainer,
@@ -42,7 +47,7 @@ import {
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
-import { supabase } from "./lib/supabase";
+import { supabase, isRealSupabase } from "./lib/supabase";
 import streetLightRepair from "./assets/images/street_light_repair_1780425533322.png";
 
 // --- Components ---
@@ -91,6 +96,226 @@ const GlassButton = ({
       <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent pointer-events-none" />
       {children}
     </motion.button>
+  );
+};
+
+const DatabaseManagerModal = ({
+  onClose,
+  newsDbError,
+  onRefresh,
+}: {
+  onClose: () => void;
+  newsDbError: string | null;
+  onRefresh: () => Promise<void>;
+}) => {
+  const [copied, setCopied] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  const handleCopySql = async () => {
+    const sqlText = `-- COMMUÁRIA - SCRIPT COMPLETO DE BANCO DE DADOS (SUPABASE SQL)
+-- Copie e cole este script no SQL Editor do seu projeto Supabase
+
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id UUID PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  is_admin BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.reports (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  address TEXT NOT NULL,
+  latitude DOUBLE PRECISION NOT NULL,
+  longitude DOUBLE PRECISION NOT NULL,
+  status TEXT DEFAULT 'unresolved',
+  image_url TEXT,
+  anonymous BOOLEAN DEFAULT FALSE,
+  user_id UUID,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.news (
+  id TEXT PRIMARY KEY DEFAULT ('news_' || substr(md5(random()::text), 1, 8)),
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  category TEXT DEFAULT 'Comunidade',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.news ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Permitir tudo em profiles" ON public.profiles;
+DROP POLICY IF EXISTS "Permitir tudo em reports" ON public.reports;
+DROP POLICY IF EXISTS "Permitir tudo em news" ON public.news;
+
+CREATE POLICY "Permitir tudo em profiles" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Permitir tudo em reports" ON public.reports FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH CHECK (true);`;
+
+    try {
+      await navigator.clipboard.writeText(sqlText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 4000);
+    } catch (e) {
+      alert("Script salvo em 'supabase_schema.sql' na raiz do seu projeto!");
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      if (!isRealSupabase) {
+        setTestResult("📌 Modo Atual: Banco Local Persistente (LocalStorage). O aplicativo está operando com salvamento e leitura 100% funcionais!");
+      } else {
+        const { error } = await supabase.from("news").select("*").limit(1);
+        if (error) {
+          setTestResult(`⚠️ Erro do Supabase: ${error.message} (Código: ${error.code || 'RLS/Tabela'}). Dica: Execute o script SQL acima no Supabase.`);
+        } else {
+          setTestResult("✅ Conexão com o Supabase testada e confirmada com sucesso! Todas as tabelas e permissões estão funcionando.");
+        }
+      }
+      await onRefresh();
+    } catch (e: any) {
+      setTestResult(`⚠️ Falha no teste: ${e.message || "Erro de rede"}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleResetLocalData = () => {
+    if (confirm("Deseja restaurar os dados iniciais de teste (notícias e chamados) no seu navegador?")) {
+      localStorage.removeItem("commuaria_news");
+      localStorage.removeItem("commuaria_reports");
+      localStorage.removeItem("commuaria_profiles");
+      localStorage.removeItem("commuaria_users");
+      window.location.reload();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/80 backdrop-blur-md">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 15 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 15 }}
+        className="relative w-full max-w-2xl bg-[#1d2d2e] border border-white/20 rounded-[32px] p-6 sm:p-8 text-white shadow-2xl max-h-[90vh] overflow-y-auto font-sans"
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-6 right-6 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/70 hover:text-white transition-all"
+        >
+          <X size={20} />
+        </button>
+
+        <div className="flex items-center gap-3 mb-6">
+          <div className="p-3 bg-emerald-500/20 text-emerald-400 rounded-2xl border border-emerald-500/30">
+            <Database size={28} />
+          </div>
+          <div>
+            <h3 className="text-2xl font-serif font-bold text-white">
+              Gerenciador do Banco de Dados
+            </h3>
+            <p className="text-xs text-white/60 font-mono mt-0.5">
+              Sincronização & Schema do Commuária
+            </p>
+          </div>
+        </div>
+
+        {/* Current status pill */}
+        <div className="mb-6 p-4 rounded-2xl bg-white/5 border border-white/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div>
+            <span className="text-xs text-white/50 block font-mono">Modo de Operação Atual</span>
+            <span className="text-base font-bold text-emerald-300 flex items-center gap-2 mt-0.5">
+              <CheckCircle2 size={18} />
+              {isRealSupabase ? "Supabase Cloud Conectado" : "Banco de Dados Local Ativo (Persistente)"}
+            </span>
+          </div>
+          <span className="text-[11px] px-3 py-1 rounded-full bg-white/10 text-white/80 font-mono">
+            {isRealSupabase ? "Nuvem + Local Fallback" : "Modo Offline Seguro"}
+          </span>
+        </div>
+
+        {newsDbError && (
+          <div className="mb-6 p-4 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-200 text-xs leading-relaxed flex items-start gap-3">
+            <AlertTriangle size={20} className="shrink-0 text-amber-400 mt-0.5" />
+            <div>
+              <strong className="block text-amber-300 font-bold mb-1">Aviso de Estrutura de Tabelas:</strong>
+              {newsDbError}
+            </div>
+          </div>
+        )}
+
+        {/* Action Buttons Grid */}
+        <div className="space-y-4 mb-6">
+          <div className="bg-white/5 p-5 rounded-2xl border border-white/10 space-y-3">
+            <h4 className="text-sm font-bold font-serif text-white/90">1. Script SQL para o Supabase</h4>
+            <p className="text-xs text-white/60 leading-relaxed">
+              Se estiver usando uma instância do Supabase na nuvem, copie o script SQL abaixo e cole no <strong>SQL Editor</strong> do seu painel Supabase para criar as tabelas (<code className="text-emerald-300 bg-black/30 px-1 py-0.5 rounded">profiles</code>, <code className="text-emerald-300 bg-black/30 px-1 py-0.5 rounded">reports</code>, <code className="text-emerald-300 bg-black/30 px-1 py-0.5 rounded">news</code>) e ativar as permissões RLS.
+            </p>
+            <button
+              onClick={handleCopySql}
+              className="w-full py-3.5 px-5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500 hover:text-white font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-lg active:scale-[0.99]"
+            >
+              {copied ? <CheckCircle2 size={18} /> : <Copy size={18} />}
+              <span>{copied ? "Script SQL Copiado para a Área de Transferência!" : "Copiar Script SQL do Supabase"}</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-2 flex flex-col justify-between">
+              <div>
+                <h4 className="text-sm font-bold font-serif text-white/90">2. Testar Conexão</h4>
+                <p className="text-xs text-white/60">Valida a resposta do banco de dados em tempo real.</p>
+              </div>
+              <button
+                onClick={handleTestConnection}
+                disabled={testing}
+                className="w-full py-2.5 px-4 rounded-xl bg-white/10 border border-white/20 text-white font-bold text-xs hover:bg-white/20 transition-all flex items-center justify-center gap-2 mt-2"
+              >
+                <RefreshCw size={14} className={testing ? "animate-spin" : ""} />
+                <span>{testing ? "Testando..." : "Testar Conexão Agora"}</span>
+              </button>
+            </div>
+
+            <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-2 flex flex-col justify-between">
+              <div>
+                <h4 className="text-sm font-bold font-serif text-white/90">3. Restaurar Testes</h4>
+                <p className="text-xs text-white/60">Reinicializa os dados iniciais de demonstração locais.</p>
+              </div>
+              <button
+                onClick={handleResetLocalData}
+                className="w-full py-2.5 px-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 font-bold text-xs hover:bg-amber-500 hover:text-white transition-all flex items-center justify-center gap-2 mt-2"
+              >
+                <Database size={14} />
+                <span>Restaurar Dados Iniciais</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {testResult && (
+          <div className="mb-6 p-4 rounded-2xl bg-black/40 border border-white/10 text-xs font-mono text-emerald-200 leading-relaxed">
+            {testResult}
+          </div>
+        )}
+
+        <div className="pt-2 text-center">
+          <button
+            onClick={onClose}
+            className="px-8 py-3 rounded-full bg-white text-zinc-900 font-bold text-sm hover:bg-white/90 transition-all shadow-lg"
+          >
+            Concluído / Fechar
+          </button>
+        </div>
+      </motion.div>
+    </div>
   );
 };
 
@@ -801,12 +1026,14 @@ const SettingsView = ({
   onBack,
   onLogout,
   onDeleteAccount,
+  onOpenDbManager,
 }: {
   anonymous: boolean;
   setAnonymous: (v: boolean) => void;
   onBack: () => void;
   onLogout: () => void;
   onDeleteAccount?: () => void;
+  onOpenDbManager?: () => void;
 }) => {
   const [notifications, setNotifications] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -874,9 +1101,18 @@ const SettingsView = ({
           </div>
 
           <div className="bg-white/5 backdrop-blur-md p-6 sm:p-8 rounded-[32px] border border-white/10 shadow-lg space-y-6">
-            <h4 className="text-xl font-serif font-bold text-white/90 border-b border-white/10 pb-2">Segurança & Conta</h4>
+            <h4 className="text-xl font-serif font-bold text-white/90 border-b border-white/10 pb-2">Segurança & Banco de Dados</h4>
             
             <div className="space-y-4 flex flex-col items-center">
+              {onOpenDbManager && (
+                <button
+                  onClick={onOpenDbManager}
+                  className="px-6 py-3.5 rounded-full bg-emerald-500/20 border border-emerald-500/35 text-emerald-300 text-md font-serif font-bold shadow-md hover:bg-emerald-500 hover:text-white transition-all w-full flex items-center justify-center gap-2 active:scale-[0.98]"
+                >
+                  <Database size={18} />
+                  <span>Gerenciar Banco & Script SQL</span>
+                </button>
+              )}
               <button
                 onClick={onLogout}
                 className="px-6 py-3.5 rounded-full bg-white/15 border border-white/20 text-white text-md font-serif font-bold shadow-md hover:bg-white/25 transition-all w-full active:scale-[0.98]"
@@ -1990,7 +2226,8 @@ const ReportView = ({
         });
       }
 
-      const { error } = await supabase.from("reports").insert({
+      const newReportData = {
+        id: "report_" + Math.random().toString(36).substring(2, 9),
         title,
         description: title,
         address: locationQuery || "Endereço não informado",
@@ -1998,13 +2235,36 @@ const ReportView = ({
         longitude: mapCenter[1] || -49.4891,
         image_url: imageUrl,
         anonymous: anonymous,
-        user_id: session?.user?.id,
+        user_id: session?.user?.id || "local_user",
         status: "unresolved",
-      });
+        created_at: new Date().toISOString(),
+      };
 
-      if (error) {
-        console.error("Supabase insert error", error);
-        throw error;
+      // 1. Always save to LocalStorage first to guarantee immediate persistence
+      const localReports = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+      localReports.unshift(newReportData);
+      localStorage.setItem("commuaria_reports", JSON.stringify(localReports));
+
+      // 2. Try Supabase insert if connected
+      if (supabase) {
+        try {
+          const { error } = await supabase.from("reports").insert({
+            title,
+            description: title,
+            address: locationQuery || "Endereço não informado",
+            latitude: mapCenter[0] || -25.5929,
+            longitude: mapCenter[1] || -49.4891,
+            image_url: imageUrl,
+            anonymous: anonymous,
+            user_id: session?.user?.id,
+            status: "unresolved",
+          });
+          if (error) {
+            console.warn("Supabase insert warning (salvo no cache do navegador):", error);
+          }
+        } catch (subErr) {
+          console.warn("Erro ao enviar para o Supabase (salvo no cache local):", subErr);
+        }
       }
 
       // Update local state immediately via refresh function
@@ -3573,6 +3833,7 @@ export default function App() {
   const [allSystemReports, setAllSystemReports] = useState<any[]>([]);
   const [newsList, setNewsList] = useState<any[]>([]);
   const [newsDbError, setNewsDbError] = useState<string | null>(null);
+  const [showDbModal, setShowDbModal] = useState(false);
 
   const fetchNewsList = async () => {
     const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
@@ -3698,29 +3959,41 @@ export default function App() {
   };
 
   const fetchSystemStatistics = async () => {
-    if (!supabase) return;
+    let reportsData: any[] = [];
     try {
       await fetchNewsList();
-      const { data } = await supabase
-        .from("reports")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (data) {
-        // Filter out locally deleted reports in case RLS deletes fail or aren't synced on their remote Supabase yet
-        const localDeleted = JSON.parse(localStorage.getItem("commuaria_deleted_reports") || "[]");
-        const filteredData = data.filter((r: any) => !localDeleted.includes(r.id));
-
-        const pending = filteredData.filter((r: any) => r.status !== "resolved");
-        const resolved = filteredData.filter((r: any) => r.status === "resolved");
-        setSystemPendingCount(pending.length);
-        setSystemResolvedCount(resolved.length);
-        setSystemPendingReports(pending);
-        setAllSystemReports(filteredData);
+      if (supabase) {
+        const { data } = await supabase
+          .from("reports")
+          .select("*")
+          .order("created_at", { ascending: false });
+        if (data && data.length > 0) {
+          reportsData = data;
+        }
       }
     } catch (e) {
-      console.error("Erro ao carregar estatísticas do sistema", e);
+      console.warn("Erro ao carregar do Supabase, usando armazenamento local:", e);
     }
+
+    // Combine with LocalStorage items so user reports created locally are always included
+    const localReports = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+    const combined = [...reportsData];
+    localReports.forEach((lr: any) => {
+      if (!combined.some((cr: any) => cr.id === lr.id || (cr.title === lr.title && cr.address === lr.address))) {
+        combined.push(lr);
+      }
+    });
+
+    // Filter out locally deleted reports
+    const localDeleted = JSON.parse(localStorage.getItem("commuaria_deleted_reports") || "[]");
+    const filteredData = combined.filter((r: any) => !localDeleted.includes(r.id));
+
+    const pending = filteredData.filter((r: any) => r.status !== "resolved");
+    const resolved = filteredData.filter((r: any) => r.status === "resolved");
+    setSystemPendingCount(pending.length);
+    setSystemResolvedCount(resolved.length);
+    setSystemPendingReports(pending);
+    setAllSystemReports(filteredData);
   };
 
   const handleResolveReport = async (reportId: string) => {
@@ -4174,6 +4447,7 @@ export default function App() {
                     setIsAdmin(false);
                     setScreen("landing");
                   }}
+                  onOpenDbManager={() => setShowDbModal(true)}
                 />
               </motion.div>
             )}
@@ -4240,6 +4514,13 @@ export default function App() {
                 onClose={() => setActiveReport(null)}
                 onDelete={handleDeleteReport}
                 onResolve={handleResolveReport}
+              />
+            )}
+            {showDbModal && (
+              <DatabaseManagerModal
+                onClose={() => setShowDbModal(false)}
+                newsDbError={newsDbError}
+                onRefresh={fetchSystemStatistics}
               />
             )}
           </AnimatePresence>

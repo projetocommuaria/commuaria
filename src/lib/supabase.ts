@@ -4,7 +4,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 function createMockSupabaseClient(): any {
-  // Ensure we have profiles, users, and reports initialized in localStorage
+  // Ensure we have profiles, users, reports, and news initialized in localStorage
   if (typeof window !== 'undefined') {
     if (!localStorage.getItem('commuaria_users')) {
       localStorage.setItem('commuaria_users', JSON.stringify([
@@ -106,6 +106,134 @@ function createMockSupabaseClient(): any {
     listeners.forEach(cb => cb('SIGNED_IN', user ? { user } : null));
   };
 
+  // Generic chainable query builder for LocalStorage
+  class MockQueryBuilder {
+    private tableName: string;
+    private filters: Array<{ field: string; value: any }> = [];
+    private orderField: string | null = null;
+    private isAscending = false;
+    private isSingle = false;
+    private action: 'select' | 'insert' | 'update' | 'delete' = 'select';
+    private payload: any = null;
+
+    constructor(tableName: string) {
+      this.tableName = tableName;
+    }
+
+    select(_fields?: string) {
+      this.action = 'select';
+      return this;
+    }
+
+    insert(values: any) {
+      this.action = 'insert';
+      this.payload = values;
+      return this;
+    }
+
+    update(values: any) {
+      this.action = 'update';
+      this.payload = values;
+      return this;
+    }
+
+    delete() {
+      this.action = 'delete';
+      return this;
+    }
+
+    eq(field: string, value: any) {
+      this.filters.push({ field, value });
+      return this;
+    }
+
+    order(field: string, options?: { ascending?: boolean }) {
+      this.orderField = field;
+      this.isAscending = !!options?.ascending;
+      return this;
+    }
+
+    single() {
+      this.isSingle = true;
+      return this;
+    }
+
+    private execute() {
+      const key = 'commuaria_' + this.tableName;
+      let data = JSON.parse(localStorage.getItem(key) || '[]');
+
+      if (this.action === 'insert') {
+        const records = Array.isArray(this.payload) ? this.payload : [this.payload];
+        const inserted = records.map((rec: any) => ({
+          id: rec.id || ('rec_' + Math.random().toString(36).substring(2, 11)),
+          created_at: rec.created_at || new Date().toISOString(),
+          ...rec
+        }));
+        data = [...inserted, ...data];
+        localStorage.setItem(key, JSON.stringify(data));
+        return { data: inserted, error: null };
+      }
+
+      if (this.action === 'delete') {
+        let remaining = [...data];
+        this.filters.forEach(f => {
+          remaining = remaining.filter((r: any) => r[f.field] !== f.value);
+        });
+        localStorage.setItem(key, JSON.stringify(remaining));
+        return { data: null, error: null };
+      }
+
+      if (this.action === 'update') {
+        data = data.map((r: any) => {
+          const match = this.filters.every(f => r[f.field] === f.value);
+          if (match) {
+            return { ...r, ...this.payload };
+          }
+          return r;
+        });
+        localStorage.setItem(key, JSON.stringify(data));
+        return { data: null, error: null };
+      }
+
+      // Action SELECT
+      let result = [...data];
+      this.filters.forEach(f => {
+        result = result.filter((r: any) => r[f.field] === f.value);
+      });
+
+      if (this.orderField) {
+        const field = this.orderField;
+        const asc = this.isAscending;
+        result.sort((a: any, b: any) => {
+          const valA = a[field];
+          const valB = b[field];
+          if (valA > valB) return asc ? 1 : -1;
+          if (valA < valB) return asc ? -1 : 1;
+          return 0;
+        });
+      }
+
+      if (this.isSingle) {
+        if (result.length === 0) {
+          return { data: null, error: { message: 'Registro não encontrado' } };
+        }
+        return { data: result[0], error: null };
+      }
+
+      return { data: result, error: null };
+    }
+
+    then(onfulfilled: any, onrejected?: any) {
+      try {
+        const res = this.execute();
+        return Promise.resolve(onfulfilled(res));
+      } catch (err) {
+        if (onrejected) return Promise.resolve(onrejected(err));
+        return Promise.reject(err);
+      }
+    }
+  }
+
   return {
     auth: {
       async getSession() {
@@ -116,7 +244,6 @@ function createMockSupabaseClient(): any {
       },
       onAuthStateChange(callback: any) {
         listeners.push(callback);
-        // Instant trigger on subscribe
         callback('INITIAL_SESSION', currentSessionUser ? { user: currentSessionUser } : null);
         return {
           data: {
@@ -144,7 +271,6 @@ function createMockSupabaseClient(): any {
         users.push(newUser);
         localStorage.setItem('commuaria_users', JSON.stringify(users));
 
-        // Create profile
         const profiles = JSON.parse(localStorage.getItem('commuaria_profiles') || '[]');
         profiles.push({
           id: newUser.id,
@@ -167,130 +293,53 @@ function createMockSupabaseClient(): any {
         updateSession(user);
         return { data: { user }, error: null };
       },
+      async resetPasswordForEmail(email: string) {
+        const users = JSON.parse(localStorage.getItem('commuaria_users') || '[]');
+        const exists = users.some((u: any) => u.email === email);
+        if (!exists) {
+          return { error: { message: 'Nenhuma conta encontrada com este e-mail.' } };
+        }
+        return { data: {}, error: null };
+      },
+      async verifyOtp({ token }: any) {
+        if (token === '123456' || token?.length === 6) {
+          return { data: { session: { user: currentSessionUser } }, error: null };
+        }
+        return { error: { message: 'Código de verificação inválido.' } };
+      },
       async signOut() {
         updateSession(null);
         return { error: null };
       },
-      async updateUser({ data }: any) {
+      async updateUser({ password, data }: any) {
         if (!currentSessionUser) return { error: { message: 'usuário não conectado' } };
         const users = JSON.parse(localStorage.getItem('commuaria_users') || '[]');
         const profiles = JSON.parse(localStorage.getItem('commuaria_profiles') || '[]');
         
         const uIdx = users.findIndex((u: any) => u.id === currentSessionUser.id);
         if (uIdx !== -1) {
-          users[uIdx].name = data?.name || users[uIdx].name;
+          if (data?.name) users[uIdx].name = data.name;
+          if (password) users[uIdx].password = password;
           localStorage.setItem('commuaria_users', JSON.stringify(users));
         }
 
         const pIdx = profiles.findIndex((p: any) => p.id === currentSessionUser.id);
         if (pIdx !== -1) {
-          profiles[pIdx].name = data?.name || profiles[pIdx].name;
+          if (data?.name) profiles[pIdx].name = data.name;
           localStorage.setItem('commuaria_profiles', JSON.stringify(profiles));
         }
 
-        const updated = { ...currentSessionUser, name: data?.name || currentSessionUser.name };
+        const updated = { 
+          ...currentSessionUser, 
+          name: data?.name || currentSessionUser.name,
+          password: password || currentSessionUser.password
+        };
         updateSession(updated);
         return { data: { user: updated }, error: null };
       }
     },
     from(tableName: string) {
-      return {
-        select(fields?: string) {
-          const self = this;
-          return {
-            eq(field: string, value: any) {
-              const innerSelf = this;
-              return {
-                single() {
-                  const data = JSON.parse(localStorage.getItem('commuaria_' + tableName) || '[]');
-                  const record = data.find((r: any) => r[field] === value);
-                  if (!record) {
-                    return { data: null, error: { message: 'Registro não encontrado' } };
-                  }
-                  return { data: record, error: null };
-                },
-                order(orderField: string, options?: { ascending: boolean }) {
-                  let data = JSON.parse(localStorage.getItem('commuaria_' + tableName) || '[]');
-                  data = data.filter((r: any) => r[field] === value);
-                  if (orderField) {
-                    data.sort((a: any, b: any) => {
-                      const valA = a[orderField];
-                      const valB = b[orderField];
-                      const comp = valA > valB ? 1 : valA < valB ? -1 : 0;
-                      return options?.ascending ? comp : -comp;
-                    });
-                  }
-                  return Promise.resolve({ data, error: null });
-                },
-                async then(onfulfilled: any) {
-                  let data = JSON.parse(localStorage.getItem('commuaria_' + tableName) || '[]');
-                  data = data.filter((r: any) => r[field] === value);
-                  return onfulfilled({ data, error: null });
-                }
-              };
-            },
-            order(orderField: string, options?: { ascending: boolean }) {
-              let data = JSON.parse(localStorage.getItem('commuaria_' + tableName) || '[]');
-              if (orderField) {
-                data.sort((a: any, b: any) => {
-                  const valA = a[orderField];
-                  const valB = b[orderField];
-                  const comp = valA > valB ? 1 : valA < valB ? -1 : 0;
-                  return options?.ascending ? comp : -comp;
-                });
-              }
-              return {
-                async then(onfulfilled: any) {
-                  return onfulfilled({ data, error: null });
-                }
-              };
-            },
-            async single() {
-              const data = JSON.parse(localStorage.getItem('commuaria_' + tableName) || '[]');
-              if (data.length === 0) return { data: null, error: { message: 'Registro não encontrado' } };
-              return { data: data[0], error: null };
-            },
-            async then(onfulfilled: any) {
-              const data = JSON.parse(localStorage.getItem('commuaria_' + tableName) || '[]');
-              return onfulfilled({ data, error: null });
-            }
-          };
-        },
-        delete() {
-          return {
-            eq(field: string, value: any) {
-              const data = JSON.parse(localStorage.getItem('commuaria_' + tableName) || '[]');
-              const filtered = data.filter((r: any) => r[field] !== value);
-              localStorage.setItem('commuaria_' + tableName, JSON.stringify(filtered));
-              return Promise.resolve({ error: null });
-            }
-          };
-        },
-        update(values: any) {
-          return {
-            eq(field: string, value: any) {
-              const data = JSON.parse(localStorage.getItem('commuaria_' + tableName) || '[]');
-              const idx = data.findIndex((r: any) => r[field] === value);
-              if (idx !== -1) {
-                data[idx] = { ...data[idx], ...values };
-                localStorage.setItem('commuaria_' + tableName, JSON.stringify(data));
-              }
-              return Promise.resolve({ error: null });
-            }
-          };
-        },
-        insert(values: any) {
-          const data = JSON.parse(localStorage.getItem('commuaria_' + tableName) || '[]');
-          const newRecord = {
-            id: 'rec_' + Math.random().toString(36).substring(2, 11),
-            created_at: new Date().toISOString(),
-            ...values
-          };
-          data.unshift(newRecord);
-          localStorage.setItem('commuaria_' + tableName, JSON.stringify(data));
-          return Promise.resolve({ data: [newRecord], error: null });
-        }
-      };
+      return new MockQueryBuilder(tableName);
     },
     async rpc(name: string) {
       if (name === 'delete_user') {
@@ -315,9 +364,9 @@ function createMockSupabaseClient(): any {
   };
 }
 
-const isRealSupabase = 
-  supabaseUrl && 
-  supabaseAnonKey && 
+export const isRealSupabase = 
+  !!supabaseUrl && 
+  !!supabaseAnonKey && 
   supabaseUrl !== 'YOUR_SUPABASE_URL' && 
   supabaseAnonKey !== 'YOUR_SUPABASE_ANON_KEY' &&
   supabaseUrl.trim() !== '' &&
