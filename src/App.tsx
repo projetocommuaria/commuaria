@@ -254,6 +254,26 @@ CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH C
 
         {/* Action Buttons Grid */}
         <div className="space-y-4 mb-6">
+          {/* GitHub Configuration Help Box */}
+          <div className="bg-emerald-950/40 border border-emerald-500/30 p-5 rounded-2xl space-y-3">
+            <div className="flex items-center gap-2 text-emerald-400 font-serif font-bold text-sm">
+              <FileText size={18} />
+              <span>Como Funciona no GitHub e GitHub Pages?</span>
+            </div>
+            <p className="text-xs text-white/70 leading-relaxed">
+              No GitHub Pages, as variáveis do Supabase precisam ser adicionadas nos <strong>Secrets</strong> do seu repositório para que o deploy se conecte ao banco real da nuvem:
+            </p>
+            <ol className="text-xs text-white/80 space-y-1.5 list-decimal list-inside bg-black/30 p-3 rounded-xl border border-white/5 font-mono">
+              <li>No GitHub: <strong>Settings ➔ Secrets and variables ➔ Actions</strong></li>
+              <li>Adicione o Secret <code className="text-emerald-300">VITE_SUPABASE_URL</code> com a URL do seu Supabase</li>
+              <li>Adicione o Secret <code className="text-emerald-300">VITE_SUPABASE_ANON_KEY</code> com a chave anon do Supabase</li>
+              <li>Execute o script SQL abaixo no <strong>SQL Editor</strong> do Supabase</li>
+            </ol>
+            <p className="text-[11px] text-emerald-300/80 italic">
+              💡 Veja o arquivo <strong>GITHUB_DATABASE_SETUP.md</strong> na raiz do repositório para o tutorial passo a passo ilustrado.
+            </p>
+          </div>
+
           <div className="bg-white/5 p-5 rounded-2xl border border-white/10 space-y-3">
             <h4 className="text-sm font-bold font-serif text-white/90">1. Script SQL para o Supabase</h4>
             <p className="text-xs text-white/60 leading-relaxed">

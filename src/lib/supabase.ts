@@ -1,7 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+// Sanitize inputs by stripping extra quotes or whitespace
+const rawUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const rawKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+
+const supabaseUrl = rawUrl.replace(/^['"]|['"]$/g, '').trim();
+const supabaseAnonKey = rawKey.replace(/^['"]|['"]$/g, '').trim();
 
 function createMockSupabaseClient(): any {
   // Ensure we have profiles, users, reports, and news initialized in localStorage
@@ -369,9 +373,19 @@ export const isRealSupabase =
   !!supabaseAnonKey && 
   supabaseUrl !== 'YOUR_SUPABASE_URL' && 
   supabaseAnonKey !== 'YOUR_SUPABASE_ANON_KEY' &&
-  supabaseUrl.trim() !== '' &&
+  supabaseUrl.length > 10 &&
   supabaseUrl.startsWith('https://');
 
-export const supabase = isRealSupabase 
-  ? createClient(supabaseUrl, supabaseAnonKey)
-  : createMockSupabaseClient();
+function getSupabaseClient() {
+  if (!isRealSupabase) {
+    return createMockSupabaseClient();
+  }
+  try {
+    return createClient(supabaseUrl, supabaseAnonKey);
+  } catch (err) {
+    console.warn("Falha ao inicializar o cliente do Supabase, usando banco de dados local fallback:", err);
+    return createMockSupabaseClient();
+  }
+}
+
+export const supabase = getSupabaseClient();
