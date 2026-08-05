@@ -49,11 +49,11 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { supabase, isRealSupabase } from "./lib/supabase";
 import streetLightRepair from "./assets/images/street_light_repair_1780425533322.png";
-import commuariaLogo from "../logo.png";
-import logoMinimalista from "../Logo minimalista.png";
-import pexelsAshford from "../pexels-ashford-marx-1565533-7150075.jpg";
-import pexelsJerson from "../pexels-jerson-martins-1514473344-35599871.jpg";
-import pexelsNandhu from "../pexels-nandhukumar-339614.jpg";
+import commuariaLogo from "./assets/images/logo.png";
+import logoMinimalista from "./assets/images/Logo minimalista.png";
+import pexelsAshford from "./assets/images/pexels-ashford-marx-1565533-7150075.jpg";
+import pexelsJerson from "./assets/images/pexels-jerson-martins-1514473344-35599871.jpg";
+import pexelsNandhu from "./assets/images/pexels-nandhukumar-339614.jpg";
 
 // --- Components ---
 
@@ -971,6 +971,13 @@ const LandingView = ({
           alt="Commuária Logo"
           className="w-48 h-auto mx-auto mb-16 relative z-20 drop-shadow-xl"
           referrerPolicy="no-referrer"
+          onError={(e) => {
+            const target = e.currentTarget;
+            if (!target.dataset.tried) {
+              target.dataset.tried = "true";
+              target.src = "logo.png";
+            }
+          }}
         />
 
         {/* Buttons */}
@@ -1508,6 +1515,13 @@ const TasksView = ({
             alt="Logo"
             className="w-10 h-10 object-contain drop-shadow-md"
             referrerPolicy="no-referrer"
+            onError={(e) => {
+              const target = e.currentTarget;
+              if (!target.dataset.tried) {
+                target.dataset.tried = "true";
+                target.src = "Logo minimalista.png";
+              }
+            }}
           />
           <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white drop-shadow-md">
             COMMUÁRIA
@@ -1669,6 +1683,13 @@ const AdminMapView = ({
             alt="Logo"
             className="w-10 h-10 object-contain drop-shadow-md"
             referrerPolicy="no-referrer"
+            onError={(e) => {
+              const target = e.currentTarget;
+              if (!target.dataset.tried) {
+                target.dataset.tried = "true";
+                target.src = "Logo minimalista.png";
+              }
+            }}
           />
           <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white drop-shadow-md flex items-center gap-2">
             COMMUÁRIA
@@ -1925,6 +1946,13 @@ const AdminTasksView = ({
             alt="Logo"
             className="w-10 h-10 object-contain drop-shadow-md"
             referrerPolicy="no-referrer"
+            onError={(e) => {
+              const target = e.currentTarget;
+              if (!target.dataset.tried) {
+                target.dataset.tried = "true";
+                target.src = "Logo minimalista.png";
+              }
+            }}
           />
           <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white drop-shadow-md flex items-center gap-2">
             COMMUÁRIA
@@ -2344,6 +2372,13 @@ const ReportView = ({
             alt="Logo"
             className="w-10 h-10 object-contain drop-shadow-md"
             referrerPolicy="no-referrer"
+            onError={(e) => {
+              const target = e.currentTarget;
+              if (!target.dataset.tried) {
+                target.dataset.tried = "true";
+                target.src = "Logo minimalista.png";
+              }
+            }}
           />
           <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white drop-shadow-md">
             COMMUÁRIA
@@ -2602,6 +2637,13 @@ const MainFeed = ({
             alt="Logo"
             className="w-10 h-10 object-contain drop-shadow-md"
             referrerPolicy="no-referrer"
+            onError={(e) => {
+              const target = e.currentTarget;
+              if (!target.dataset.tried) {
+                target.dataset.tried = "true";
+                target.src = "Logo minimalista.png";
+              }
+            }}
           />
           <div className="flex flex-col">
             <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white">
