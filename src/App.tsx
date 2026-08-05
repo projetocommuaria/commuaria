@@ -49,6 +49,11 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { supabase, isRealSupabase } from "./lib/supabase";
 import streetLightRepair from "./assets/images/street_light_repair_1780425533322.png";
+import commuariaLogo from "../logo.png";
+import logoMinimalista from "../Logo minimalista.png";
+import pexelsAshford from "../pexels-ashford-marx-1565533-7150075.jpg";
+import pexelsJerson from "../pexels-jerson-martins-1514473344-35599871.jpg";
+import pexelsNandhu from "../pexels-nandhukumar-339614.jpg";
 
 // --- Components ---
 
@@ -407,7 +412,7 @@ const SignupView = ({
       <div
         className="absolute inset-0 z-0 bg-cover"
         style={{
-          backgroundImage: 'url("pexels-ashford-marx-1565533-7150075.jpg")',
+          backgroundImage: `url("${pexelsAshford}")`,
           backgroundPosition: "center 75%",
         }}
       />
@@ -844,8 +849,7 @@ const LoginView = ({
       <div
         className="absolute inset-0 z-0 bg-cover"
         style={{
-          backgroundImage:
-            'url("pexels-jerson-martins-1514473344-35599871.jpg")',
+          backgroundImage: `url("${pexelsJerson}")`,
           backgroundPosition: "center 85%",
         }}
       />
@@ -963,7 +967,7 @@ const LandingView = ({
       {/* Title / Header content if needed, but keeping it minimal and clean */}
       <div className="relative z-10 flex flex-col items-center text-center px-6 w-full max-w-md my-auto">
         <img
-          src="logo.png"
+          src={commuariaLogo}
           alt="Commuária Logo"
           className="w-48 h-auto mx-auto mb-16 relative z-20 drop-shadow-xl"
           referrerPolicy="no-referrer"
@@ -1500,7 +1504,7 @@ const TasksView = ({
         {/* Header */}
         <div className="absolute top-8 left-6 sm:left-10 z-20 flex items-center gap-3">
           <img
-            src="Logo%20minimalista.png"
+            src={logoMinimalista}
             alt="Logo"
             className="w-10 h-10 object-contain drop-shadow-md"
             referrerPolicy="no-referrer"
@@ -1661,7 +1665,7 @@ const AdminMapView = ({
         {/* Header Branding */}
         <div className="absolute top-8 left-6 sm:left-10 z-20 flex items-center gap-3">
           <img
-            src="Logo%20minimalista.png"
+            src={logoMinimalista}
             alt="Logo"
             className="w-10 h-10 object-contain drop-shadow-md"
             referrerPolicy="no-referrer"
@@ -1917,7 +1921,7 @@ const AdminTasksView = ({
         {/* Header branding */}
         <div className="absolute top-8 left-6 sm:left-10 z-20 flex items-center gap-3">
           <img
-            src="Logo%20minimalista.png"
+            src={logoMinimalista}
             alt="Logo"
             className="w-10 h-10 object-contain drop-shadow-md"
             referrerPolicy="no-referrer"
@@ -2336,7 +2340,7 @@ const ReportView = ({
 
         <div className="absolute top-8 left-6 sm:left-10 z-20 flex items-center gap-3">
           <img
-            src="Logo%20minimalista.png"
+            src={logoMinimalista}
             alt="Logo"
             className="w-10 h-10 object-contain drop-shadow-md"
             referrerPolicy="no-referrer"
@@ -2581,20 +2585,20 @@ const MainFeed = ({
         <div
           onClick={() =>
             onViewImage(
-              "pexels-nandhukumar-339614.jpg",
+              pexelsNandhu,
               isAdmin ? "Transformando Araucária" : "Notícias de Araucária",
             )
           }
           className="absolute inset-0 z-0 bg-cover bg-center scale-110 cursor-pointer"
           style={{
-            backgroundImage: 'url("pexels-nandhukumar-339614.jpg")',
+            backgroundImage: `url("${pexelsNandhu}")`,
           }}
         />
         <div className="absolute inset-0 z-0 bg-gradient-to-b from-black/20 via-black/10 to-[#5A635C] pointer-events-none" />
 
         <div className="absolute top-8 left-6 sm:left-10 z-20 flex items-center gap-3">
           <img
-            src="Logo%20minimalista.png"
+            src={logoMinimalista}
             alt="Logo"
             className="w-10 h-10 object-contain drop-shadow-md"
             referrerPolicy="no-referrer"
@@ -3198,7 +3202,7 @@ CREATE POLICY "Admins can delete news" ON public.news FOR DELETE USING (
             <div className="relative w-full py-12 px-6 sm:px-10 border-b border-white/10 shrink-0">
               <div 
                 className="absolute inset-0 z-0 bg-cover bg-center brightness-[0.45] saturate-[0.8]"
-                style={{ backgroundImage: 'url("pexels-nandhukumar-339614.jpg")' }}
+                style={{ backgroundImage: `url("${pexelsNandhu}")` }}
               />
               <div className="absolute inset-0 z-0 bg-gradient-to-t from-[#5A635C] via-[#5A635C]/80 to-black/20" />
               
