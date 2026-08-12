@@ -51,6 +51,7 @@ import { supabase, isRealSupabase } from "./lib/supabase";
 import streetLightRepair from "./assets/images/street_light_repair_1780425533322.png";
 import commuariaLogo from "./assets/images/logo.png";
 import logoMinimalista from "./assets/images/logo_minimalista.png";
+import { COMMUARIA_LOGO_B64, LOGO_MINIMALISTA_B64 } from "./assets/logoData";
 import fundoTelaInicio from "./assets/images/fundo_tela_de_inicio.png";
 import cidadeEntrar from "./assets/images/cidade_entrar.png";
 import entrarNaConta from "./assets/images/entrar_na_conta.png";
@@ -116,56 +117,26 @@ const SafeLogoImage = ({
   alt?: string;
   isMinimal?: boolean;
 }) => {
-  const [hasFailed, setHasFailed] = useState(false);
   const primarySrc = isMinimal ? logoMinimalista : commuariaLogo;
-
-  if (hasFailed) {
-    return isMinimal ? (
-      <div className={`flex items-center justify-center w-10 h-10 rounded-full bg-emerald-700/80 border border-emerald-400/40 text-white font-serif font-bold text-sm shadow-md ${className}`}>
-        C
-      </div>
-    ) : (
-      <div className={`flex flex-col items-center justify-center text-center p-4 ${className}`}>
-        <div className="w-16 h-16 rounded-2xl bg-emerald-700/80 border border-emerald-400/40 flex items-center justify-center text-white text-2xl font-serif font-bold shadow-xl mb-2">
-          C
-        </div>
-        <span className="text-2xl font-serif font-bold tracking-widest text-white drop-shadow-md">
-          COMMUÁRIA
-        </span>
-      </div>
-    );
-  }
+  const fallbackB64 = isMinimal ? LOGO_MINIMALISTA_B64 : COMMUARIA_LOGO_B64;
+  const [currentSrc, setCurrentSrc] = useState(primarySrc);
 
   return (
     <img
-      src={primarySrc}
+      src={currentSrc}
       alt={alt}
       className={className}
       referrerPolicy="no-referrer"
-      onError={(e) => {
-        const target = e.currentTarget;
-        const step = parseInt(target.dataset.step || "0", 10);
+      onError={() => {
         const baseUrl = import.meta.env.BASE_URL || "./";
         const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
+        const filename = isMinimal ? "logo_minimalista.png" : "logo.png";
 
-        if (step === 0) {
-          target.dataset.step = "1";
-          target.src = isMinimal
-            ? `${cleanBaseUrl}logo_minimalista.png`
-            : `${cleanBaseUrl}logo.png`;
-        } else if (step === 1) {
-          target.dataset.step = "2";
-          target.src = isMinimal
-            ? `${cleanBaseUrl}Logo minimalista.png`
-            : `${cleanBaseUrl}logo.png`;
-        } else if (step === 2) {
-          target.dataset.step = "3";
-          target.src = isMinimal ? "logo_minimalista.png" : "logo.png";
-        } else if (step === 3) {
-          target.dataset.step = "4";
-          target.src = isMinimal ? "logo.png" : "logo_minimalista.png";
-        } else {
-          setHasFailed(true);
+        if (currentSrc !== `${cleanBaseUrl}${filename}` && currentSrc !== fallbackB64) {
+          setCurrentSrc(`${cleanBaseUrl}${filename}`);
+        } else if (currentSrc !== fallbackB64) {
+          // Guaranteed Base64 image fallback - embedded image data that cannot 404
+          setCurrentSrc(fallbackB64);
         }
       }}
     />
