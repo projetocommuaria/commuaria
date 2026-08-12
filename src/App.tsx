@@ -50,10 +50,13 @@ import L from "leaflet";
 import { supabase, isRealSupabase } from "./lib/supabase";
 import streetLightRepair from "./assets/images/street_light_repair_1780425533322.png";
 import commuariaLogo from "./assets/images/logo.png";
-import logoMinimalista from "./assets/images/Logo minimalista.png";
-import pexelsAshford from "./assets/images/pexels-ashford-marx-1565533-7150075.jpg";
-import pexelsJerson from "./assets/images/pexels-jerson-martins-1514473344-35599871.jpg";
-import pexelsNandhu from "./assets/images/pexels-nandhukumar-339614.jpg";
+import logoMinimalista from "./assets/images/logo_minimalista.png";
+import fundoTelaInicio from "./assets/images/fundo_tela_de_inicio.png";
+import cidadeEntrar from "./assets/images/cidade_entrar.png";
+import entrarNaConta from "./assets/images/entrar_na_conta.png";
+import pexelsAshford from "./assets/images/pexels_ashford_marx_1565533_7150075.jpg";
+import pexelsJerson from "./assets/images/pexels_jerson_martins_1514473344_35599871.jpg";
+import pexelsNandhu from "./assets/images/pexels_nandhukumar_339614.jpg";
 
 // --- Components ---
 
@@ -845,7 +848,7 @@ const LoginView = ({
 
   return (
     <div className="relative min-h-[100dvh] sm:min-h-full w-full flex flex-col items-center justify-center overflow-hidden font-sans bg-[#162A2C]">
-      {/* Background Image - Using the newly uploaded file */}
+      {/* Background Image */}
       <div
         className="absolute inset-0 z-0 bg-cover"
         style={{
@@ -954,7 +957,7 @@ const LandingView = ({
 }) => {
   return (
     <div className="relative h-full w-full flex flex-col items-center justify-center overflow-hidden font-sans bg-deep-bg justify-between pt-20 pb-16">
-      {/* Background Image - Using the user-specified town/city entry background */}
+      {/* Background Image - Street light repair */}
       <div
         className="absolute inset-0 z-0 bg-cover bg-center"
         style={{
@@ -1132,18 +1135,9 @@ const SettingsView = ({
           </div>
 
           <div className="bg-white/5 backdrop-blur-md p-6 sm:p-8 rounded-[32px] border border-white/10 shadow-lg space-y-6">
-            <h4 className="text-xl font-serif font-bold text-white/90 border-b border-white/10 pb-2">Segurança & Banco de Dados</h4>
+            <h4 className="text-xl font-serif font-bold text-white/90 border-b border-white/10 pb-2">Segurança da Conta</h4>
             
             <div className="space-y-4 flex flex-col items-center">
-              {onOpenDbManager && (
-                <button
-                  onClick={onOpenDbManager}
-                  className="px-6 py-3.5 rounded-full bg-emerald-500/20 border border-emerald-500/35 text-emerald-300 text-md font-serif font-bold shadow-md hover:bg-emerald-500 hover:text-white transition-all w-full flex items-center justify-center gap-2 active:scale-[0.98]"
-                >
-                  <Database size={18} />
-                  <span>Gerenciar Banco & Script SQL</span>
-                </button>
-              )}
               <button
                 onClick={onLogout}
                 className="px-6 py-3.5 rounded-full bg-white/15 border border-white/20 text-white text-md font-serif font-bold shadow-md hover:bg-white/25 transition-all w-full active:scale-[0.98]"
