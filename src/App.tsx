@@ -107,6 +107,71 @@ const GlassButton = ({
   );
 };
 
+const SafeLogoImage = ({
+  className = "w-48 h-auto mx-auto mb-16 relative z-20 drop-shadow-xl",
+  alt = "Commuária Logo",
+  isMinimal = false,
+}: {
+  className?: string;
+  alt?: string;
+  isMinimal?: boolean;
+}) => {
+  const [hasFailed, setHasFailed] = useState(false);
+  const primarySrc = isMinimal ? logoMinimalista : commuariaLogo;
+
+  if (hasFailed) {
+    return isMinimal ? (
+      <div className={`flex items-center justify-center w-10 h-10 rounded-full bg-emerald-700/80 border border-emerald-400/40 text-white font-serif font-bold text-sm shadow-md ${className}`}>
+        C
+      </div>
+    ) : (
+      <div className={`flex flex-col items-center justify-center text-center p-4 ${className}`}>
+        <div className="w-16 h-16 rounded-2xl bg-emerald-700/80 border border-emerald-400/40 flex items-center justify-center text-white text-2xl font-serif font-bold shadow-xl mb-2">
+          C
+        </div>
+        <span className="text-2xl font-serif font-bold tracking-widest text-white drop-shadow-md">
+          COMMUÁRIA
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={primarySrc}
+      alt={alt}
+      className={className}
+      referrerPolicy="no-referrer"
+      onError={(e) => {
+        const target = e.currentTarget;
+        const step = parseInt(target.dataset.step || "0", 10);
+        const baseUrl = import.meta.env.BASE_URL || "./";
+        const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
+
+        if (step === 0) {
+          target.dataset.step = "1";
+          target.src = isMinimal
+            ? `${cleanBaseUrl}logo_minimalista.png`
+            : `${cleanBaseUrl}logo.png`;
+        } else if (step === 1) {
+          target.dataset.step = "2";
+          target.src = isMinimal
+            ? `${cleanBaseUrl}Logo minimalista.png`
+            : `${cleanBaseUrl}logo.png`;
+        } else if (step === 2) {
+          target.dataset.step = "3";
+          target.src = isMinimal ? "logo_minimalista.png" : "logo.png";
+        } else if (step === 3) {
+          target.dataset.step = "4";
+          target.src = isMinimal ? "logo.png" : "logo_minimalista.png";
+        } else {
+          setHasFailed(true);
+        }
+      }}
+    />
+  );
+};
+
 const DatabaseManagerModal = ({
   onClose,
   newsDbError,
@@ -969,18 +1034,9 @@ const LandingView = ({
 
       {/* Title / Header content if needed, but keeping it minimal and clean */}
       <div className="relative z-10 flex flex-col items-center text-center px-6 w-full max-w-md my-auto">
-        <img
-          src={commuariaLogo}
-          alt="Commuária Logo"
+        <SafeLogoImage
           className="w-48 h-auto mx-auto mb-16 relative z-20 drop-shadow-xl"
-          referrerPolicy="no-referrer"
-          onError={(e) => {
-            const target = e.currentTarget;
-            if (!target.dataset.tried) {
-              target.dataset.tried = "true";
-              target.src = "logo.png";
-            }
-          }}
+          alt="Commuária Logo"
         />
 
         {/* Buttons */}
@@ -1504,18 +1560,10 @@ const TasksView = ({
 
         {/* Header */}
         <div className="absolute top-8 left-6 sm:left-10 z-20 flex items-center gap-3">
-          <img
-            src={logoMinimalista}
-            alt="Logo"
+          <SafeLogoImage
+            isMinimal
             className="w-10 h-10 object-contain drop-shadow-md"
-            referrerPolicy="no-referrer"
-            onError={(e) => {
-              const target = e.currentTarget;
-              if (!target.dataset.tried) {
-                target.dataset.tried = "true";
-                target.src = "Logo minimalista.png";
-              }
-            }}
+            alt="Logo"
           />
           <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white drop-shadow-md">
             COMMUÁRIA
@@ -1672,18 +1720,10 @@ const AdminMapView = ({
 
         {/* Header Branding */}
         <div className="absolute top-8 left-6 sm:left-10 z-20 flex items-center gap-3">
-          <img
-            src={logoMinimalista}
-            alt="Logo"
+          <SafeLogoImage
+            isMinimal
             className="w-10 h-10 object-contain drop-shadow-md"
-            referrerPolicy="no-referrer"
-            onError={(e) => {
-              const target = e.currentTarget;
-              if (!target.dataset.tried) {
-                target.dataset.tried = "true";
-                target.src = "Logo minimalista.png";
-              }
-            }}
+            alt="Logo"
           />
           <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white drop-shadow-md flex items-center gap-2">
             COMMUÁRIA
@@ -1935,18 +1975,10 @@ const AdminTasksView = ({
 
         {/* Header branding */}
         <div className="absolute top-8 left-6 sm:left-10 z-20 flex items-center gap-3">
-          <img
-            src={logoMinimalista}
-            alt="Logo"
+          <SafeLogoImage
+            isMinimal
             className="w-10 h-10 object-contain drop-shadow-md"
-            referrerPolicy="no-referrer"
-            onError={(e) => {
-              const target = e.currentTarget;
-              if (!target.dataset.tried) {
-                target.dataset.tried = "true";
-                target.src = "Logo minimalista.png";
-              }
-            }}
+            alt="Logo"
           />
           <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white drop-shadow-md flex items-center gap-2">
             COMMUÁRIA
@@ -2361,18 +2393,10 @@ const ReportView = ({
         <div className="absolute inset-0 z-0 bg-gradient-to-b from-black/20 via-black/10 to-[#5A635C]" />
 
         <div className="absolute top-8 left-6 sm:left-10 z-20 flex items-center gap-3">
-          <img
-            src={logoMinimalista}
-            alt="Logo"
+          <SafeLogoImage
+            isMinimal
             className="w-10 h-10 object-contain drop-shadow-md"
-            referrerPolicy="no-referrer"
-            onError={(e) => {
-              const target = e.currentTarget;
-              if (!target.dataset.tried) {
-                target.dataset.tried = "true";
-                target.src = "Logo minimalista.png";
-              }
-            }}
+            alt="Logo"
           />
           <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white drop-shadow-md">
             COMMUÁRIA
@@ -2626,18 +2650,10 @@ const MainFeed = ({
         <div className="absolute inset-0 z-0 bg-gradient-to-b from-black/20 via-black/10 to-[#5A635C] pointer-events-none" />
 
         <div className="absolute top-8 left-6 sm:left-10 z-20 flex items-center gap-3">
-          <img
-            src={logoMinimalista}
-            alt="Logo"
+          <SafeLogoImage
+            isMinimal
             className="w-10 h-10 object-contain drop-shadow-md"
-            referrerPolicy="no-referrer"
-            onError={(e) => {
-              const target = e.currentTarget;
-              if (!target.dataset.tried) {
-                target.dataset.tried = "true";
-                target.src = "Logo minimalista.png";
-              }
-            }}
+            alt="Logo"
           />
           <div className="flex flex-col">
             <h1 className="text-xl lg:text-2xl font-serif font-bold tracking-[0.1em] text-white">
