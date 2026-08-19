@@ -376,12 +376,116 @@ export const isRealSupabase =
   supabaseUrl.length > 10 &&
   supabaseUrl.startsWith('https://');
 
+export function clearSupabaseStorageTokens() {
+  if (typeof window === 'undefined') return;
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && (key.startsWith('sb-') || key.includes('supabase.auth.token') || key === 'supabase.auth.token')) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+    localStorage.removeItem('commuaria_session_user');
+  } catch (_) {}
+}
+
+const isRefreshTokenError = (error: any) => {
+  if (!error) return false;
+  const msg = typeof error === 'string' ? error : (error.message || error.error_description || error.name || '');
+  const str = String(msg).toLowerCase();
+  return (
+    str.includes('refresh token') ||
+    str.includes('refresh_token') ||
+    str.includes('invalid_grant') ||
+    str.includes('token not found') ||
+    str.includes('already used')
+  );
+};
+
+// Global interceptors to prevent uncaught refresh token rejection crashes
+if (typeof window !== 'undefined') {
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event?.reason;
+    const msg = typeof reason === 'string' ? reason : (reason?.message || reason?.error_description || '');
+    if (isRefreshTokenError(msg)) {
+      console.warn('Stale Supabase refresh token intercepted. Clearing local credentials.');
+      clearSupabaseStorageTokens();
+      event.preventDefault();
+    }
+  });
+
+  window.addEventListener('error', (event) => {
+    const msg = event?.message || '';
+    if (isRefreshTokenError(msg)) {
+      console.warn('Stale Supabase refresh token intercepted in error listener. Clearing local credentials.');
+      clearSupabaseStorageTokens();
+      event.preventDefault();
+    }
+  });
+}
+
 function getSupabaseClient() {
   if (!isRealSupabase) {
     return createMockSupabaseClient();
   }
   try {
-    return createClient(supabaseUrl, supabaseAnonKey);
+    const realClient = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        autoRefreshToken: true,
+        persistSession: true,
+        detectSessionInUrl: true,
+      },
+    });
+
+    // Wrap getSession to catch and sanitize invalid refresh tokens gracefully
+    const originalGetSession = realClient.auth.getSession.bind(realClient.auth);
+    realClient.auth.getSession = async () => {
+      try {
+        const res = await originalGetSession();
+        if (res.error && isRefreshTokenError(res.error)) {
+          console.warn("Invalid refresh token encountered in getSession. Clearing stored auth state.", res.error);
+          clearSupabaseStorageTokens();
+          try {
+            await realClient.auth.signOut({ scope: 'local' });
+          } catch (_) {}
+          return { data: { session: null }, error: null };
+        }
+        return res;
+      } catch (err: any) {
+        if (isRefreshTokenError(err)) {
+          console.warn("Invalid refresh token thrown in getSession. Clearing stored auth state.", err);
+          clearSupabaseStorageTokens();
+          try {
+            await realClient.auth.signOut({ scope: 'local' });
+          } catch (_) {}
+          return { data: { session: null }, error: null };
+        }
+        return { data: { session: null }, error: err };
+      }
+    };
+
+    // Wrap getUser as well to catch invalid tokens
+    const originalGetUser = realClient.auth.getUser.bind(realClient.auth);
+    realClient.auth.getUser = async (jwt?: string) => {
+      try {
+        const res = await originalGetUser(jwt);
+        if (res.error && isRefreshTokenError(res.error)) {
+          clearSupabaseStorageTokens();
+          return { data: { user: null }, error: null };
+        }
+        return res;
+      } catch (err: any) {
+        if (isRefreshTokenError(err)) {
+          clearSupabaseStorageTokens();
+          return { data: { user: null }, error: null };
+        }
+        return { data: { user: null }, error: err };
+      }
+    };
+
+    return realClient;
   } catch (err) {
     console.warn("Falha ao inicializar o cliente do Supabase, usando banco de dados local fallback:", err);
     return createMockSupabaseClient();
