@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID PRIMARY KEY,
   name TEXT NOT NULL,
   email TEXT NOT NULL,
+  role TEXT DEFAULT 'user', -- 'user' | 'supervisor' | 'admin'
+  assigned_category TEXT,   -- Para supervisores: 'Pavimentação', 'Iluminação Pública', etc.
   is_admin BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -17,10 +19,12 @@ CREATE TABLE IF NOT EXISTS public.reports (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
   description TEXT NOT NULL,
+  category TEXT DEFAULT 'Pavimentação', -- 'Pavimentação' | 'Iluminação Pública' | 'Limpeza Urbana' | 'Saneamento' | 'Arborização' | 'Outros'
   address TEXT NOT NULL,
   latitude DOUBLE PRECISION NOT NULL,
   longitude DOUBLE PRECISION NOT NULL,
-  status TEXT DEFAULT 'unresolved',
+  status TEXT DEFAULT 'unresolved', -- 'unresolved' | 'in_analysis' | 'in_progress' | 'resolved'
+  status_notes TEXT, -- Parecer técnico / notas de atendimento do supervisor
   image_url TEXT,
   anonymous BOOLEAN DEFAULT FALSE,
   user_id UUID,

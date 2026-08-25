@@ -16,7 +16,15 @@
 
 @layer base {
   body {
-    @apply font-sans bg-deep-bg text-white antialiased;
+    @apply font-sans antialiased;
+  }
+
+  body.dark, html.dark body {
+    @apply bg-[#5A635C] text-white;
+  }
+
+  body.light, html.light body {
+    @apply bg-white text-[#183a2b];
   }
 
   ::-webkit-scrollbar {
@@ -29,21 +37,28 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(150, 150, 150, 0.3);
     border-radius: 10px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.3);
+    background: rgba(150, 150, 150, 0.5);
   }
 }
 
 @layer components {
   .frosted-glass {
-    @apply bg-glass-surface backdrop-blur-xl border border-glass-border shadow-xl;
+    @apply bg-white/10 backdrop-blur-xl border border-white/20 shadow-xl;
+  }
+
+  .frosted-glass-light {
+    @apply bg-white/85 backdrop-blur-xl border border-[#183a2b]/10 shadow-[0_10px_30px_-5px_rgba(24,58,43,0.08),0_4px_12px_-2px_rgba(0,0,0,0.04)] text-[#183a2b];
   }
   
+  .card-shadow-light {
+    @apply bg-white/90 backdrop-blur-xl border border-[#183a2b]/10 shadow-[0_10px_30px_-5px_rgba(24,58,43,0.08),0_4px_12px_-2px_rgba(0,0,0,0.04)] hover:shadow-[0_16px_36px_-6px_rgba(24,58,43,0.12),0_6px_16px_-2px_rgba(0,0,0,0.05)];
+  }
+
   .mesh-blob {
     @apply absolute rounded-full blur-[120px] pointer-events-none;
   }

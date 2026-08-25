@@ -8,19 +8,13 @@ const supabaseUrl = rawUrl.replace(/^['"]|['"]$/g, '').trim();
 const supabaseAnonKey = rawKey.replace(/^['"]|['"]$/g, '').trim();
 
 function createMockSupabaseClient(): any {
-  // Ensure we have profiles, users, reports, and news initialized in localStorage
+  // Ensure we have reports, and news initialized in localStorage
   if (typeof window !== 'undefined') {
     if (!localStorage.getItem('commuaria_users')) {
-      localStorage.setItem('commuaria_users', JSON.stringify([
-        { id: 'u1', email: 'cidadao@commuaria.com', password: '123456', name: 'Cidadão de Araucária', is_admin: false },
-        { id: 'u2', email: 'admin@commuaria.com', password: 'admin123', name: 'Administrador Municipal', is_admin: true }
-      ]));
+      localStorage.setItem('commuaria_users', JSON.stringify([]));
     }
     if (!localStorage.getItem('commuaria_profiles')) {
-      localStorage.setItem('commuaria_profiles', JSON.stringify([
-        { id: 'u1', name: 'Cidadão de Araucária', email: 'cidadao@commuaria.com', is_admin: false, created_at: new Date().toISOString() },
-        { id: 'u2', name: 'Administrador Municipal', email: 'admin@commuaria.com', is_admin: true, created_at: new Date().toISOString() }
-      ]));
+      localStorage.setItem('commuaria_profiles', JSON.stringify([]));
     }
     if (!localStorage.getItem('commuaria_news')) {
       localStorage.setItem('commuaria_news', JSON.stringify([
@@ -46,10 +40,12 @@ function createMockSupabaseClient(): any {
           id: "mock-r1",
           title: "Buraco Profundo na Via",
           description: "Buraco profundo na pista na Rua Ceará, oferecendo perigo aos motoristas e pedestres.",
+          category: "Pavimentação",
           address: "Rua Ceará, Iguaçu, Araucária - PR",
           latitude: -25.5901,
           longitude: -49.4851,
-          status: "unresolved",
+          status: "in_progress",
+          status_notes: "Equipe técnica vistoriou o local. Recapeamento asfáltico programado.",
           image_url: "https://images.unsplash.com/photo-1515162816999-a0c47dc192f7?q=80&w=800",
           anonymous: false,
           user_id: "u1",
@@ -59,10 +55,12 @@ function createMockSupabaseClient(): any {
           id: "mock-r2",
           title: "Poste sem Iluminação Pública",
           description: "Lâmpada queimada há mais de uma semana em frente ao número 340.",
+          category: "Iluminação Pública",
           address: "Avenida Victor do Amaral, Centro, Araucária - PR",
           latitude: -25.5925,
           longitude: -49.4812,
           status: "unresolved",
+          status_notes: null,
           image_url: "https://images.unsplash.com/photo-1542838132-92c53300491e?q=80&w=800",
           anonymous: true,
           user_id: "u2",
@@ -72,14 +70,46 @@ function createMockSupabaseClient(): any {
           id: "mock-r3",
           title: "Vazamento de Água Limpa",
           description: "Vazamento contínuo correndo pela calçada perto do parque municipal.",
+          category: "Saneamento",
           address: "Rua Ceará, Iguaçu, Araucária - PR",
           latitude: -25.5885,
           longitude: -49.4891,
           status: "resolved",
+          status_notes: "Válvula e tubulação reparadas com sucesso pela equipe de saneamento.",
           image_url: "https://images.unsplash.com/photo-1517436073-3b12361ac952?q=80&w=800",
           anonymous: false,
           user_id: "u1",
           created_at: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString()
+        },
+        {
+          id: "mock-r4",
+          title: "Galhos Caídos Bloqueando Calçada",
+          description: "Galhos grandes caíram após temporal e estão bloqueando a passagem de pedestres e cadeirantes.",
+          category: "Arborização",
+          address: "Rua Presidente Costa e Silva, Araucária - PR",
+          latitude: -25.5940,
+          longitude: -49.4830,
+          status: "in_analysis",
+          status_notes: "Equipe de arborização e poda notificada para desobstrução da via.",
+          image_url: "https://images.unsplash.com/photo-1542601906990-b4d3fb778b09?q=80&w=800",
+          anonymous: false,
+          user_id: "u1",
+          created_at: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString()
+        },
+        {
+          id: "mock-r5",
+          title: "Entulho e Descarte Irregular em Terreno",
+          description: "Acúmulo de móveis velhos e entulho na esquina, atraindo insetos e obstruindo o passeio público.",
+          category: "Limpeza Urbana",
+          address: "Rua Minas Gerais, Araucária - PR",
+          latitude: -25.5870,
+          longitude: -49.4880,
+          status: "unresolved",
+          status_notes: null,
+          image_url: "https://images.unsplash.com/photo-1611284446314-60a58ac0deb9?q=80&w=800",
+          anonymous: false,
+          user_id: "u1",
+          created_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
         }
       ]));
     }
@@ -270,7 +300,9 @@ function createMockSupabaseClient(): any {
           email,
           password,
           name: options?.data?.name || 'Novo Usuário',
-          is_admin: false
+          role: options?.data?.role || 'user',
+          assigned_category: options?.data?.assigned_category || null,
+          is_admin: options?.data?.role === 'admin' || false
         };
         users.push(newUser);
         localStorage.setItem('commuaria_users', JSON.stringify(users));
@@ -280,7 +312,9 @@ function createMockSupabaseClient(): any {
           id: newUser.id,
           name: newUser.name,
           email: newUser.email,
-          is_admin: false,
+          role: newUser.role,
+          assigned_category: newUser.assigned_category,
+          is_admin: newUser.is_admin,
           created_at: new Date().toISOString()
         });
         localStorage.setItem('commuaria_profiles', JSON.stringify(profiles));
@@ -391,10 +425,15 @@ export function clearSupabaseStorageTokens() {
   } catch (_) {}
 }
 
-const isRefreshTokenError = (error: any) => {
+const isRefreshTokenError = (error: any): boolean => {
   if (!error) return false;
-  const msg = typeof error === 'string' ? error : (error.message || error.error_description || error.name || '');
-  const str = String(msg).toLowerCase();
+  let msg = '';
+  if (typeof error === 'string') {
+    msg = error;
+  } else if (typeof error === 'object') {
+    msg = `${error.message || ''} ${error.error_description || ''} ${error.name || ''} ${error.error || ''}`;
+  }
+  const str = msg.toLowerCase();
   return (
     str.includes('refresh token') ||
     str.includes('refresh_token') ||
@@ -404,24 +443,36 @@ const isRefreshTokenError = (error: any) => {
   );
 };
 
-// Global interceptors to prevent uncaught refresh token rejection crashes
+// Global interceptors to prevent uncaught refresh token rejection crashes & console error noise
 if (typeof window !== 'undefined') {
+  const originalConsoleError = console.error.bind(console);
+  console.error = (...args: any[]) => {
+    const hasRefreshErr = args.some((arg) => isRefreshTokenError(arg));
+    if (hasRefreshErr) {
+      console.warn('Stale Supabase session detected. Cleaned local tokens.');
+      clearSupabaseStorageTokens();
+      return;
+    }
+    originalConsoleError(...args);
+  };
+
   window.addEventListener('unhandledrejection', (event) => {
     const reason = event?.reason;
-    const msg = typeof reason === 'string' ? reason : (reason?.message || reason?.error_description || '');
-    if (isRefreshTokenError(msg)) {
+    if (isRefreshTokenError(reason)) {
       console.warn('Stale Supabase refresh token intercepted. Clearing local credentials.');
       clearSupabaseStorageTokens();
       event.preventDefault();
+      event.stopPropagation();
     }
   });
 
   window.addEventListener('error', (event) => {
-    const msg = event?.message || '';
+    const msg = event?.message || event?.error;
     if (isRefreshTokenError(msg)) {
       console.warn('Stale Supabase refresh token intercepted in error listener. Clearing local credentials.');
       clearSupabaseStorageTokens();
       event.preventDefault();
+      event.stopPropagation();
     }
   });
 }
@@ -436,6 +487,43 @@ function getSupabaseClient() {
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: true,
+        storage: {
+          getItem: (key: string) => {
+            try {
+              if (typeof window === 'undefined') return null;
+              const val = window.localStorage.getItem(key);
+              if (!val) return null;
+              try {
+                const parsed = JSON.parse(val);
+                // If the token is empty or invalid
+                if (parsed && typeof parsed === 'object' && !parsed.access_token && !parsed.refresh_token) {
+                  window.localStorage.removeItem(key);
+                  return null;
+                }
+              } catch (_) {
+                window.localStorage.removeItem(key);
+                return null;
+              }
+              return val;
+            } catch (_) {
+              return null;
+            }
+          },
+          setItem: (key: string, value: string) => {
+            try {
+              if (typeof window !== 'undefined') {
+                window.localStorage.setItem(key, value);
+              }
+            } catch (_) {}
+          },
+          removeItem: (key: string) => {
+            try {
+              if (typeof window !== 'undefined') {
+                window.localStorage.removeItem(key);
+              }
+            } catch (_) {}
+          },
+        },
       },
     });
 
@@ -445,7 +533,6 @@ function getSupabaseClient() {
       try {
         const res = await originalGetSession();
         if (res.error && isRefreshTokenError(res.error)) {
-          console.warn("Invalid refresh token encountered in getSession. Clearing stored auth state.", res.error);
           clearSupabaseStorageTokens();
           try {
             await realClient.auth.signOut({ scope: 'local' });
@@ -455,7 +542,6 @@ function getSupabaseClient() {
         return res;
       } catch (err: any) {
         if (isRefreshTokenError(err)) {
-          console.warn("Invalid refresh token thrown in getSession. Clearing stored auth state.", err);
           clearSupabaseStorageTokens();
           try {
             await realClient.auth.signOut({ scope: 'local' });
@@ -463,6 +549,31 @@ function getSupabaseClient() {
           return { data: { session: null }, error: null };
         }
         return { data: { session: null }, error: err };
+      }
+    };
+
+    // Wrap refreshSession
+    const originalRefreshSession = realClient.auth.refreshSession.bind(realClient.auth);
+    realClient.auth.refreshSession = async (currentSession?: any) => {
+      try {
+        const res = await originalRefreshSession(currentSession);
+        if (res.error && isRefreshTokenError(res.error)) {
+          clearSupabaseStorageTokens();
+          try {
+            await realClient.auth.signOut({ scope: 'local' });
+          } catch (_) {}
+          return { data: { session: null, user: null }, error: null };
+        }
+        return res;
+      } catch (err: any) {
+        if (isRefreshTokenError(err)) {
+          clearSupabaseStorageTokens();
+          try {
+            await realClient.auth.signOut({ scope: 'local' });
+          } catch (_) {}
+          return { data: { session: null, user: null }, error: null };
+        }
+        return { data: { session: null, user: null }, error: err };
       }
     };
 
