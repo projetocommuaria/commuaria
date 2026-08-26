@@ -36,6 +36,8 @@ interface SupervisorWorkOrderViewProps {
   onTabChange?: (tab: "home" | "report" | "tasks") => void;
   onGoToProfile?: () => void;
   onGoToSettings?: () => void;
+  onUpdateReportStatus?: (reportId: string, newStatus: string, notes?: string) => Promise<void>;
+  onViewReportDetails?: (report: any) => void;
 }
 
 export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = ({
@@ -46,11 +48,13 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
   onTabChange,
   onGoToProfile,
   onGoToSettings,
+  onUpdateReportStatus,
+  onViewReportDetails,
 }) => {
   const { isDark } = useTheme();
   const assignedCategory = category || user?.assigned_category || "Pavimentação";
 
-  const [activeSubTab, setActiveSubTab] = useState<"new_order" | "history">("new_order");
+  const [activeSubTab, setActiveSubTab] = useState<"new_order" | "citizen_reports" | "history">("citizen_reports");
   const [workOrders, setWorkOrders] = useState<WorkOrderItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -90,20 +94,44 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
       : "ZEL";
 
   // Load Work Orders from LocalStorage & Supabase
-  const loadWorkOrders = () => {
+  const loadWorkOrders = async () => {
     try {
+      let dbOrders: WorkOrderItem[] = [];
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from("work_orders")
+            .select("*")
+            .order("created_at", { ascending: false });
+          if (!error && data) {
+            dbOrders = data;
+          }
+        } catch (dbErr) {
+          console.warn("Tabela work_orders no Supabase:", dbErr);
+        }
+      }
+
       const stored = localStorage.getItem("commuaria_work_orders");
-      let list: WorkOrderItem[] = stored ? JSON.parse(stored) : [];
+      let localList: WorkOrderItem[] = stored ? JSON.parse(stored) : [];
+
+      const merged = [...dbOrders];
+      localList.forEach((lo) => {
+        if (!merged.some((m) => m.id === lo.id || m.order_number === lo.order_number)) {
+          merged.push(lo);
+        }
+      });
 
       // Filter by sector if assigned
+      let filtered = merged;
       if (assignedCategory) {
-        list = list.filter(
-          (o) =>
-            !o.category ||
-            o.category.toLowerCase() === assignedCategory.toLowerCase()
-        );
+        const normAssigned = assignedCategory.toLowerCase();
+        filtered = filtered.filter((o) => {
+          if (!o.category) return true;
+          const oCat = o.category.toLowerCase();
+          return oCat.includes(normAssigned) || normAssigned.includes(oCat);
+        });
       }
-      setWorkOrders(list);
+      setWorkOrders(filtered);
     } catch (e) {
       console.warn("Erro ao carregar Ordens de Serviço:", e);
     }
@@ -166,7 +194,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         created_at: new Date().toISOString(),
       };
 
-      // 1. Save to commuaria_work_orders
+      // 1. Save to commuaria_work_orders in local storage
       const existingOrders: WorkOrderItem[] = JSON.parse(
         localStorage.getItem("commuaria_work_orders") || "[]"
       );
@@ -202,6 +230,30 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
       // 3. Persist to Supabase if connected
       if (supabase) {
         try {
+          // A. Insert into dedicated work_orders table
+          const { error: woErr } = await supabase.from("work_orders").insert([{
+            id: newOrderId,
+            order_number: generatedOrderNumber,
+            title: orderTitle.trim(),
+            category: assignedCategory,
+            address: orderAddress.trim(),
+            priority: orderPriority,
+            deadline: orderDeadline,
+            assigned_team: newOrder.assigned_team,
+            maintenance_type: orderType,
+            description: orderDescription.trim(),
+            technical_instructions: technicalInstructions.trim(),
+            status: "dispatched",
+            status_notes: `O.S. ${generatedOrderNumber} despachada para ${newOrder.assigned_team}.`,
+            supervisor_name: user?.name || "Supervisor do Setor",
+            supervisor_email: user?.email || "",
+            linked_report_id: linkedReportId || null,
+          }]);
+          if (woErr) {
+            console.warn("Supabase work_orders insert notice:", woErr);
+          }
+
+          // B. Insert into reports table
           await supabase.from("reports").insert([
             {
               id: newOrderId,
@@ -213,6 +265,11 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
               longitude: reportRepresentation.longitude,
               status: "in_progress",
               status_notes: reportRepresentation.status_notes,
+              is_work_order: true,
+              work_order_number: generatedOrderNumber,
+              assigned_team: newOrder.assigned_team,
+              priority: orderPriority,
+              deadline: orderDeadline,
             },
           ]);
         } catch (dbErr) {
@@ -228,7 +285,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
       setOrderDescription("");
       setTechnicalInstructions("");
       setLinkedReportId("");
-      loadWorkOrders();
+      await loadWorkOrders();
 
       if (onRefresh) {
         await onRefresh();
@@ -245,7 +302,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
     }
   };
 
-  const handleUpdateOrderStatus = (
+  const handleUpdateOrderStatus = async (
     orderId: string,
     newStatus: "open" | "dispatched" | "in_progress" | "completed" | "cancelled",
     notes?: string
@@ -289,13 +346,38 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         JSON.stringify(updatedReports)
       );
 
-      loadWorkOrders();
+      // Sync with Supabase
+      if (supabase) {
+        try {
+          await supabase
+            .from("work_orders")
+            .update({
+              status: newStatus,
+              status_notes: notes,
+              completed_at: newStatus === "completed" ? new Date().toISOString() : null,
+            })
+            .eq("id", orderId);
+
+          await supabase
+            .from("reports")
+            .update({
+              status: newStatus === "completed" ? "resolved" : "in_progress",
+              status_notes: notes || `O.S. atualizada para ${newStatus}.`,
+              resolved_at: newStatus === "completed" ? new Date().toISOString() : null,
+            })
+            .eq("id", orderId);
+        } catch (dbErr) {
+          console.warn("Supabase update error:", dbErr);
+        }
+      }
+
+      await loadWorkOrders();
       if (selectedOrderDetail && selectedOrderDetail.id === orderId) {
         setSelectedOrderDetail((prev) =>
           prev ? { ...prev, status: newStatus, status_notes: notes || prev.status_notes } : null
         );
       }
-      if (onRefresh) onRefresh();
+      if (onRefresh) await onRefresh();
     } catch (e) {
       console.warn("Erro ao atualizar status da O.S.:", e);
     }
@@ -307,12 +389,30 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // Pending sector citizen reports for linking
-  const pendingSectorReports = reports.filter(
-    (r) =>
-      !r.is_work_order &&
-      r.status !== "resolved" &&
-      r.category?.toLowerCase() === assignedCategory.toLowerCase()
+  // Normalization helper for resilient sector matching
+  const normalizeSector = (cat?: string) => {
+    if (!cat) return "";
+    const c = cat.toLowerCase();
+    if (c.includes("pav") || c.includes("via") || c.includes("asfalt") || c.includes("burac")) return "pavimentação";
+    if (c.includes("ilu") || c.includes("luz") || c.includes("post") || c.includes("lamp")) return "iluminação pública";
+    if (c.includes("limp") || c.includes("lixo") || c.includes("entulh") || c.includes("varri")) return "limpeza urbana";
+    if (c.includes("san") || c.includes("esgot") || c.includes("bueir") || c.includes("pluvi")) return "saneamento";
+    if (c.includes("arb") || c.includes("arvor") || c.includes("poda") || c.includes("praca")) return "arborização";
+    return c.trim();
+  };
+
+  const currentSectorNormalized = normalizeSector(assignedCategory);
+
+  // All sector citizen reports (excluding work orders themselves)
+  const sectorCitizenReports = reports.filter((r) => {
+    if (r.is_work_order) return false;
+    const rSector = normalizeSector(r.category || r.title);
+    return !rSector || rSector === currentSectorNormalized || !currentSectorNormalized;
+  });
+
+  // Pending sector citizen reports for linking / action
+  const pendingSectorReports = sectorCitizenReports.filter(
+    (r) => r.status !== "resolved"
   );
 
   // Filtered orders for history tab
@@ -472,8 +572,24 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         {/* Sub-Tab Navigation */}
         <div className="max-w-4xl mx-auto mt-4 flex gap-2">
           <button
+            onClick={() => setActiveSubTab("citizen_reports")}
+            className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl text-xs sm:text-sm font-semibold border flex items-center justify-center gap-2 transition-all ${
+              activeSubTab === "citizen_reports"
+                ? isDark
+                  ? "bg-white/20 border-white/30 text-white shadow-md"
+                  : "bg-[#183a2b] border-[#183a2b] text-white shadow-md"
+                : isDark
+                ? "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+                : "bg-black/5 border-black/10 text-[#2d4a3b]/70 hover:bg-black/10"
+            }`}
+          >
+            <AlertTriangle size={15} className="text-amber-500" />
+            <span>Chamados da População ({sectorCitizenReports.length})</span>
+          </button>
+
+          <button
             onClick={() => setActiveSubTab("new_order")}
-            className={`flex-1 py-2.5 px-4 rounded-xl text-xs sm:text-sm font-semibold border flex items-center justify-center gap-2 transition-all ${
+            className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl text-xs sm:text-sm font-semibold border flex items-center justify-center gap-2 transition-all ${
               activeSubTab === "new_order"
                 ? isDark
                   ? "bg-white/20 border-white/30 text-white shadow-md"
@@ -483,12 +599,13 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
                 : "bg-black/5 border-black/10 text-[#2d4a3b]/70 hover:bg-black/10"
             }`}
           >
-            <Plus size={16} />
-            Emitir Nova O.S.
+            <Plus size={15} />
+            <span>Emitir Nova O.S.</span>
           </button>
+
           <button
             onClick={() => setActiveSubTab("history")}
-            className={`flex-1 py-2.5 px-4 rounded-xl text-xs sm:text-sm font-semibold border flex items-center justify-center gap-2 transition-all ${
+            className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl text-xs sm:text-sm font-semibold border flex items-center justify-center gap-2 transition-all ${
               activeSubTab === "history"
                 ? isDark
                   ? "bg-white/20 border-white/30 text-white shadow-md"
@@ -498,8 +615,8 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
                 : "bg-black/5 border-black/10 text-[#2d4a3b]/70 hover:bg-black/10"
             }`}
           >
-            <FileText size={16} />
-            Ordens do Setor ({workOrders.length})
+            <FileText size={15} />
+            <span>Ordens Emitidas ({workOrders.length})</span>
           </button>
         </div>
       </div>
@@ -534,7 +651,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
                   isDark ? "text-white/60" : "text-[#2d4a3b]/70"
                 }`}
               >
-                Emita ordens de serviço diretas para as equipes de campo de Araucária.
+                Atenda ocorrências relatadas pelos moradores e emita ordens de serviço diretas.
               </p>
             </div>
           </div>
@@ -548,10 +665,24 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
               }`}
             >
               <div className="text-lg font-bold text-amber-500">
+                {pendingSectorReports.length}
+              </div>
+              <div className="text-[10px] text-neutral-500 uppercase tracking-wider font-semibold">
+                Chamados Abertos
+              </div>
+            </div>
+            <div
+              className={`px-3.5 py-2 rounded-2xl border text-center ${
+                isDark
+                  ? "bg-white/5 border-white/10"
+                  : "bg-white border-emerald-200"
+              }`}
+            >
+              <div className="text-lg font-bold text-blue-500">
                 {workOrders.filter((w) => w.status === "dispatched" || w.status === "in_progress").length}
               </div>
               <div className="text-[10px] text-neutral-500 uppercase tracking-wider font-semibold">
-                Em Campo
+                O.S. em Campo
               </div>
             </div>
             <div
@@ -582,6 +713,190 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
           <div className="p-4 rounded-2xl bg-red-500/15 border border-red-500/30 text-red-700 dark:text-red-300 text-xs font-semibold flex items-center gap-2 animate-in fade-in">
             <AlertTriangle size={18} className="shrink-0 text-red-500" />
             {errorMessage}
+          </div>
+        )}
+
+        {/* TAB 0: CHAMADOS DA POPULAÇÃO DO SETOR */}
+        {activeSubTab === "citizen_reports" && (
+          <div className="space-y-4 animate-in fade-in duration-200">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-2 border-b">
+              <div>
+                <h3
+                  className={`text-base font-bold font-serif ${
+                    isDark ? "text-white" : "text-[#183a2b]"
+                  }`}
+                >
+                  Chamados da População ({sectorCitizenReports.length})
+                </h3>
+                <p
+                  className={`text-xs ${
+                    isDark ? "text-white/60" : "text-[#2d4a3b]/70"
+                  }`}
+                >
+                  Reclamações e solicitações enviadas pelos cidadãos de Araucária para o setor de {assignedCategory}.
+                </p>
+              </div>
+
+              {pendingSectorReports.length > 0 && (
+                <button
+                  onClick={() => {
+                    const firstPending = pendingSectorReports[0];
+                    setLinkedReportId(firstPending.id);
+                    setOrderTitle(firstPending.title);
+                    setOrderAddress(firstPending.address);
+                    setOrderDescription(firstPending.description);
+                    setActiveSubTab("new_order");
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-colors"
+                >
+                  <Plus size={14} />
+                  Despachar Chamado Pendente
+                </button>
+              )}
+            </div>
+
+            {sectorCitizenReports.length === 0 ? (
+              <div
+                className={`text-center py-12 px-6 rounded-3xl border ${
+                  isDark
+                    ? "bg-white/5 border-white/10 text-white/70"
+                    : "bg-black/5 border-black/10 text-[#183a2b]"
+                }`}
+              >
+                <AlertTriangle size={36} className="mx-auto mb-2.5 opacity-40 text-amber-500" />
+                <p className="text-sm font-bold">Nenhum chamado da população registrado para este setor</p>
+                <p className="text-xs opacity-70 mt-1 max-w-sm mx-auto">
+                  Assim que os cidadãos abrirem novos chamados de {assignedCategory}, eles aparecerão listados aqui em tempo real.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {sectorCitizenReports.map((report) => {
+                  const isResolved = report.status === "resolved";
+                  const isInProgress = report.status === "in_progress" || report.status === "in_analysis";
+
+                  return (
+                    <div
+                      key={report.id}
+                      className={`p-5 rounded-3xl border shadow-sm flex flex-col justify-between gap-3 transition-all ${
+                        isDark
+                          ? "bg-white/5 border-white/10 hover:border-white/20"
+                          : "bg-white border-black/10 hover:border-emerald-600/30"
+                      }`}
+                    >
+                      <div className="space-y-2.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <span
+                            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                              isResolved
+                                ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
+                                : isInProgress
+                                ? "bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-500/30"
+                                : "bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 animate-pulse"
+                            }`}
+                          >
+                            {isResolved ? "Concluído" : isInProgress ? "Em Atendimento" : "Aguardando Vistoria"}
+                          </span>
+
+                          <span className="text-[10px] text-neutral-400 font-mono">
+                            {new Date(report.created_at || Date.now()).toLocaleDateString("pt-BR")}
+                          </span>
+                        </div>
+
+                        {report.image_url && (
+                          <div className="w-full h-36 rounded-2xl overflow-hidden bg-black/10 relative">
+                            <img
+                              src={report.image_url}
+                              alt={report.title}
+                              className="w-full h-full object-cover"
+                              referrerPolicy="no-referrer"
+                            />
+                          </div>
+                        )}
+
+                        <div>
+                          <h4
+                            className={`font-bold text-sm leading-snug ${
+                              isDark ? "text-white" : "text-[#183a2b]"
+                            }`}
+                          >
+                            {report.title}
+                          </h4>
+                          <p
+                            className={`text-xs mt-1 line-clamp-2 ${
+                              isDark ? "text-white/70" : "text-[#2d4a3b]"
+                            }`}
+                          >
+                            {report.description || report.title}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+                          <MapPin size={13} className="text-red-500 shrink-0" />
+                          <span className="truncate">{report.address || "Araucária"}</span>
+                        </div>
+
+                        {report.status_notes && (
+                          <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-800 dark:text-amber-200">
+                            <span className="font-bold">Nota Técnica: </span>
+                            <span>{report.status_notes}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Action buttons */}
+                      <div className="pt-2 border-t border-black/5 dark:border-white/5 flex flex-wrap items-center gap-2">
+                        {/* Dispatch Button */}
+                        <button
+                          onClick={() => {
+                            setLinkedReportId(report.id);
+                            setOrderTitle(report.title);
+                            setOrderAddress(report.address);
+                            setOrderDescription(report.description);
+                            setActiveSubTab("new_order");
+                          }}
+                          className="flex-1 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+                        >
+                          <Wrench size={13} />
+                          Gerar O.S.
+                        </button>
+
+                        {/* View details */}
+                        {onViewReportDetails && (
+                          <button
+                            onClick={() => onViewReportDetails(report)}
+                            className={`px-3 py-1.5 rounded-xl border text-xs font-semibold transition-colors ${
+                              isDark
+                                ? "bg-white/5 border-white/15 text-white hover:bg-white/10"
+                                : "bg-neutral-100 border-neutral-300 text-[#183a2b] hover:bg-neutral-200"
+                            }`}
+                          >
+                            Ver Detalhes
+                          </button>
+                        )}
+
+                        {/* Quick Status update */}
+                        {onUpdateReportStatus && !isResolved && (
+                          <button
+                            onClick={() =>
+                              onUpdateReportStatus(
+                                report.id,
+                                "resolved",
+                                `Atendido e vistoriado pela Supervisão de ${assignedCategory}.`
+                              )
+                            }
+                            className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/25 text-xs font-bold transition-colors"
+                            title="Marcar chamado como concluído"
+                          >
+                            <CheckCircle2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 

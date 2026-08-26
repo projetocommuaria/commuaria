@@ -47,20 +47,16 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
   const isLegacyMock = (p: any) => {
     const id = p?.id || "";
     const email = (p?.email || "").toLowerCase();
-    return (
-      id.startsWith("u_sup_") ||
-      id.startsWith("sup-") ||
-      id.startsWith("admin-system-") ||
-      id === "u1" ||
-      id === "u2" ||
-      id === "user-cidadao-001" ||
-      email === "supervisor.pav@commuaria.com" ||
-      email === "supervisor.luz@commuaria.com" ||
-      email === "supervisor.limpeza@commuaria.com" ||
-      email === "supervisor.saneamento@commuaria.com" ||
-      email === "supervisor.arvore@commuaria.com" ||
-      email === "supervisor.arborizacao@commuaria.com"
-    );
+    const legacyIds = ["u1", "u2", "user-cidadao-001", "admin-system-001", "mock-r1", "mock-r2"];
+    const legacyEmails = [
+      "supervisor.pav@commuaria.com",
+      "supervisor.luz@commuaria.com",
+      "supervisor.limpeza@commuaria.com",
+      "supervisor.saneamento@commuaria.com",
+      "supervisor.arvore@commuaria.com",
+      "supervisor.arborizacao@commuaria.com",
+    ];
+    return legacyIds.includes(id) || legacyEmails.includes(email);
   };
 
   const loadSupervisors = async () => {
@@ -127,6 +123,19 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
     loadSupervisors();
   }, []);
 
+  const generateUUID = () => {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) {
+      try {
+        return crypto.randomUUID();
+      } catch (_) {}
+    }
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === "x" ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  };
+
   const handleCreateSupervisor = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
@@ -157,7 +166,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
         (p: any) => (p.email || "").toLowerCase() === cleanEmail
       );
 
-      let targetId = "sup_" + Math.random().toString(36).substring(2, 9);
+      let targetId = generateUUID();
       if (existingProfileIdx !== -1 && localProfiles[existingProfileIdx].id) {
         targetId = localProfiles[existingProfileIdx].id;
       } else if (existingUserIdx !== -1 && localUsers[existingUserIdx].id) {
@@ -203,19 +212,42 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
       }
       localStorage.setItem("commuaria_profiles", JSON.stringify(localProfiles));
 
-      // 2. If Supabase is connected, update/upsert profile in database
+      // 2. If Supabase is connected, register in Auth and sync to profiles table
       if (supabase) {
         try {
-          // Check if profile exists with this email first
+          let authUserId: string | null = null;
+
+          // Attempt to register in Supabase Auth if not already there
+          try {
+            const { data: authData } = await supabase.auth.signUp({
+              email: cleanEmail,
+              password: formPassword || "super123",
+              options: {
+                data: {
+                  name: cleanName,
+                  role: "supervisor",
+                  assigned_category: assignedCat,
+                },
+              },
+            });
+            if (authData?.user?.id) {
+              authUserId = authData.user.id;
+            }
+          } catch (authErr) {
+            console.warn("Supabase auth signUp warning:", authErr);
+          }
+
+          // Check if profile exists with this email in database
           const { data: existingDbProfile } = await supabase
             .from("profiles")
             .select("id")
             .eq("email", cleanEmail)
             .maybeSingle();
 
-          const dbId = existingDbProfile?.id || targetId;
+          const dbId = existingDbProfile?.id || authUserId || targetId;
 
-          await supabase.from("profiles").upsert({
+          // Upsert profile in Supabase
+          const { error: upsertErr } = await supabase.from("profiles").upsert({
             id: dbId,
             name: cleanName,
             email: cleanEmail,
@@ -223,15 +255,28 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
             assigned_category: assignedCat,
             is_admin: false,
           });
+
+          if (upsertErr) {
+            console.warn("Supabase upsert error, tentando update direto por email:", upsertErr);
+            await supabase
+              .from("profiles")
+              .update({
+                name: cleanName,
+                role: "supervisor",
+                assigned_category: assignedCat,
+                is_admin: false,
+              })
+              .eq("email", cleanEmail);
+          }
         } catch (dbErr) {
-          console.warn("Supabase upsert profile warning:", dbErr);
+          console.warn("Supabase sync warning:", dbErr);
         }
       }
 
       setFormSuccess(`Supervisor de ${formCategory} salvo com sucesso!`);
       setFormName("");
       setFormEmail("");
-      setFormPassword("");
+      setFormPassword("super123");
       setShowAddForm(false);
       await loadSupervisors();
       if (onSupervisorsChange) await onSupervisorsChange();
@@ -247,6 +292,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
       const localProfiles = JSON.parse(
         localStorage.getItem("commuaria_profiles") || "[]"
       );
+      const targetProfile = localProfiles.find((p: any) => p.id === supId);
       const updated = localProfiles.map((p: any) =>
         p.id === supId ? { ...p, assigned_category: newCategory } : p
       );
@@ -266,6 +312,13 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
           .from("profiles")
           .update({ assigned_category: newCategory })
           .eq("id", supId);
+
+        if (targetProfile?.email) {
+          await supabase
+            .from("profiles")
+            .update({ assigned_category: newCategory })
+            .eq("email", targetProfile.email.toLowerCase());
+        }
       }
 
       setEditingId(null);
@@ -284,6 +337,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
       const localProfiles = JSON.parse(
         localStorage.getItem("commuaria_profiles") || "[]"
       );
+      const targetProfile = localProfiles.find((p: any) => p.id === supId);
       const filtered = (localProfiles || []).filter((p: any) => p.id !== supId);
       localStorage.setItem("commuaria_profiles", JSON.stringify(filtered));
 
@@ -295,6 +349,9 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
 
       if (supabase) {
         await supabase.from("profiles").delete().eq("id", supId);
+        if (targetProfile?.email) {
+          await supabase.from("profiles").delete().eq("email", targetProfile.email.toLowerCase());
+        }
       }
 
       await loadSupervisors();

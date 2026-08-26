@@ -139,6 +139,8 @@ export interface ReportItem {
   image_url?: string;
   anonymous?: boolean;
   user_id?: string;
+  user_email?: string;
+  user_name?: string;
   created_at?: string;
   resolved_at?: string;
   is_work_order?: boolean;

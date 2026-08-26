@@ -343,25 +343,60 @@ const DatabaseManagerModal = ({
 -- Copie e cole este script no SQL Editor do seu projeto Supabase
 
 CREATE TABLE IF NOT EXISTS public.profiles (
-  id UUID PRIMARY KEY,
+  id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   email TEXT NOT NULL,
+  role TEXT DEFAULT 'user',
+  assigned_category TEXT,
   is_admin BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS public.reports (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY DEFAULT ('rep_' || substr(md5(random()::text), 1, 10)),
   title TEXT NOT NULL,
-  description TEXT NOT NULL,
+  description TEXT,
+  category TEXT DEFAULT 'Pavimentação',
   address TEXT NOT NULL,
   latitude DOUBLE PRECISION NOT NULL,
   longitude DOUBLE PRECISION NOT NULL,
   status TEXT DEFAULT 'unresolved',
+  status_notes TEXT,
   image_url TEXT,
   anonymous BOOLEAN DEFAULT FALSE,
-  user_id UUID,
+  user_id TEXT,
+  user_email TEXT,
+  user_name TEXT,
+  is_work_order BOOLEAN DEFAULT FALSE,
+  work_order_number TEXT,
+  assigned_team TEXT,
+  priority TEXT DEFAULT 'medium',
+  deadline TEXT,
+  maintenance_type TEXT,
+  technical_notes TEXT,
+  resolved_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.work_orders (
+  id TEXT PRIMARY KEY DEFAULT ('wo_' || substr(md5(random()::text), 1, 10)),
+  order_number TEXT NOT NULL,
+  title TEXT NOT NULL,
+  category TEXT DEFAULT 'Pavimentação',
+  address TEXT NOT NULL,
+  priority TEXT DEFAULT 'medium',
+  deadline TEXT,
+  assigned_team TEXT,
+  maintenance_type TEXT,
+  description TEXT,
+  technical_instructions TEXT,
+  status TEXT DEFAULT 'dispatched',
+  status_notes TEXT,
+  supervisor_name TEXT,
+  supervisor_email TEXT,
+  linked_report_id TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS public.news (
@@ -374,14 +409,17 @@ CREATE TABLE IF NOT EXISTS public.news (
 
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.work_orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.news ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Permitir tudo em profiles" ON public.profiles;
 DROP POLICY IF EXISTS "Permitir tudo em reports" ON public.reports;
+DROP POLICY IF EXISTS "Permitir tudo em work_orders" ON public.work_orders;
 DROP POLICY IF EXISTS "Permitir tudo em news" ON public.news;
 
 CREATE POLICY "Permitir tudo em profiles" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Permitir tudo em reports" ON public.reports FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Permitir tudo em work_orders" ON public.work_orders FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH CHECK (true);`;
 
     try {
@@ -600,7 +638,7 @@ const SignupView = ({
   onSignup,
 }: {
   onBack: () => void;
-  onSignup: (data: { name: string; email: string; password: string }) => void;
+  onSignup: (data: { id?: string; name: string; email: string; password: string }) => void;
 }) => {
   const { isDark } = useTheme();
   const [name, setName] = useState("");
@@ -616,14 +654,16 @@ const SignupView = ({
     }
     setError("");
 
+    let registeredUserId: string | undefined = undefined;
+
     if (supabase) {
       try {
         const { data, error: supaError } = await supabase.auth.signUp({
-          email,
-          password,
+          email: email.trim().toLowerCase(),
+          password: password.trim(),
           options: {
             data: {
-              name,
+              name: name.trim(),
             },
           },
         });
@@ -641,6 +681,23 @@ const SignupView = ({
           return;
         }
 
+        // Save profile in Supabase profiles table
+        if (data?.user) {
+          registeredUserId = data.user.id;
+          try {
+            await supabase.from("profiles").upsert({
+              id: data.user.id,
+              name: name.trim(),
+              email: email.trim().toLowerCase(),
+              role: "user",
+              is_admin: false,
+              created_at: new Date().toISOString(),
+            });
+          } catch (pErr) {
+            console.warn("Erro ao registrar profile no Supabase:", pErr);
+          }
+        }
+
         // Se for um Supabase real com confirmação de e-mail ativada
         if (data && !data.session && data.user) {
           setError(
@@ -653,7 +710,7 @@ const SignupView = ({
       }
     }
 
-    onSignup({ name, email, password });
+    onSignup({ id: registeredUserId, name, email, password });
   };
 
   return (
@@ -1113,7 +1170,7 @@ const LoginView = ({
   onLogin: (
     role?: UserRole,
     assignedCategory?: string | null,
-    data?: { name?: string; email: string; password: string },
+    data?: { id?: string; name?: string; email: string; password: string },
   ) => void;
   onGoToSignup: () => void;
   onForgotPassword: () => void;
@@ -1136,117 +1193,190 @@ const LoginView = ({
     try {
       const cleanId = loginId.trim().toLowerCase();
 
-      // 1. Check registered database profiles in localStorage first for role/assigned_category
+      // Check if user entered a username instead of an email
+      let targetEmail = cleanId;
+      if (!targetEmail.includes("@")) {
+        if (targetEmail === "admin") {
+          targetEmail = "admin@commuaria.com";
+        } else {
+          // Check local profiles for email corresponding to name
+          const localProfiles: UserProfile[] = JSON.parse(
+            localStorage.getItem("commuaria_profiles") || "[]",
+          );
+          const foundProf = localProfiles.find(
+            (p) => (p.name || "").toLowerCase() === cleanId
+          );
+          if (foundProf?.email) {
+            targetEmail = foundProf.email.toLowerCase();
+          } else {
+            setError("Por favor, informe seu e-mail completo de cadastro.");
+            setIsSubmitting(false);
+            return;
+          }
+        }
+      }
+
+      const isMasterAdminEmail =
+        targetEmail === "admin@commuaria.com" ||
+        targetEmail === "projetocomnuaria831@gmail.com";
+
+      // 1. Authenticate with Supabase Auth
+      if (supabase) {
+        try {
+          const { data, error: supaError } = await supabase.auth.signInWithPassword({
+            email: targetEmail,
+            password: password.trim(),
+          });
+
+          if (!supaError && data?.user) {
+            // Fetch real role and assigned_category from profiles table in Supabase
+            let resolvedProfile: any = null;
+            try {
+              const { data: profile } = await supabase
+                .from("profiles")
+                .select("*")
+                .eq("id", data.user.id)
+                .maybeSingle();
+              resolvedProfile = profile;
+            } catch (e) {
+              console.warn("Erro ao buscar profile:", e);
+            }
+
+            if (!resolvedProfile?.role || resolvedProfile.role === "user") {
+              try {
+                const { data: profileByEmail } = await supabase
+                  .from("profiles")
+                  .select("*")
+                  .eq("email", targetEmail)
+                  .maybeSingle();
+                if (profileByEmail?.role && profileByEmail.role !== "user") {
+                  resolvedProfile = profileByEmail;
+                }
+              } catch (e) {
+                console.warn("Erro ao buscar profile por email:", e);
+              }
+            }
+
+            const localProfiles: UserProfile[] = JSON.parse(
+              localStorage.getItem("commuaria_profiles") || "[]",
+            );
+            const matchedLocalProfile = localProfiles.find(
+              (p) => (p.email || "").toLowerCase() === targetEmail
+            );
+
+            const finalRole: UserRole =
+              isMasterAdminEmail
+                ? "admin"
+                : (resolvedProfile?.role && resolvedProfile.role !== "user" ? resolvedProfile.role : null) ||
+                  (matchedLocalProfile?.role && matchedLocalProfile.role !== "user" ? matchedLocalProfile.role : null) ||
+                  (resolvedProfile?.is_admin || matchedLocalProfile?.is_admin ? "admin" : "user");
+
+            const finalCategory =
+              resolvedProfile?.assigned_category ||
+              matchedLocalProfile?.assigned_category ||
+              null;
+
+            const finalName =
+              resolvedProfile?.name ||
+              matchedLocalProfile?.name ||
+              data.user.user_metadata?.name ||
+              targetEmail.split("@")[0];
+
+            onLogin(finalRole, finalCategory, {
+              id: resolvedProfile?.id || data.user.id,
+              name: finalName,
+              email: targetEmail,
+              password,
+            });
+            return;
+          }
+
+          // If Supabase returned an authentication error:
+          if (supaError) {
+            if (isRealSupabase) {
+              const errStr = (supaError.message || "").toLowerCase();
+              let msg = "E-mail ou senha incorretos. Verifique suas credenciais ou crie uma conta caso ainda não seja cadastrado.";
+              if (
+                errStr.includes("invalid login credentials") ||
+                errStr.includes("invalid_grant") ||
+                errStr.includes("user not found")
+              ) {
+                msg = "Conta não encontrada ou senha incorreta no Supabase. Verifique seus dados ou cadastre-se.";
+              } else if (errStr.includes("email not confirmed")) {
+                msg = "E-mail ainda não confirmado. Por favor, confirme seu cadastro no e-mail recebido ou desative a confirmação no Supabase.";
+              } else if (errStr.includes("rate limit") || errStr.includes("rate_limit")) {
+                msg = "Muitas tentativas de login. Aguarde alguns instantes e tente novamente.";
+              } else if (supaError.message) {
+                msg = supaError.message;
+              }
+              setError(msg);
+              setIsSubmitting(false);
+              return;
+            }
+          }
+        } catch (err: any) {
+          console.warn("Supabase auth error:", err);
+          if (isRealSupabase) {
+            setError("Erro ao autenticar no Supabase: " + (err.message || "Tente novamente"));
+            setIsSubmitting(false);
+            return;
+          }
+        }
+      }
+
+      // 2. Fallback only for Local Storage / Mock Mode (when Supabase credentials are not connected)
       const localProfiles: UserProfile[] = JSON.parse(
         localStorage.getItem("commuaria_profiles") || "[]",
       );
-      const localUsers = JSON.parse(
+      const localUsers: any[] = JSON.parse(
         localStorage.getItem("commuaria_users") || "[]",
       );
 
       const matchedLocalProfile = localProfiles.find((p) => {
         const pEmail = (p.email || "").toLowerCase();
         const pName = (p.name || "").toLowerCase();
-        return cleanId === pEmail || cleanId === pName;
+        return targetEmail === pEmail || cleanId === pName;
       });
 
       const matchedLocalUser = localUsers.find((u: any) => {
         const uEmail = (u.email || "").toLowerCase();
         const uName = (u.name || "").toLowerCase();
-        return cleanId === uEmail || cleanId === uName;
+        return targetEmail === uEmail || cleanId === uName;
       });
 
-      // 2. Try Supabase Auth if available
-      if (supabase) {
-        try {
-          const { data, error: supaError } =
-            await supabase.auth.signInWithPassword({
-              email: cleanId,
-              password: password.trim(),
-            });
-
-          if (!supaError && data.user) {
-            // Fetch real role and assigned_category from profiles table in database
-            const { data: profile } = await supabase
-              .from("profiles")
-              .select("*")
-              .eq("id", data.user.id)
-              .maybeSingle();
-
-            // Also check by email in database in case id doesn't match
-            let resolvedProfile = profile;
-            if (!resolvedProfile?.role || resolvedProfile.role === "user") {
-              const { data: profileByEmail } = await supabase
-                .from("profiles")
-                .select("*")
-                .eq("email", cleanId)
-                .maybeSingle();
-              if (profileByEmail?.role && profileByEmail.role !== "user") {
-                resolvedProfile = profileByEmail;
-              }
-            }
-
-            // Fallback to local profile role if database hasn't synced yet
-            const finalRole: UserRole =
-              resolvedProfile?.role ||
-              matchedLocalProfile?.role ||
-              matchedLocalUser?.role ||
-              (resolvedProfile?.is_admin || matchedLocalProfile?.is_admin ? "admin" : "user");
-
-            const finalCategory =
-              resolvedProfile?.assigned_category ||
-              matchedLocalProfile?.assigned_category ||
-              matchedLocalUser?.assigned_category ||
-              null;
-
-            onLogin(finalRole, finalCategory, {
-              name: resolvedProfile?.name || matchedLocalProfile?.name || cleanId.split("@")[0],
-              email: cleanId,
-              password,
-            });
-            return;
-          }
-        } catch (err) {
-          console.warn("Supabase auth tentativa:", err);
-        }
-      }
-
-      // 3. Authenticate from registered database profiles (commuaria_profiles / commuaria_users)
       if (matchedLocalProfile || matchedLocalUser) {
+        const storedPassword = matchedLocalUser?.password || matchedLocalProfile?.password;
+        if (storedPassword && storedPassword !== password.trim()) {
+          setError("Senha incorreta. Verifique os dados digitados.");
+          setIsSubmitting(false);
+          return;
+        }
+
         const userRole: UserRole =
-          matchedLocalProfile?.role ||
-          matchedLocalUser?.role ||
-          (matchedLocalProfile?.is_admin || matchedLocalUser?.is_admin ? "admin" : "user");
+          isMasterAdminEmail
+            ? "admin"
+            : matchedLocalProfile?.role ||
+              matchedLocalUser?.role ||
+              (matchedLocalProfile?.is_admin || matchedLocalUser?.is_admin ? "admin" : "user");
 
         const category =
           matchedLocalProfile?.assigned_category ||
           matchedLocalUser?.assigned_category ||
           null;
 
+        const resolvedId = matchedLocalProfile?.id || matchedLocalUser?.id || "u_" + targetEmail.replace(/[^a-zA-Z0-9]/g, "_");
+
         onLogin(userRole, category, {
-          name: matchedLocalProfile?.name || matchedLocalUser?.name || cleanId.split("@")[0],
-          email: cleanId,
+          id: resolvedId,
+          name: matchedLocalProfile?.name || matchedLocalUser?.name || targetEmail.split("@")[0],
+          email: targetEmail,
           password,
         });
         return;
       }
 
-      // 3. Admin credentials or standard user login
-      if (cleanId === "admin@commuaria.com" || cleanId === "admin") {
-        onLogin("admin", null, {
-          name: "Administrador Geral",
-          email: cleanId,
-          password,
-        });
-        return;
-      }
-
-      // 4. Standard Citizen / Morador user account login
-      onLogin("user", null, {
-        name: cleanId.split("@")[0],
-        email: cleanId,
-        password,
-      });
+      // 3. Reject unauthenticated accounts
+      setError("Nenhuma conta encontrada com este e-mail. Por favor, crie uma conta antes de acessar.");
     } catch (err: any) {
       setError("Erro ao autenticar: " + (err.message || "Tente novamente"));
     } finally {
@@ -3900,6 +4030,7 @@ const AdminTasksView = ({
 };
 
 const ReportView = ({
+  currentUser,
   onTabChange,
   onGoToProfile,
   onGoToSettings,
@@ -3907,6 +4038,7 @@ const ReportView = ({
   onLogout,
   anonymous = false,
 }: {
+  currentUser?: UserProfile;
   onTabChange: (tab: "home" | "report" | "tasks") => void;
   onGoToProfile: () => void;
   onGoToSettings: () => void;
@@ -3969,14 +4101,24 @@ const ReportView = ({
 
     setIsSending(true);
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      let activeUserId = currentUser?.id || "local_user";
+      let activeUserEmail = currentUser?.email || "";
+      const activeUserName = currentUser?.name || "Cidadão";
 
-      if (!session?.user) {
-        alert("Sua sessão expirou. Por favor, entre novamente.");
-        onLogout();
-        return;
+      if (supabase) {
+        try {
+          const { data: sessionData } = await supabase.auth.getSession();
+          if (sessionData?.session?.user?.id) {
+            activeUserId = sessionData.session.user.id;
+            if (sessionData.session.user.email) {
+              activeUserEmail = sessionData.session.user.email;
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (!activeUserId || activeUserId === "u1") {
+        activeUserId = activeUserEmail ? "u_" + activeUserEmail.replace(/[^a-zA-Z0-9]/g, "_") : "u_cidadao_" + Math.random().toString(36).substring(2, 7);
       }
 
       // Convert selected file to base64 with downscaling/compression to prevent LocalStorage Quota Exceeded storage errors
@@ -4027,15 +4169,17 @@ const ReportView = ({
 
       const newReportData: ReportItem = {
         id: "report_" + Math.random().toString(36).substring(2, 9),
-        title,
-        description: title,
+        title: title.trim(),
+        description: title.trim(),
         category: category,
         address: locationQuery || "Endereço não informado",
         latitude: mapCenter[0] || -25.5929,
         longitude: mapCenter[1] || -49.4891,
         image_url: imageUrl,
         anonymous: anonymous,
-        user_id: session?.user?.id || "local_user",
+        user_id: activeUserId,
+        user_email: activeUserEmail,
+        user_name: activeUserName,
         status: "unresolved",
         status_notes: null,
         created_at: new Date().toISOString(),
@@ -4050,19 +4194,33 @@ const ReportView = ({
       if (supabase) {
         try {
           const { error } = await supabase.from("reports").insert({
-            title,
-            description: title,
+            id: newReportData.id,
+            title: title.trim(),
+            description: title.trim(),
             category: category,
             address: locationQuery || "Endereço não informado",
             latitude: mapCenter[0] || -25.5929,
             longitude: mapCenter[1] || -49.4891,
             image_url: imageUrl,
             anonymous: anonymous,
-            user_id: session?.user?.id,
+            user_id: activeUserId,
+            user_email: activeUserEmail,
+            user_name: activeUserName,
             status: "unresolved",
           });
           if (error) {
-            console.warn("Supabase insert warning (salvo no cache do navegador):", error);
+            console.warn("Supabase insert notice, attempting simplified payload:", error);
+            await supabase.from("reports").insert({
+              title: title.trim(),
+              description: title.trim(),
+              category: category,
+              address: locationQuery || "Endereço não informado",
+              latitude: mapCenter[0] || -25.5929,
+              longitude: mapCenter[1] || -49.4891,
+              image_url: imageUrl,
+              anonymous: anonymous,
+              status: "unresolved",
+            });
           }
         } catch (subErr) {
           console.warn("Erro ao enviar para o Supabase (salvo no cache local):", subErr);
@@ -6618,93 +6776,132 @@ export function AppContent() {
     }
   };
 
-  const fetchUserData = async (userId: string) => {
-    if (!supabase) return;
+  const fetchUserData = async (userId: string, userEmail?: string) => {
+    let dbReports: any[] = [];
+    let dbProfile: any = null;
 
-    setCurrentUser((prev) => ({
-      ...prev,
-      id: userId,
-    }));
+    if (supabase) {
+      try {
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("*")
+          .eq("id", userId)
+          .maybeSingle();
+        dbProfile = profile;
 
-    // Fetch Profile
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", userId)
-      .single();
+        const { data: reports } = await supabase
+          .from("reports")
+          .select("*")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false });
+        if (reports && reports.length > 0) {
+          dbReports = reports;
+        }
+      } catch (err) {
+        console.warn("Supabase fetch user data fallback:", err);
+      }
+    }
 
-    // Check local fallback
+    // 2. Local profile resolution
     const localProfiles: UserProfile[] = JSON.parse(
       localStorage.getItem("commuaria_profiles") || "[]",
     );
-    const localMatched = localProfiles.find(
-      (p) => p.id === userId || (profile?.email && p.email?.toLowerCase() === profile.email.toLowerCase())
+    const localUsers: any[] = JSON.parse(
+      localStorage.getItem("commuaria_users") || "[]",
     );
+    const targetEmail = (userEmail || dbProfile?.email || currentUser.email || "").toLowerCase();
+    const localMatched =
+      localProfiles.find((p) => (userId && p.id === userId) || (targetEmail && (p.email || "").toLowerCase() === targetEmail)) ||
+      localUsers.find((u) => (userId && u.id === userId) || (targetEmail && (u.email || "").toLowerCase() === targetEmail));
+
+    const isMasterAdminEmail =
+      targetEmail === "admin@commuaria.com" ||
+      targetEmail === "admin" ||
+      targetEmail === "projetocomnuaria831@gmail.com";
 
     const resolvedRole: UserRole =
-      profile?.role || localMatched?.role || (profile?.is_admin || localMatched?.is_admin ? "admin" : "user");
+      isMasterAdminEmail
+        ? "admin"
+        : (dbProfile?.role && dbProfile.role !== "user" ? dbProfile.role : null) ||
+          (localMatched?.role && localMatched.role !== "user" ? localMatched.role : null) ||
+          (dbProfile?.is_admin || localMatched?.is_admin ? "admin" : currentUser.role || "user");
     const resolvedCat =
-      profile?.assigned_category || localMatched?.assigned_category || null;
+      dbProfile?.assigned_category || localMatched?.assigned_category || currentUser.assigned_category || null;
+    const resolvedName =
+      dbProfile?.name || localMatched?.name || currentUser.name || (targetEmail ? targetEmail.split("@")[0] : "Usuário");
+    const resolvedEmail =
+      dbProfile?.email || localMatched?.email || targetEmail || currentUser.email || "";
 
-    if (profile || localMatched) {
-      setCurrentUser((prev) => ({
-        ...prev,
-        id: userId,
-        name: profile?.name || localMatched?.name || prev.name,
-        email: profile?.email || localMatched?.email || prev.email,
-        role: resolvedRole,
-        assigned_category: resolvedCat,
-      }));
-      setIsAdmin(resolvedRole === "admin");
-      setUserRole(resolvedRole);
-      setAssignedCategory(resolvedCat);
-    }
+    // 3. Local reports resolution
+    const localReports: any[] = JSON.parse(
+      localStorage.getItem("commuaria_reports") || "[]",
+    );
+    const localDeleted: string[] = JSON.parse(
+      localStorage.getItem("commuaria_deleted_reports") || "[]",
+    );
 
-    // Fetch User Reports
-    const { data: reports } = await supabase
-      .from("reports")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
+    // Filter reports belonging to this user (by ID or Email or local_user)
+    const userMatchedLocalReports = localReports.filter((r: any) => {
+      if (localDeleted.includes(r.id)) return false;
+      const matchId = r.user_id && (r.user_id === userId || r.user_id === localMatched?.id || r.user_id === currentUser.id);
+      const matchEmail = resolvedEmail && r.user_email && r.user_email.toLowerCase() === resolvedEmail.toLowerCase();
+      const matchLocalUser = (!r.user_id || r.user_id === "local_user") && (resolvedRole === "user");
+      return matchId || matchEmail || matchLocalUser;
+    });
 
-    if (reports) {
-      const localDeleted = JSON.parse(localStorage.getItem("commuaria_deleted_reports") || "[]");
-      const filteredReports = reports.filter((r: any) => !localDeleted.includes(r.id));
+    const combinedReports = [...dbReports.filter((r: any) => !localDeleted.includes(r.id))];
+    userMatchedLocalReports.forEach((lr: any) => {
+      if (!combinedReports.some((cr: any) => cr.id === lr.id)) {
+        combinedReports.push(lr);
+      }
+    });
 
-      setUserReports(filteredReports);
-      const openCount = filteredReports.filter((r) => r.status !== "resolved").length;
-      const resolvedCount = filteredReports.filter(
-        (r) => r.status === "resolved",
-      ).length;
-      setCurrentUser((prev) => ({
-        ...prev,
-        open: openCount,
-        resolved: resolvedCount,
-      }));
-    }
+    combinedReports.sort(
+      (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+    );
+
+    const openCount = combinedReports.filter((r) => r.status !== "resolved").length;
+    const resolvedCount = combinedReports.filter((r) => r.status === "resolved").length;
+
+    const resolvedUser: UserProfile = {
+      id: userId || localMatched?.id || "u_" + (resolvedEmail ? resolvedEmail.replace(/[^a-zA-Z0-9]/g, "_") : "user"),
+      name: resolvedName,
+      email: resolvedEmail,
+      role: resolvedRole,
+      assigned_category: resolvedCat,
+      open: openCount,
+      resolved: resolvedCount,
+      anonymous: currentUser.anonymous || false,
+    };
+
+    setCurrentUser(resolvedUser);
+    setIsAdmin(resolvedRole === "admin");
+    setUserRole(resolvedRole);
+    setAssignedCategory(resolvedCat);
+    setUserReports(combinedReports);
+
+    // Store active session in localStorage
+    localStorage.setItem("commuaria_active_session", JSON.stringify(resolvedUser));
+
     await fetchSystemStatistics();
   };
 
   useEffect(() => {
-    // Purge any legacy mock accounts from localStorage
+    // 1. Purge ONLY specific legacy test accounts from localStorage
     try {
       const isLegacy = (p: any) => {
         const id = p?.id || "";
         const email = (p?.email || "").toLowerCase();
-        return (
-          id.startsWith("u_sup_") ||
-          id.startsWith("sup-") ||
-          id.startsWith("admin-system-") ||
-          id === "u1" ||
-          id === "u2" ||
-          id === "user-cidadao-001" ||
-          email === "supervisor.pav@commuaria.com" ||
-          email === "supervisor.luz@commuaria.com" ||
-          email === "supervisor.limpeza@commuaria.com" ||
-          email === "supervisor.saneamento@commuaria.com" ||
-          email === "supervisor.arvore@commuaria.com" ||
-          email === "supervisor.arborizacao@commuaria.com"
-        );
+        const legacyIds = ["u1", "u2", "user-cidadao-001", "admin-system-001", "mock-r1", "mock-r2"];
+        const legacyEmails = [
+          "supervisor.pav@commuaria.com",
+          "supervisor.luz@commuaria.com",
+          "supervisor.limpeza@commuaria.com",
+          "supervisor.saneamento@commuaria.com",
+          "supervisor.arvore@commuaria.com",
+          "supervisor.arborizacao@commuaria.com",
+        ];
+        return legacyIds.includes(id) || legacyEmails.includes(email);
       };
 
       const profiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
@@ -6720,6 +6917,54 @@ export function AppContent() {
       }
     } catch (e) {
       console.warn("Erro ao limpar dados locais legados:", e);
+    }
+
+    // 2. Restore active session safely
+    if (isRealSupabase && supabase) {
+      // In real Supabase mode, verify session asynchronously via supabase.auth.getSession()
+      supabase.auth.getSession().then(async ({ data: { session }, error }) => {
+        if (error || !session?.user) {
+          localStorage.removeItem("commuaria_active_session");
+          setCurrentUser({
+            id: "",
+            name: "Usuário",
+            email: "",
+            open: 0,
+            resolved: 0,
+            anonymous: false,
+            role: "user",
+            assigned_category: null,
+          });
+          setIsAdmin(false);
+          setUserRole("user");
+          setAssignedCategory(null);
+          return;
+        }
+        if (session.user) {
+          await fetchUserData(session.user.id, session.user.email);
+          setScreen("feed");
+        }
+      }).catch((err) => {
+        console.warn("Erro ao buscar sessão inicial:", err);
+      });
+    } else {
+      // In mock/local storage mode, restore active session if previously authenticated
+      try {
+        const storedSession = localStorage.getItem("commuaria_active_session");
+        if (storedSession) {
+          const sessionUser = JSON.parse(storedSession);
+          if (sessionUser && (sessionUser.email || sessionUser.id)) {
+            setCurrentUser(sessionUser);
+            setIsAdmin(sessionUser.role === "admin");
+            setUserRole(sessionUser.role || "user");
+            setAssignedCategory(sessionUser.assigned_category || null);
+            setScreen("feed");
+            fetchUserData(sessionUser.id || sessionUser.email, sessionUser.email);
+          }
+        }
+      } catch (e) {
+        console.warn("Erro ao restaurar sessão ativa:", e);
+      }
     }
 
     fetchSystemStatistics();
@@ -6739,7 +6984,6 @@ export function AppContent() {
         console.log("Fluxo de recuperação de senha detectado na URL inicial!");
         setForgotPasswordStep("reset");
         setScreen("forgot-password");
-        // Clear recovery parameters from URL so they don't trigger again on reload
         try {
           window.history.replaceState(null, "", window.location.pathname);
         } catch (_) {}
@@ -6749,20 +6993,14 @@ export function AppContent() {
 
     supabase.auth.getSession().then(async ({ data: { session }, error }) => {
       if (error) {
-        console.warn("Sessão inválida detectada, limpando para evitar erros de token expirado:", error);
-        try {
-          await supabase.auth.signOut();
-        } catch (_) {}
+        console.warn("Sessão inicial Supabase:", error);
         return;
       }
       if (session?.user) {
-        await fetchUserData(session.user.id);
+        await fetchUserData(session.user.id, session.user.email);
       }
     }).catch(async (err) => {
       console.warn("Erro ao buscar sessão inicial:", err);
-      try {
-        await supabase.auth.signOut();
-      } catch (_) {}
     });
 
     const {
@@ -6773,16 +7011,22 @@ export function AppContent() {
         setForgotPasswordStep("reset");
         setScreen("forgot-password");
       } else if (session?.user) {
-        fetchUserData(session.user.id);
-      } else {
+        fetchUserData(session.user.id, session.user.email);
+      } else if (event === "SIGNED_OUT") {
         setIsAdmin(false);
+        setUserRole("user");
+        setAssignedCategory(null);
         setUserReports([]);
+        localStorage.removeItem("commuaria_active_session");
         setCurrentUser({
+          id: "",
           name: "Usuário",
           email: "",
-          password: "",
           open: 0,
           resolved: 0,
+          anonymous: false,
+          role: "user",
+          assigned_category: null,
         });
       }
     });
@@ -6791,20 +7035,17 @@ export function AppContent() {
   }, []);
 
   const handleTabChange = (tab: "home" | "report" | "tasks") => {
-    if (tab === "home") setScreen("feed");
+    if (tab === "home") {
+      setScreen("feed");
+      fetchSystemStatistics();
+    }
     if (tab === "report") setScreen("report");
     if (tab === "tasks") {
       setScreen("tasks");
-      // Refresh user reports when moving to tasks tab
-      supabase.auth.getSession().then(({ data: { session }, error }) => {
-        if (error) {
-          console.warn("Erro ao buscar sessão ao mudar de aba:", error);
-          return;
-        }
-        if (session?.user) {
-          fetchUserData(session.user.id);
-        }
-      }).catch(() => {});
+      if (currentUser?.id || currentUser?.email) {
+        fetchUserData(currentUser.id, currentUser.email);
+      }
+      fetchSystemStatistics();
     }
   };
 
@@ -6877,15 +7118,41 @@ export function AppContent() {
                     setUserRole(determinedRole);
                     setAssignedCategory(assignedCat || null);
 
-                    if (data) {
-                      setCurrentUser((prev) => ({
-                        ...prev,
-                        email: data.email,
-                        password: data.password,
-                        role: determinedRole,
-                        assigned_category: assignedCat || null,
-                      }));
-                    }
+                    const cleanEmail = (data?.email || "").trim().toLowerCase();
+                    const localProfiles: UserProfile[] = JSON.parse(
+                      localStorage.getItem("commuaria_profiles") || "[]",
+                    );
+                    const localUsers: any[] = JSON.parse(
+                      localStorage.getItem("commuaria_users") || "[]",
+                    );
+                    const found =
+                      localProfiles.find((p) => (p.email || "").toLowerCase() === cleanEmail) ||
+                      localUsers.find((u) => (u.email || "").toLowerCase() === cleanEmail);
+
+                    const resolvedId =
+                      data?.id ||
+                      found?.id ||
+                      (cleanEmail ? "u_" + cleanEmail.replace(/[^a-zA-Z0-9]/g, "_") : "user_1");
+                    const resolvedName =
+                      data?.name ||
+                      found?.name ||
+                      (cleanEmail ? cleanEmail.split("@")[0] : "Usuário");
+
+                    const loggedUser: UserProfile = {
+                      id: resolvedId,
+                      name: resolvedName,
+                      email: cleanEmail,
+                      password: data?.password || found?.password,
+                      role: determinedRole,
+                      assigned_category: assignedCat || null,
+                      open: 0,
+                      resolved: 0,
+                      anonymous: false,
+                    };
+
+                    setCurrentUser(loggedUser);
+                    localStorage.setItem("commuaria_active_session", JSON.stringify(loggedUser));
+                    fetchUserData(resolvedId, cleanEmail);
                     setScreen("feed");
                   }}
                   onGoToSignup={() => setScreen("signup")}
@@ -6934,35 +7201,41 @@ export function AppContent() {
                     setIsAdmin(false);
                     setUserRole("user");
                     setAssignedCategory(null);
-                    setCurrentUser((prev) => ({
-                      ...prev,
-                      name: data.name,
-                      email: data.email,
-                      password: data.password,
-                      role: "user",
-                      assigned_category: null,
-                    }));
 
+                    const cleanEmail = data.email.trim().toLowerCase();
+                    const newUserId = data.id || ("user_" + Math.random().toString(36).substring(2, 9));
                     const newProfile: UserProfile = {
-                      id: "user_" + Math.random().toString(36).substring(2, 9),
-                      name: data.name,
-                      email: data.email,
+                      id: newUserId,
+                      name: data.name.trim(),
+                      email: cleanEmail,
                       password: data.password,
                       role: "user",
                       assigned_category: null,
                       is_admin: false,
+                      open: 0,
+                      resolved: 0,
+                      anonymous: false,
                       created_at: new Date().toISOString(),
                     };
+
                     try {
                       const profiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
-                      if (!profiles.some((p: any) => p.email?.toLowerCase() === data.email.toLowerCase())) {
+                      if (!profiles.some((p: any) => (p.email || "").toLowerCase() === cleanEmail)) {
                         profiles.push(newProfile);
                         localStorage.setItem("commuaria_profiles", JSON.stringify(profiles));
+                      }
+                      const users = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+                      if (!users.some((u: any) => (u.email || "").toLowerCase() === cleanEmail)) {
+                        users.push(newProfile);
+                        localStorage.setItem("commuaria_users", JSON.stringify(users));
                       }
                     } catch (e) {
                       console.warn("Erro ao salvar perfil:", e);
                     }
 
+                    setCurrentUser(newProfile);
+                    localStorage.setItem("commuaria_active_session", JSON.stringify(newProfile));
+                    fetchUserData(newUserId, cleanEmail);
                     setScreen("feed");
                   }}
                 />
@@ -7023,12 +7296,11 @@ export function AppContent() {
                     category={assignedCategory || "Pavimentação"}
                     user={currentUser}
                     reports={allSystemReports}
+                    onUpdateReportStatus={handleUpdateReportStatus}
+                    onViewReportDetails={(report) => setActiveReport(report)}
                     onRefresh={async () => {
-                      const {
-                        data: { session },
-                      } = await supabase.auth.getSession();
-                      if (session?.user) {
-                        await fetchUserData(session.user.id);
+                      if (currentUser?.id || currentUser?.email) {
+                        await fetchUserData(currentUser.id, currentUser.email);
                       }
                       await fetchSystemStatistics();
                     }}
@@ -7038,17 +7310,18 @@ export function AppContent() {
                   />
                 ) : (
                   <ReportView
+                    currentUser={currentUser}
                     onTabChange={handleTabChange}
                     onGoToProfile={() => setScreen("profile")}
                     onGoToSettings={() => setScreen("settings")}
                     anonymous={currentUser.anonymous}
-                    onLogout={() => setScreen("login")}
+                    onLogout={() => {
+                      localStorage.removeItem("commuaria_active_session");
+                      setScreen("login");
+                    }}
                     onRefresh={async () => {
-                      const {
-                        data: { session },
-                      } = await supabase.auth.getSession();
-                      if (session?.user) {
-                        await fetchUserData(session.user.id);
+                      if (currentUser?.id || currentUser?.email) {
+                        await fetchUserData(currentUser.id, currentUser.email);
                       }
                       await fetchSystemStatistics();
                     }}

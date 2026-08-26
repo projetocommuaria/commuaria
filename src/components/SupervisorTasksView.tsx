@@ -53,6 +53,32 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
     (c) => c.id.toLowerCase() === assignedCategory.toLowerCase()
   );
 
+  // Normalization helper for resilient sector matching
+  const normalizeSector = (cat?: string) => {
+    if (!cat) return "";
+    const c = cat.toLowerCase();
+    if (c.includes("pav") || c.includes("via") || c.includes("asfalt") || c.includes("burac")) return "pavimentação";
+    if (c.includes("ilu") || c.includes("luz") || c.includes("post") || c.includes("lamp")) return "iluminação pública";
+    if (c.includes("limp") || c.includes("lixo") || c.includes("entulh") || c.includes("varri")) return "limpeza urbana";
+    if (c.includes("san") || c.includes("esgot") || c.includes("bueir") || c.includes("pluvi")) return "saneamento";
+    if (c.includes("arb") || c.includes("arvor") || c.includes("poda") || c.includes("praca")) return "arborização";
+    return c.trim();
+  };
+
+  const currentSectorNormalized = normalizeSector(assignedCategory);
+
+  const matchesCurrentSector = (report: ReportItem) => {
+    if (!assignedCategory) return true;
+    const catNorm = normalizeSector(report.category);
+    const titleNorm = normalizeSector(report.title);
+    return (
+      catNorm === currentSectorNormalized ||
+      titleNorm === currentSectorNormalized ||
+      (report.category && report.category.toLowerCase().includes(assignedCategory.toLowerCase())) ||
+      (report.title && report.title.toLowerCase().includes(assignedCategory.toLowerCase()))
+    );
+  };
+
   // Filter reports
   const filteredReports = safeReports.filter((report) => {
     const q = searchQuery.toLowerCase().trim();
@@ -65,11 +91,7 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
     // Category filter
     let matchesCategory = true;
     if (filterMode === "assigned") {
-      matchesCategory =
-        (report.category &&
-          report.category.toLowerCase() === assignedCategory.toLowerCase()) ||
-        (report.title &&
-          report.title.toLowerCase().includes(assignedCategory.toLowerCase()));
+      matchesCategory = matchesCurrentSector(report);
     }
 
     // Status filter
@@ -82,13 +104,7 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
   });
 
   // Calculate sector metrics
-  const sectorReports = safeReports.filter(
-    (r) =>
-      (r.category &&
-        r.category.toLowerCase() === assignedCategory.toLowerCase()) ||
-      (r.title &&
-        r.title.toLowerCase().includes(assignedCategory.toLowerCase()))
-  );
+  const sectorReports = safeReports.filter((r) => matchesCurrentSector(r));
 
   const pendingCount = sectorReports.filter(
     (r) => r.status === "unresolved" || !r.status
