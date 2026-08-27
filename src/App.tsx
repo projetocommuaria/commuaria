@@ -71,6 +71,20 @@ import { SupervisorManagerModal } from "./components/SupervisorManagerModal";
 import { CategorySelector } from "./components/CategorySelector";
 import { SupervisorTasksView } from "./components/SupervisorTasksView";
 import { SupervisorWorkOrderView } from "./components/SupervisorWorkOrderView";
+import {
+  registerCommuariaServiceWorker,
+  requestDeviceNotificationPermission,
+  getDeviceNotificationPermission,
+  showDeviceNotification,
+  notifyReportCreated,
+  notifyReportForwardedToSector,
+  notifyReportInAnalysis,
+  notifyReportInProgress,
+  notifyReportUpdated,
+  notifyReportResolved,
+  notifyReportCancelled,
+  notifyAdminGeneral,
+} from "./lib/notificationService";
 import streetLightRepair from "./assets/images/street_light_repair_1780425533322.png";
 import commuariaLogo from "./assets/images/logo.png";
 import logoMinimalista from "./assets/images/logo_minimalista.png";
@@ -2233,9 +2247,31 @@ const SettingsView = ({
   onDeleteAccount?: () => void;
   onOpenDbManager?: () => void;
 }) => {
-  const [notifications, setNotifications] = useState(false);
+  const [notifications, setNotifications] = useState(() => {
+    try {
+      const stored = localStorage.getItem("commuaria_notifications_enabled");
+      if (stored !== null) return stored === "true";
+      return getDeviceNotificationPermission() === "granted";
+    } catch {
+      return true;
+    }
+  });
   const [isDeleting, setIsDeleting] = useState(false);
   const { theme, isDark, setTheme } = useTheme();
+
+  const handleToggleNotifications = async (enable: boolean) => {
+    setNotifications(enable);
+    localStorage.setItem("commuaria_notifications_enabled", enable ? "true" : "false");
+    if (enable) {
+      const perm = await requestDeviceNotificationPermission();
+      if (perm === "granted") {
+        showDeviceNotification("Commuária - Notificações Ativadas", {
+          body: "Você receberá atualizações do setor municipal em tempo real!",
+          tag: "settings-test",
+        });
+      }
+    }
+  };
 
   const handleDeleteAccount = async () => {
     if (
@@ -2372,7 +2408,7 @@ const SettingsView = ({
               value={notifications}
               offText="OFF"
               onText="ON"
-              onChange={setNotifications}
+              onChange={handleToggleNotifications}
             />
 
             <CustomToggle
@@ -4229,6 +4265,32 @@ const ReportView = ({
 
       // Update local state immediately via refresh function
       await onRefresh();
+
+      // Dispatch cross-platform notifications (Web Push + E-mail + Device)
+      try {
+        // Stage 1: Ocorrência Registrada (confirmação ao cidadão)
+        notifyReportCreated({
+          report: newReportData,
+          userEmail: activeUserEmail,
+          userName: activeUserName,
+        });
+
+        // Stage 2: Encaminhada ao setor municipal correspondente
+        notifyReportForwardedToSector({
+          report: newReportData,
+          userEmail: activeUserEmail,
+          userName: activeUserName,
+        });
+
+        // Alerta de gestão para Administradores
+        notifyAdminGeneral({
+          title: `Novo Chamado - Setor de ${category}`,
+          message: `Nova ocorrência #${newReportData.id.slice(-6).toUpperCase()} registrada em "${newReportData.address}". Encaminhada ao supervisor de ${category}.`,
+          report: newReportData,
+        });
+      } catch (notifErr) {
+        console.warn("Notificação enviada em background:", notifErr);
+      }
 
       onTabChange("tasks");
     } catch (err) {
@@ -6154,6 +6216,8 @@ const ReportDetailsModal = ({
                   ? "bg-blue-500/20 text-blue-800 dark:text-blue-300 border border-blue-500/30"
                   : report.status === "in_analysis"
                   ? "bg-purple-500/20 text-purple-800 dark:text-purple-300 border border-purple-500/30"
+                  : report.status === "cancelled" || report.status === "rejected"
+                  ? "bg-red-500/20 text-red-800 dark:text-red-300 border border-red-500/30"
                   : "bg-orange-500/20 text-amber-800 dark:text-orange-300 border border-orange-500/30 animate-pulse"
               }`}
             >
@@ -6163,6 +6227,8 @@ const ReportDetailsModal = ({
                 ? "Em Andamento"
                 : report.status === "in_analysis"
                 ? "Em Análise"
+                : report.status === "cancelled" || report.status === "rejected"
+                ? "Cancelado / Recusado"
                 : "Em Aberto"}
             </span>
 
@@ -6295,12 +6361,13 @@ const ReportDetailsModal = ({
                 <label className="text-[11px] font-mono block mb-1.5 opacity-80">
                   Alterar Situação do Chamado:
                 </label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
                   {[
                     { id: "unresolved", label: "Em Aberto", bg: "bg-orange-500/20 text-orange-600 dark:text-orange-300" },
                     { id: "in_analysis", label: "Em Análise", bg: "bg-purple-500/20 text-purple-600 dark:text-purple-300" },
                     { id: "in_progress", label: "Em Andamento", bg: "bg-blue-500/20 text-blue-600 dark:text-blue-300" },
                     { id: "resolved", label: "Concluído", bg: "bg-emerald-500/20 text-emerald-600 dark:text-emerald-300" },
+                    { id: "cancelled", label: "Recusar / Cancelar", bg: "bg-red-500/20 text-red-600 dark:text-red-300" },
                   ].map((st) => (
                     <button
                       key={st.id}
@@ -6323,13 +6390,13 @@ const ReportDetailsModal = ({
               {/* Technical Notes Input */}
               <div>
                 <label className="text-[11px] font-mono block mb-1.5 opacity-80">
-                  Parecer Técnico / Informações de Atendimento:
+                  Parecer Técnico / Motivo (notificado ao cidadão):
                 </label>
                 <textarea
                   rows={3}
                   value={technicalNotes}
                   onChange={(e) => setTechnicalNotes(e.target.value)}
-                  placeholder="Ex: Equipe de pavimentação esteve no local e realizou a operação tapa-buraco."
+                  placeholder="Ex: Equipe de pavimentação esteve no local e realizou a operação tapa-buraco, ou informe o motivo caso a ocorrência seja encerrada."
                   className={`w-full p-3 rounded-xl text-xs border font-sans focus:outline-none ${
                     isDark
                       ? "bg-black/30 border-white/15 text-white placeholder-white/40 focus:border-amber-400"
@@ -6731,6 +6798,91 @@ export function AppContent() {
       }
     }
 
+    // 4. Disparar notificações externas do ciclo de vida da ocorrência (Push + E-mail)
+    try {
+      const existingReport =
+        allSystemReports.find((r) => r.id === reportId) ||
+        localReports.find((r: any) => r.id === reportId);
+
+      const targetReport: ReportItem = {
+        id: reportId,
+        title: existingReport?.title || "Ocorrência",
+        description: existingReport?.description || existingReport?.title || "",
+        category: existingReport?.category || "Geral",
+        address: existingReport?.address || "Araucária, PR",
+        latitude: existingReport?.latitude || -25.5929,
+        longitude: existingReport?.longitude || -49.4891,
+        status: newStatus as any,
+        status_notes: notes !== undefined ? notes : existingReport?.status_notes,
+        created_at: existingReport?.created_at || new Date().toISOString(),
+        user_id: existingReport?.user_id,
+        user_email: existingReport?.user_email,
+        user_name: existingReport?.user_name,
+      };
+
+      let targetEmail = targetReport.user_email || "";
+      let targetName = targetReport.user_name || "";
+      if (!targetEmail && targetReport.user_id) {
+        try {
+          const profiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+          const found = profiles.find((p: any) => p.id === targetReport.user_id);
+          if (found) {
+            targetEmail = found.email || "";
+            targetName = found.name || targetName;
+          }
+        } catch (_) {}
+      }
+
+      // Estágio 3: Em Análise
+      if (newStatus === "in_analysis") {
+        notifyReportInAnalysis({
+          report: targetReport,
+          userEmail: targetEmail,
+          userName: targetName,
+          supervisorNotes: notes,
+        });
+      }
+      // Estágio 4: Em Atendimento / Execução
+      else if (newStatus === "in_progress") {
+        notifyReportInProgress({
+          report: targetReport,
+          userEmail: targetEmail,
+          userName: targetName,
+          supervisorNotes: notes,
+        });
+      }
+      // Estágio 6: Concluído
+      else if (newStatus === "resolved" || newStatus === "completed") {
+        notifyReportResolved({
+          report: targetReport,
+          userEmail: targetEmail,
+          userName: targetName,
+          resolutionNotes: notes,
+        });
+      }
+      // Estágio 7: Cancelado / Recusado com motivo
+      else if (newStatus === "cancelled" || newStatus === "rejected") {
+        notifyReportCancelled({
+          report: targetReport,
+          userEmail: targetEmail,
+          userName: targetName,
+          reason: notes || "Encerrado pela fiscalização técnica municipal.",
+        });
+      }
+      // Estágio 5: Atualização com parecer técnico
+      else if (notes && notes.trim().length > 0) {
+        notifyReportUpdated({
+          report: targetReport,
+          userEmail: targetEmail,
+          userName: targetName,
+          updateNotes: notes,
+          supervisorName: currentUser?.name || "Supervisor do Setor",
+        });
+      }
+    } catch (notifErr) {
+      console.warn("Erro ao despachar notificação de atualização:", notifErr);
+    }
+
     await fetchSystemStatistics();
   };
 
@@ -6887,6 +7039,9 @@ export function AppContent() {
   };
 
   useEffect(() => {
+    // 0. Register Cross-Platform Notification Service Worker
+    registerCommuariaServiceWorker();
+
     // 1. Purge ONLY specific legacy test accounts from localStorage
     try {
       const isLegacy = (p: any) => {

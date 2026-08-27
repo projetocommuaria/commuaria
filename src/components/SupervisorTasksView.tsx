@@ -136,6 +136,13 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
             <Clock size={11} /> Em Análise
           </span>
         );
+      case "cancelled":
+      case "rejected":
+        return (
+          <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-red-500/20 text-red-700 dark:text-red-300 border border-red-500/30 flex items-center gap-1">
+            <AlertTriangle size={11} /> Cancelado / Recusado
+          </span>
+        );
       default:
         return (
           <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 flex items-center gap-1 animate-pulse">
@@ -348,6 +355,7 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
               <option value="in_analysis">Em Análise</option>
               <option value="in_progress">Em Andamento</option>
               <option value="resolved">Concluídos</option>
+              <option value="cancelled">Cancelados / Recusados</option>
             </select>
           </div>
         </div>
