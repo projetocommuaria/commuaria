@@ -11,8 +11,18 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   role TEXT DEFAULT 'user', -- 'user' | 'supervisor' | 'admin'
   assigned_category TEXT,   -- Para supervisores: 'Pavimentação', 'Iluminação Pública', 'Limpeza Urbana', 'Saneamento', 'Arborização'
   is_admin BOOLEAN DEFAULT FALSE,
+  is_blocked BOOLEAN DEFAULT FALSE,
+  blocked_until TIMESTAMPTZ,
+  block_reason TEXT,
+  blocked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migrações automáticas de colunas para tabelas já existentes
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS blocked_until TIMESTAMPTZ;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS block_reason TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS blocked_at TIMESTAMPTZ;
 
 -- 2. Tabela de Ocorrências / Chamados de Zeladoria (reports)
 CREATE TABLE IF NOT EXISTS public.reports (

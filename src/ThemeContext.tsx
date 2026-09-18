@@ -31,26 +31,29 @@ export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
 
   const isDark = theme === "dark";
 
-  useEffect(() => {
+  const setTheme = (t: ThemeMode) => {
+    setThemeState(t);
     try {
-      localStorage.setItem("commuaria_theme", theme);
+      localStorage.setItem("commuaria_theme", t);
     } catch (e) {
       console.warn("Error saving theme to localStorage:", e);
     }
-    if (theme === "dark") {
-      document.documentElement.classList.add("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-    }
-  }, [theme]);
+  };
 
   const toggleTheme = () => {
-    setThemeState((prev) => (prev === "dark" ? "light" : "dark"));
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
   };
 
-  const setTheme = (t: ThemeMode) => {
-    setThemeState(t);
-  };
+  useEffect(() => {
+    const root = document.documentElement;
+    const body = document.body;
+    root.classList.remove("dark", "light");
+    body.classList.remove("dark", "light");
+    root.classList.add(theme);
+    body.classList.add(theme);
+    root.style.colorScheme = theme;
+  }, [theme]);
 
   return (
     <ThemeContext.Provider value={{ theme, isDark, toggleTheme, setTheme }}>
@@ -58,3 +61,4 @@ export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
     </ThemeContext.Provider>
   );
 };
+

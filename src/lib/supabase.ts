@@ -1,11 +1,45 @@
 import { createClient } from '@supabase/supabase-js';
 
 // Sanitize inputs by stripping extra quotes or whitespace
-const rawUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const rawKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const getStoredConfig = () => {
+  let url = import.meta.env.VITE_SUPABASE_URL || '';
+  let key = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
-const supabaseUrl = rawUrl.replace(/^['"]|['"]$/g, '').trim();
-const supabaseAnonKey = rawKey.replace(/^['"]|['"]$/g, '').trim();
+  if (typeof window !== 'undefined') {
+    const customUrl = localStorage.getItem('commuaria_custom_supabase_url');
+    const customKey = localStorage.getItem('commuaria_custom_supabase_anon_key');
+    if (customUrl) url = customUrl;
+    if (customKey) key = customKey;
+  }
+
+  const cleanUrl = url.replace(/^['"]|['"]$/g, '').trim();
+  const cleanKey = key.replace(/^['"]|['"]$/g, '').trim();
+
+  return { url: cleanUrl, key: cleanKey };
+};
+
+const initialConfig = getStoredConfig();
+const supabaseUrl = initialConfig.url;
+const supabaseAnonKey = initialConfig.key;
+
+export function getSupabaseConfig() {
+  return getStoredConfig();
+}
+
+export function setCustomSupabaseConfig(url: string, key: string) {
+  if (typeof window !== 'undefined') {
+    if (url) {
+      localStorage.setItem('commuaria_custom_supabase_url', url.trim());
+    } else {
+      localStorage.removeItem('commuaria_custom_supabase_url');
+    }
+    if (key) {
+      localStorage.setItem('commuaria_custom_supabase_anon_key', key.trim());
+    } else {
+      localStorage.removeItem('commuaria_custom_supabase_anon_key');
+    }
+  }
+}
 
 function createMockSupabaseClient(): any {
   // Ensure we have reports, and news initialized in localStorage
@@ -604,3 +638,165 @@ function getSupabaseClient() {
 }
 
 export const supabase = getSupabaseClient();
+
+export async function syncAllDataToSupabase(): Promise<{
+  success: boolean;
+  message: string;
+  reportsSynced: number;
+  workOrdersSynced: number;
+  newsSynced: number;
+  profilesSynced: number;
+}> {
+  if (!isRealSupabase || !supabase) {
+    return {
+      success: false,
+      message: "Supabase não está configurado com credenciais válidas.",
+      reportsSynced: 0,
+      workOrdersSynced: 0,
+      newsSynced: 0,
+      profilesSynced: 0,
+    };
+  }
+
+  let reportsCount = 0;
+  let workOrdersCount = 0;
+  let newsCount = 0;
+  let profilesCount = 0;
+  const errors: string[] = [];
+
+  // 1. Sync Profiles
+  try {
+    const rawProfiles = JSON.parse(localStorage.getItem('commuaria_profiles') || '[]');
+    if (Array.isArray(rawProfiles) && rawProfiles.length > 0) {
+      for (const p of rawProfiles) {
+        const payload = {
+          id: p.id,
+          name: p.name || 'Usuário',
+          email: p.email || '',
+          role: p.role || 'user',
+          assigned_category: p.assigned_category || null,
+          is_admin: !!p.is_admin,
+          created_at: p.created_at || new Date().toISOString(),
+        };
+        const { error } = await supabase.from('profiles').upsert([payload]);
+        if (!error) profilesCount++;
+        else console.warn("Erro ao sincronizar perfil:", error);
+      }
+    }
+  } catch (e: any) {
+    errors.push(`Perfis: ${e.message}`);
+  }
+
+  // 2. Sync Reports
+  try {
+    const rawReports = JSON.parse(localStorage.getItem('commuaria_reports') || '[]');
+    if (Array.isArray(rawReports) && rawReports.length > 0) {
+      for (const r of rawReports) {
+        const payload = {
+          id: r.id,
+          title: r.title || 'Ocorrência',
+          description: r.description || '',
+          category: r.category || 'Pavimentação',
+          address: r.address || 'Araucária - PR',
+          latitude: typeof r.latitude === 'number' ? r.latitude : -25.5901,
+          longitude: typeof r.longitude === 'number' ? r.longitude : -49.4851,
+          status: r.status || 'unresolved',
+          status_notes: r.status_notes || null,
+          image_url: r.image_url || null,
+          anonymous: !!r.anonymous,
+          user_id: r.user_id || null,
+          user_email: r.user_email || null,
+          user_name: r.user_name || null,
+          is_work_order: !!r.is_work_order,
+          work_order_number: r.work_order_number || null,
+          assigned_team: r.assigned_team || null,
+          priority: r.priority || 'medium',
+          deadline: r.deadline || null,
+          created_at: r.created_at || new Date().toISOString(),
+        };
+        const { error } = await supabase.from('reports').upsert([payload]);
+        if (!error) reportsCount++;
+        else {
+          console.warn("Erro ao sincronizar report:", error);
+          errors.push(`Chamados: ${error.message}`);
+        }
+      }
+    }
+  } catch (e: any) {
+    errors.push(`Chamados: ${e.message}`);
+  }
+
+  // 3. Sync Work Orders
+  try {
+    const rawOrders = JSON.parse(localStorage.getItem('commuaria_work_orders') || '[]');
+    if (Array.isArray(rawOrders) && rawOrders.length > 0) {
+      for (const o of rawOrders) {
+        const payload = {
+          id: o.id,
+          order_number: o.order_number || `OS-${Math.floor(1000 + Math.random() * 9000)}`,
+          title: o.title || 'Ordem de Serviço',
+          category: o.category || 'Pavimentação',
+          address: o.address || 'Araucária - PR',
+          priority: o.priority || 'medium',
+          deadline: o.deadline || null,
+          assigned_team: o.assigned_team || 'Equipe Operacional',
+          maintenance_type: o.maintenance_type || 'Manutenção Corretiva',
+          description: o.description || '',
+          technical_instructions: o.technical_instructions || '',
+          status: o.status || 'dispatched',
+          status_notes: o.status_notes || null,
+          supervisor_name: o.supervisor_name || 'Supervisor',
+          supervisor_email: o.supervisor_email || '',
+          linked_report_id: o.linked_report_id || null,
+          created_at: o.created_at || new Date().toISOString(),
+          completed_at: o.completed_at || null,
+        };
+        const { error } = await supabase.from('work_orders').upsert([payload]);
+        if (!error) workOrdersCount++;
+        else {
+          console.warn("Erro ao sincronizar work order:", error);
+          errors.push(`O.S.: ${error.message}`);
+        }
+      }
+    }
+  } catch (e: any) {
+    errors.push(`O.S.: ${e.message}`);
+  }
+
+  // 4. Sync News
+  try {
+    const rawNews = JSON.parse(localStorage.getItem('commuaria_news') || '[]');
+    if (Array.isArray(rawNews) && rawNews.length > 0) {
+      for (const n of rawNews) {
+        const payload = {
+          id: n.id,
+          title: n.title,
+          description: n.description,
+          category: n.category || 'Comunidade',
+          created_at: n.created_at || new Date().toISOString(),
+        };
+        const { error } = await supabase.from('news').upsert([payload]);
+        if (!error) newsCount++;
+        else console.warn("Erro ao sincronizar news:", error);
+      }
+    }
+  } catch (e: any) {
+    errors.push(`Notícias: ${e.message}`);
+  }
+
+  const hasAnySuccess = reportsCount > 0 || workOrdersCount > 0 || newsCount > 0 || profilesCount > 0;
+  const uniqueErrors = Array.from(new Set(errors));
+
+  return {
+    success: hasAnySuccess || errors.length === 0,
+    message: hasAnySuccess
+      ? `Sincronização concluída! ${reportsCount} chamados, ${workOrdersCount} O.S. e ${newsCount} notícias atualizados no Supabase.`
+      : uniqueErrors.length > 0
+      ? `Falha na sincronização: ${uniqueErrors.join('; ')}`
+      : "Nenhum dado pendente para sincronizar.",
+    reportsSynced: reportsCount,
+    workOrdersSynced: workOrdersCount,
+    newsSynced: newsCount,
+    profilesSynced: profilesCount,
+  };
+}

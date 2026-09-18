@@ -68,6 +68,10 @@ import {
   UserRole,
 } from "./types";
 import { SupervisorManagerModal } from "./components/SupervisorManagerModal";
+import { DatabaseManagerModal } from "./components/DatabaseManagerModal";
+import { AdminAccountsView } from "./components/AdminAccountsView";
+import { BlockedAccountModal } from "./components/BlockedAccountModal";
+import { checkAccountBlockStatus, BlockStatusResult } from "./utils/blockUtils";
 import { CategorySelector } from "./components/CategorySelector";
 import { SupervisorTasksView } from "./components/SupervisorTasksView";
 import { SupervisorWorkOrderView } from "./components/SupervisorWorkOrderView";
@@ -98,69 +102,14 @@ import pexelsAshford from "./assets/images/pexels_ashford_marx_1565533_7150075.j
 import pexelsJerson from "./assets/images/pexels_jerson_martins_1514473344_35599871.jpg";
 import pexelsNandhu from "./assets/images/pexels_nandhukumar_339614.jpg";
 
-// --- Theme System ---
-
-export type ThemeMode = "dark" | "light";
-
-interface ThemeContextType {
-  theme: ThemeMode;
-  isDark: boolean;
-  toggleTheme: () => void;
-  setTheme: (t: ThemeMode) => void;
-}
-
-const ThemeContext = React.createContext<ThemeContextType>({
-  theme: "dark",
-  isDark: true,
-  toggleTheme: () => {},
-  setTheme: () => {},
-});
-
-export const useTheme = () => React.useContext(ThemeContext);
-
-export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
-  const [theme, setThemeState] = useState<ThemeMode>(() => {
-    try {
-      const saved = localStorage.getItem("commuaria_theme");
-      if (saved === "light" || saved === "dark") return saved;
-    } catch (e) {
-      console.warn("Error reading theme from localStorage:", e);
-    }
-    return "dark";
-  });
-
-  const isDark = theme === "dark";
-
-  const setTheme = (t: ThemeMode) => {
-    setThemeState(t);
-    try {
-      localStorage.setItem("commuaria_theme", t);
-    } catch (e) {
-      console.warn("Error saving theme to localStorage:", e);
-    }
-  };
-
-  const toggleTheme = () => {
-    const next = theme === "dark" ? "light" : "dark";
-    setTheme(next);
-  };
-
-  useEffect(() => {
-    const root = document.documentElement;
-    const body = document.body;
-    root.classList.remove("dark", "light");
-    body.classList.remove("dark", "light");
-    root.classList.add(theme);
-    body.classList.add(theme);
-    root.style.colorScheme = theme;
-  }, [theme]);
-
-  return (
-    <ThemeContext.Provider value={{ theme, isDark, toggleTheme, setTheme }}>
-      {children}
-    </ThemeContext.Provider>
-  );
-};
+import {
+  ThemeProvider,
+  useTheme,
+  ThemeMode,
+  ThemeContext,
+} from "./ThemeContext";
+export { ThemeProvider, useTheme, ThemeContext };
+export type { ThemeMode };
 
 export const ThemeToggle = ({
   className = "",
@@ -335,313 +284,6 @@ const SafeLogoImage = ({
         }
       }}
     />
-  );
-};
-
-const DatabaseManagerModal = ({
-  onClose,
-  newsDbError,
-  onRefresh,
-}: {
-  onClose: () => void;
-  newsDbError: string | null;
-  onRefresh: () => Promise<void>;
-}) => {
-  const { isDark } = useTheme();
-  const [copied, setCopied] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<string | null>(null);
-
-  const handleCopySql = async () => {
-    const sqlText = `-- COMMUÁRIA - SCRIPT COMPLETO DE BANCO DE DADOS (SUPABASE SQL)
--- Copie e cole este script no SQL Editor do seu projeto Supabase
-
-CREATE TABLE IF NOT EXISTS public.profiles (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL,
-  role TEXT DEFAULT 'user',
-  assigned_category TEXT,
-  is_admin BOOLEAN DEFAULT FALSE,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS public.reports (
-  id TEXT PRIMARY KEY DEFAULT ('rep_' || substr(md5(random()::text), 1, 10)),
-  title TEXT NOT NULL,
-  description TEXT,
-  category TEXT DEFAULT 'Pavimentação',
-  address TEXT NOT NULL,
-  latitude DOUBLE PRECISION NOT NULL,
-  longitude DOUBLE PRECISION NOT NULL,
-  status TEXT DEFAULT 'unresolved',
-  status_notes TEXT,
-  image_url TEXT,
-  anonymous BOOLEAN DEFAULT FALSE,
-  user_id TEXT,
-  user_email TEXT,
-  user_name TEXT,
-  is_work_order BOOLEAN DEFAULT FALSE,
-  work_order_number TEXT,
-  assigned_team TEXT,
-  priority TEXT DEFAULT 'medium',
-  deadline TEXT,
-  maintenance_type TEXT,
-  technical_notes TEXT,
-  resolved_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS public.work_orders (
-  id TEXT PRIMARY KEY DEFAULT ('wo_' || substr(md5(random()::text), 1, 10)),
-  order_number TEXT NOT NULL,
-  title TEXT NOT NULL,
-  category TEXT DEFAULT 'Pavimentação',
-  address TEXT NOT NULL,
-  priority TEXT DEFAULT 'medium',
-  deadline TEXT,
-  assigned_team TEXT,
-  maintenance_type TEXT,
-  description TEXT,
-  technical_instructions TEXT,
-  status TEXT DEFAULT 'dispatched',
-  status_notes TEXT,
-  supervisor_name TEXT,
-  supervisor_email TEXT,
-  linked_report_id TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  completed_at TIMESTAMPTZ
-);
-
-CREATE TABLE IF NOT EXISTS public.news (
-  id TEXT PRIMARY KEY DEFAULT ('news_' || substr(md5(random()::text), 1, 8)),
-  title TEXT NOT NULL,
-  description TEXT NOT NULL,
-  category TEXT DEFAULT 'Comunidade',
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.work_orders ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.news ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Permitir tudo em profiles" ON public.profiles;
-DROP POLICY IF EXISTS "Permitir tudo em reports" ON public.reports;
-DROP POLICY IF EXISTS "Permitir tudo em work_orders" ON public.work_orders;
-DROP POLICY IF EXISTS "Permitir tudo em news" ON public.news;
-
-CREATE POLICY "Permitir tudo em profiles" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Permitir tudo em reports" ON public.reports FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Permitir tudo em work_orders" ON public.work_orders FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH CHECK (true);`;
-
-    try {
-      await navigator.clipboard.writeText(sqlText);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 4000);
-    } catch (e) {
-      alert("Script salvo em 'supabase_schema.sql' na raiz do seu projeto!");
-    }
-  };
-
-  const handleTestConnection = async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      if (!isRealSupabase) {
-        setTestResult("📌 Modo Atual: Banco Local Persistente (LocalStorage). O aplicativo está operando com salvamento e leitura 100% funcionais!");
-      } else {
-        const { error } = await supabase.from("news").select("*").limit(1);
-        if (error) {
-          setTestResult(`⚠️ Erro do Supabase: ${error.message} (Código: ${error.code || 'RLS/Tabela'}). Dica: Execute o script SQL acima no Supabase.`);
-        } else {
-          setTestResult("✅ Conexão com o Supabase testada e confirmada com sucesso! Todas as tabelas e permissões estão funcionando.");
-        }
-      }
-      await onRefresh();
-    } catch (e: any) {
-      setTestResult(`⚠️ Falha no teste: ${e.message || "Erro de rede"}`);
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const handleResetLocalData = () => {
-    if (confirm("Deseja restaurar os dados iniciais de teste (notícias e chamados) no seu navegador?")) {
-      localStorage.removeItem("commuaria_news");
-      localStorage.removeItem("commuaria_reports");
-      localStorage.removeItem("commuaria_profiles");
-      localStorage.removeItem("commuaria_users");
-      window.location.reload();
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/80 backdrop-blur-md">
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 15 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 15 }}
-        className={`relative w-full max-w-2xl rounded-[32px] p-6 sm:p-8 shadow-2xl max-h-[90vh] overflow-y-auto font-sans transition-colors duration-300 ${
-          isDark
-            ? "bg-[#1d2d2e] border border-white/20 text-white"
-            : "bg-white border border-black/10 text-[#183a2b]"
-        }`}
-      >
-        <button
-          onClick={onClose}
-          className={`absolute top-6 right-6 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-            isDark
-              ? "bg-white/10 hover:bg-white/20 text-white/70 hover:text-white"
-              : "bg-black/5 hover:bg-black/10 text-[#183a2b]/70 hover:text-[#183a2b]"
-          }`}
-        >
-          <X size={20} />
-        </button>
-
-        <div className="flex items-center gap-3 mb-6">
-          <div className="p-3 bg-emerald-500/20 text-emerald-500 rounded-2xl border border-emerald-500/30">
-            <Database size={28} />
-          </div>
-          <div>
-            <h3 className={`text-2xl font-serif font-bold ${isDark ? "text-white" : "text-[#183a2b]"}`}>
-              Gerenciador do Banco de Dados
-            </h3>
-            <p className={`text-xs font-mono mt-0.5 ${isDark ? "text-white/60" : "text-[#2d4a3b]/70"}`}>
-              Sincronização & Schema do Commuária
-            </p>
-          </div>
-        </div>
-
-        {/* Current status pill */}
-        <div className={`mb-6 p-4 rounded-2xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
-          isDark ? "bg-white/5 border-white/10" : "bg-black/5 border-black/10"
-        }`}>
-          <div>
-            <span className={`text-xs block font-mono ${isDark ? "text-white/50" : "text-[#2d4a3b]/60"}`}>Modo de Operação Atual</span>
-            <span className="text-base font-bold text-emerald-600 dark:text-emerald-300 flex items-center gap-2 mt-0.5">
-              <CheckCircle2 size={18} />
-              {isRealSupabase ? "Supabase Cloud Conectado" : "Banco de Dados Local Ativo (Persistente)"}
-            </span>
-          </div>
-          <span className={`text-[11px] px-3 py-1 rounded-full font-mono ${
-            isDark ? "bg-white/10 text-white/80" : "bg-black/10 text-[#183a2b]"
-          }`}>
-            {isRealSupabase ? "Nuvem + Local Fallback" : "Modo Offline Seguro"}
-          </span>
-        </div>
-
-        {newsDbError && (
-          <div className="mb-6 p-4 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-800 dark:text-amber-200 text-xs leading-relaxed flex items-start gap-3">
-            <AlertTriangle size={20} className="shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
-            <div>
-              <strong className="block text-amber-900 dark:text-amber-300 font-bold mb-1">Aviso de Estrutura de Tabelas:</strong>
-              {newsDbError}
-            </div>
-          </div>
-        )}
-
-        {/* Action Buttons Grid */}
-        <div className="space-y-4 mb-6">
-          {/* GitHub Configuration Help Box */}
-          <div className={`border p-5 rounded-2xl space-y-3 ${
-            isDark ? "bg-emerald-950/40 border-emerald-500/30" : "bg-emerald-50 border-emerald-200"
-          }`}>
-            <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400 font-serif font-bold text-sm">
-              <FileText size={18} />
-              <span>Como Funciona no GitHub e GitHub Pages?</span>
-            </div>
-            <p className={`text-xs leading-relaxed ${isDark ? "text-white/70" : "text-[#2d4a3b]"}`}>
-              No GitHub Pages, as variáveis do Supabase precisam ser adicionadas nos <strong>Secrets</strong> do seu repositório para que o deploy se conecte ao banco real da nuvem:
-            </p>
-            <ol className={`text-xs space-y-1.5 list-decimal list-inside p-3 rounded-xl border font-mono ${
-              isDark ? "bg-black/30 text-white/80 border-white/5" : "bg-white/80 text-[#183a2b] border-black/5"
-            }`}>
-              <li>No GitHub: <strong>Settings ➔ Secrets and variables ➔ Actions</strong></li>
-              <li>Adicione o Secret <code className="text-emerald-600 dark:text-emerald-300 font-bold">VITE_SUPABASE_URL</code> com a URL do seu Supabase</li>
-              <li>Adicione o Secret <code className="text-emerald-600 dark:text-emerald-300 font-bold">VITE_SUPABASE_ANON_KEY</code> com a chave anon do Supabase</li>
-              <li>Execute o script SQL abaixo no <strong>SQL Editor</strong> do Supabase</li>
-            </ol>
-            <p className="text-[11px] text-emerald-700 dark:text-emerald-300/80 italic">
-              💡 Veja o arquivo <strong>GITHUB_DATABASE_SETUP.md</strong> na raiz do repositório para o tutorial passo a passo ilustrado.
-            </p>
-          </div>
-
-          <div className={`p-5 rounded-2xl border space-y-3 ${
-            isDark ? "bg-white/5 border-white/10" : "bg-black/5 border-black/10"
-          }`}>
-            <h4 className={`text-sm font-bold font-serif ${isDark ? "text-white/90" : "text-[#183a2b]"}`}>1. Script SQL para o Supabase</h4>
-            <p className={`text-xs leading-relaxed ${isDark ? "text-white/60" : "text-[#2d4a3b]/80"}`}>
-              Se estiver usando uma instância do Supabase na nuvem, copie o script SQL abaixo e cole no <strong>SQL Editor</strong> do seu painel Supabase para criar as tabelas (<code className="text-emerald-600 dark:text-emerald-300 px-1 py-0.5 rounded bg-black/10 dark:bg-black/30">profiles</code>, <code className="text-emerald-600 dark:text-emerald-300 px-1 py-0.5 rounded bg-black/10 dark:bg-black/30">reports</code>, <code className="text-emerald-600 dark:text-emerald-300 px-1 py-0.5 rounded bg-black/10 dark:bg-black/30">news</code>) e ativar as permissões RLS.
-            </p>
-            <button
-              onClick={handleCopySql}
-              className="w-full py-3.5 px-5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500 hover:text-white font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-lg active:scale-[0.99]"
-            >
-              {copied ? <CheckCircle2 size={18} /> : <Copy size={18} />}
-              <span>{copied ? "Script SQL Copiado para a Área de Transferência!" : "Copiar Script SQL do Supabase"}</span>
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className={`p-4 rounded-2xl border space-y-2 flex flex-col justify-between ${
-              isDark ? "bg-white/5 border-white/10" : "bg-black/5 border-black/10"
-            }`}>
-              <div>
-                <h4 className={`text-sm font-bold font-serif ${isDark ? "text-white/90" : "text-[#183a2b]"}`}>2. Testar Conexão</h4>
-                <p className={`text-xs ${isDark ? "text-white/60" : "text-[#2d4a3b]/70"}`}>Valida a resposta do banco de dados em tempo real.</p>
-              </div>
-              <button
-                onClick={handleTestConnection}
-                disabled={testing}
-                className={`w-full py-2.5 px-4 rounded-xl border font-bold text-xs transition-all flex items-center justify-center gap-2 mt-2 ${
-                  isDark ? "bg-white/10 border-white/20 text-white hover:bg-white/20" : "bg-black/10 border-black/15 text-[#183a2b] hover:bg-black/15"
-                }`}
-              >
-                <RefreshCw size={14} className={testing ? "animate-spin" : ""} />
-                <span>{testing ? "Testando..." : "Testar Conexão Agora"}</span>
-              </button>
-            </div>
-
-            <div className={`p-4 rounded-2xl border space-y-2 flex flex-col justify-between ${
-              isDark ? "bg-white/5 border-white/10" : "bg-black/5 border-black/10"
-            }`}>
-              <div>
-                <h4 className={`text-sm font-bold font-serif ${isDark ? "text-white/90" : "text-[#183a2b]"}`}>3. Restaurar Testes</h4>
-                <p className={`text-xs ${isDark ? "text-white/60" : "text-[#2d4a3b]/70"}`}>Reinicializa os dados iniciais de demonstração locais.</p>
-              </div>
-              <button
-                onClick={handleResetLocalData}
-                className="w-full py-2.5 px-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 font-bold text-xs hover:bg-amber-500 hover:text-white transition-all flex items-center justify-center gap-2 mt-2"
-              >
-                <Database size={14} />
-                <span>Restaurar Dados Iniciais</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {testResult && (
-          <div className={`mb-6 p-4 rounded-2xl border text-xs font-mono leading-relaxed ${
-            isDark ? "bg-black/40 border-white/10 text-emerald-200" : "bg-emerald-50 border-emerald-200 text-emerald-900"
-          }`}>
-            {testResult}
-          </div>
-        )}
-
-        <div className="pt-2 text-center">
-          <button
-            onClick={onClose}
-            className={`px-8 py-3 rounded-full font-bold text-sm transition-all shadow-lg ${
-              isDark ? "bg-white text-zinc-900 hover:bg-white/90" : "bg-[#183a2b] text-white hover:bg-[#122c21]"
-            }`}
-          >
-            Concluído / Fechar
-          </button>
-        </div>
-      </motion.div>
-    </div>
   );
 };
 
@@ -1177,6 +819,7 @@ const ForgotPasswordView = ({
 const LoginView = ({
   onBack,
   onLogin,
+  onBlocked,
   onGoToSignup,
   onForgotPassword,
 }: {
@@ -1186,6 +829,7 @@ const LoginView = ({
     assignedCategory?: string | null,
     data?: { id?: string; name?: string; email: string; password: string },
   ) => void;
+  onBlocked?: (blockInfo: BlockStatusResult, email: string) => void;
   onGoToSignup: () => void;
   onForgotPassword: () => void;
 }) => {
@@ -1296,6 +940,20 @@ const LoginView = ({
               data.user.user_metadata?.name ||
               targetEmail.split("@")[0];
 
+            const candidateProfile = resolvedProfile || matchedLocalProfile;
+            if (!isMasterAdminEmail && candidateProfile) {
+              const blockStatus = checkAccountBlockStatus(candidateProfile);
+              if (blockStatus.isBlocked) {
+                if (onBlocked) {
+                  onBlocked(blockStatus, targetEmail);
+                } else {
+                  setError(`Conta suspensa: ${blockStatus.reason || "Acesso bloqueado pela administração."}`);
+                }
+                setIsSubmitting(false);
+                return;
+              }
+            }
+
             onLogin(finalRole, finalCategory, {
               id: resolvedProfile?.id || data.user.id,
               name: finalName,
@@ -1379,6 +1037,20 @@ const LoginView = ({
           null;
 
         const resolvedId = matchedLocalProfile?.id || matchedLocalUser?.id || "u_" + targetEmail.replace(/[^a-zA-Z0-9]/g, "_");
+
+        const candidateLocal = matchedLocalProfile || matchedLocalUser;
+        if (!isMasterAdminEmail && candidateLocal) {
+          const blockStatus = checkAccountBlockStatus(candidateLocal);
+          if (blockStatus.isBlocked) {
+            if (onBlocked) {
+              onBlocked(blockStatus, targetEmail);
+            } else {
+              setError(`Conta suspensa: ${blockStatus.reason || "Acesso bloqueado pela administração."}`);
+            }
+            setIsSubmitting(false);
+            return;
+          }
+        }
 
         onLogin(userRole, category, {
           id: resolvedId,
@@ -2418,6 +2090,32 @@ const SettingsView = ({
               onText="ON"
               onChange={setAnonymous}
             />
+
+            {/* Database & Cloud Sync Section */}
+            {onOpenDbManager && (
+              <div className="pt-2 border-t border-black/10 dark:border-white/10">
+                <button
+                  type="button"
+                  onClick={onOpenDbManager}
+                  className={`w-full py-3 px-4 rounded-2xl border text-xs font-bold flex items-center justify-between transition-all ${
+                    isDark
+                      ? "bg-white/10 border-white/20 text-white hover:bg-white/20"
+                      : "bg-emerald-50 border-emerald-200 text-[#183a2b] hover:bg-emerald-100"
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Database size={16} className="text-emerald-600 dark:text-emerald-400" />
+                    <div className="text-left">
+                      <span className="block font-bold">Banco de Dados & Supabase</span>
+                      <span className="text-[10px] font-normal opacity-75">
+                        Sincronizar chamados, O.S. e script SQL
+                      </span>
+                    </div>
+                  </div>
+                  <ArrowRight size={14} />
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Account Security Card */}
@@ -2660,17 +2358,21 @@ const BottomNav = ({
   isAdmin = false,
   userRole = "user",
 }: {
-  currentTab: "home" | "report" | "tasks";
-  onTabChange: (tab: "home" | "report" | "tasks") => void;
+  currentTab: "home" | "report" | "tasks" | "accounts";
+  onTabChange: (tab: "home" | "report" | "tasks" | "accounts") => void;
   isAdmin?: boolean;
   userRole?: UserRole;
 }) => {
   const { isDark } = useTheme();
 
   return (
-    <div className="absolute bottom-8 w-full px-4 flex justify-center z-50 pointer-events-auto">
+    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 pointer-events-auto flex items-center justify-center">
       <div
-        className={`px-10 py-5 rounded-[40px] drop-shadow-2xl border flex items-center justify-between gap-12 sm:gap-16 w-full max-w-[340px] transition-colors duration-300 backdrop-blur-2xl ${
+        className={`rounded-[40px] drop-shadow-2xl border flex items-center justify-center transition-all duration-300 backdrop-blur-2xl ${
+          isAdmin
+            ? "px-7 sm:px-9 py-4 sm:py-5 gap-7 sm:gap-9"
+            : "px-10 py-5 gap-12 sm:gap-16"
+        } ${
           isDark
             ? "border-white/20 bg-gradient-to-r from-white/15 to-white/5 shadow-2xl"
             : "border-black/10 bg-black/5 shadow-xl text-[#183a2b]"
@@ -2691,7 +2393,7 @@ const BottomNav = ({
         >
           <Home
             fill={currentTab === "home" ? "currentColor" : "none"}
-            size={32}
+            size={isAdmin ? 28 : 32}
             strokeWidth={1.5}
             className={
               currentTab !== "home"
@@ -2731,7 +2433,7 @@ const BottomNav = ({
           {isAdmin ? (
             <Map
               fill={currentTab === "report" ? "currentColor" : "none"}
-              size={32}
+              size={28}
               strokeWidth={1.5}
               className={
                 currentTab !== "report"
@@ -2783,10 +2485,11 @@ const BottomNav = ({
               ? "text-white/50 hover:text-white"
               : "text-[#2d4a3b]/70 hover:text-[#183a2b]"
           }`}
+          title={isAdmin ? "Chamados e Ocorrências" : "Minhas Tarefas"}
         >
           <ClipboardCheck
             fill={currentTab === "tasks" ? "currentColor" : "none"}
-            size={32}
+            size={isAdmin ? 28 : 32}
             strokeWidth={1.5}
             className={
               currentTab !== "tasks"
@@ -2804,6 +2507,43 @@ const BottomNav = ({
             />
           )}
         </button>
+
+        {/* 4th Navigation Item: Accounts & Users Management (ADM Only) */}
+        {isAdmin && (
+          <button
+            onClick={() => onTabChange("accounts")}
+            className={`relative flex flex-col items-center group transition-colors ${
+              currentTab === "accounts"
+                ? isDark
+                  ? "text-white"
+                  : "text-[#183a2b] font-bold"
+                : isDark
+                ? "text-white/50 hover:text-white"
+                : "text-[#2d4a3b]/70 hover:text-[#183a2b]"
+            }`}
+            title="Gestão de Contas & Usuários"
+          >
+            <Users
+              fill={currentTab === "accounts" ? "currentColor" : "none"}
+              size={28}
+              strokeWidth={1.5}
+              className={
+                currentTab !== "accounts"
+                  ? "group-hover:scale-110 transition-transform"
+                  : ""
+              }
+            />
+            {currentTab === "accounts" && (
+              <div
+                className={`w-2 h-2 rounded-full absolute -bottom-4 ${
+                  isDark
+                    ? "bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]"
+                    : "bg-[#183a2b] shadow-[0_0_6px_rgba(24,58,43,0.4)]"
+                }`}
+              />
+            )}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -6521,11 +6261,16 @@ export function AppContent() {
     | "feed"
     | "report"
     | "tasks"
+    | "accounts"
   >("landing");
   const [isAdmin, setIsAdmin] = useState(false);
   const [userRole, setUserRole] = useState<UserRole>("user");
   const [assignedCategory, setAssignedCategory] = useState<string | null>(null);
   const [showSupervisorManager, setShowSupervisorManager] = useState(false);
+  const [blockedModalInfo, setBlockedModalInfo] = useState<{
+    blockInfo: BlockStatusResult;
+    email: string;
+  } | null>(null);
 
   const [activeImage, setActiveImage] = useState<{
     url: string;
@@ -7024,7 +6769,43 @@ export function AppContent() {
       open: openCount,
       resolved: resolvedCount,
       anonymous: currentUser.anonymous || false,
+      is_blocked: dbProfile?.is_blocked || localMatched?.is_blocked || false,
+      blocked_until: dbProfile?.blocked_until || localMatched?.blocked_until || null,
+      block_reason: dbProfile?.block_reason || localMatched?.block_reason || null,
+      blocked_at: dbProfile?.blocked_at || localMatched?.blocked_at || null,
     };
+
+    // Check if account has been blocked by an administrator
+    if (!isMasterAdminEmail) {
+      const blockStatus = checkAccountBlockStatus(resolvedUser);
+      if (blockStatus.isBlocked) {
+        localStorage.removeItem("commuaria_active_session");
+        if (supabase) {
+          try {
+            await supabase.auth.signOut();
+          } catch (_) {}
+        }
+        setCurrentUser({
+          id: "",
+          name: "Usuário",
+          email: "",
+          open: 0,
+          resolved: 0,
+          anonymous: false,
+          role: "user",
+          assigned_category: null,
+        });
+        setIsAdmin(false);
+        setUserRole("user");
+        setAssignedCategory(null);
+        setBlockedModalInfo({
+          blockInfo: blockStatus,
+          email: resolvedEmail,
+        });
+        setScreen("landing");
+        return;
+      }
+    }
 
     setCurrentUser(resolvedUser);
     setIsAdmin(resolvedRole === "admin");
@@ -7189,7 +6970,7 @@ export function AppContent() {
     return () => subscription.unsubscribe();
   }, []);
 
-  const handleTabChange = (tab: "home" | "report" | "tasks") => {
+  const handleTabChange = (tab: "home" | "report" | "tasks" | "accounts") => {
     if (tab === "home") {
       setScreen("feed");
       fetchSystemStatistics();
@@ -7200,6 +6981,10 @@ export function AppContent() {
       if (currentUser?.id || currentUser?.email) {
         fetchUserData(currentUser.id, currentUser.email);
       }
+      fetchSystemStatistics();
+    }
+    if (tab === "accounts") {
+      setScreen("accounts");
       fetchSystemStatistics();
     }
   };
@@ -7229,7 +7014,7 @@ export function AppContent() {
         }`}
       >
         <div className="absolute inset-0 flex flex-col overflow-hidden">
-          {(screen === "feed" || screen === "report" || screen === "tasks") && (
+          {(screen === "feed" || screen === "report" || screen === "tasks" || screen === "accounts") && (
             <FloatingMenu
               onGoToProfile={() => setScreen("profile")}
               onGoToSettings={() => setScreen("settings")}
@@ -7266,6 +7051,9 @@ export function AppContent() {
               >
                 <LoginView
                   onBack={() => setScreen("landing")}
+                  onBlocked={(blockInfo, email) => {
+                    setBlockedModalInfo({ blockInfo, email });
+                  }}
                   onLogin={(role, assignedCat, data) => {
                     const determinedRole: UserRole = role || "user";
                     const isAdm = determinedRole === "admin";
@@ -7601,16 +7389,36 @@ export function AppContent() {
                 )}
               </motion.div>
             )}
+
+            {screen === "accounts" && (isAdmin || userRole === "admin") && (
+              <motion.div
+                key="accounts"
+                variants={screenVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                transition={pageTransition}
+                className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
+              >
+                <AdminAccountsView
+                  currentAdminId={currentUser?.id}
+                  currentAdminEmail={currentUser?.email}
+                  onRefreshStats={fetchSystemStatistics}
+                />
+              </motion.div>
+            )}
           </AnimatePresence>
 
-          {(screen === "feed" || screen === "report" || screen === "tasks") && (
+          {(screen === "feed" || screen === "report" || screen === "tasks" || screen === "accounts") && (
             <BottomNav
               currentTab={
                 screen === "report"
                   ? "report"
                   : screen === "tasks"
                     ? "tasks"
-                    : "home"
+                    : screen === "accounts"
+                      ? "accounts"
+                      : "home"
               }
               onTabChange={handleTabChange}
               isAdmin={isAdmin}
@@ -7619,6 +7427,14 @@ export function AppContent() {
           )}
 
           <AnimatePresence>
+            {blockedModalInfo && (
+              <BlockedAccountModal
+                isOpen={!!blockedModalInfo}
+                blockInfo={blockedModalInfo.blockInfo}
+                userEmail={blockedModalInfo.email}
+                onClose={() => setBlockedModalInfo(null)}
+              />
+            )}
             {activeImage && (
               <ImageModal
                 imageUrl={activeImage.url}

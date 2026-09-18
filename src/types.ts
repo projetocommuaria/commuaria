@@ -124,6 +124,10 @@ export interface UserProfile {
   anonymous?: boolean;
   password?: string;
   created_at?: string;
+  is_blocked?: boolean;
+  blocked_until?: string | null;
+  block_reason?: string | null;
+  blocked_at?: string | null;
 }
 
 export interface ReportItem {
