@@ -178,10 +178,14 @@ function createMockSupabaseClient(): any {
   class MockQueryBuilder {
     private tableName: string;
     private filters: Array<{ field: string; value: any }> = [];
+    private neqFilters: Array<{ field: string; value: any }> = [];
+    private inFilters: Array<{ field: string; values: any[] }> = [];
     private orderField: string | null = null;
     private isAscending = false;
     private isSingle = false;
-    private action: 'select' | 'insert' | 'update' | 'delete' = 'select';
+    private isMaybeSingle = false;
+    private limitCount: number | null = null;
+    private action: 'select' | 'insert' | 'upsert' | 'update' | 'delete' = 'select';
     private payload: any = null;
 
     constructor(tableName: string) {
@@ -195,6 +199,12 @@ function createMockSupabaseClient(): any {
 
     insert(values: any) {
       this.action = 'insert';
+      this.payload = values;
+      return this;
+    }
+
+    upsert(values: any) {
+      this.action = 'upsert';
       this.payload = values;
       return this;
     }
@@ -215,9 +225,29 @@ function createMockSupabaseClient(): any {
       return this;
     }
 
+    neq(field: string, value: any) {
+      this.neqFilters.push({ field, value });
+      return this;
+    }
+
+    in(field: string, values: any[]) {
+      this.inFilters.push({ field, values });
+      return this;
+    }
+
     order(field: string, options?: { ascending?: boolean }) {
       this.orderField = field;
       this.isAscending = !!options?.ascending;
+      return this;
+    }
+
+    limit(count: number) {
+      this.limitCount = count;
+      return this;
+    }
+
+    range(from: number, to: number) {
+      this.limitCount = to - from + 1;
       return this;
     }
 
@@ -226,9 +256,36 @@ function createMockSupabaseClient(): any {
       return this;
     }
 
+    maybeSingle() {
+      this.isMaybeSingle = true;
+      return this;
+    }
+
     private execute() {
       const key = 'commuaria_' + this.tableName;
       let data = JSON.parse(localStorage.getItem(key) || '[]');
+
+      if (this.action === 'upsert') {
+        const records = Array.isArray(this.payload) ? this.payload : [this.payload];
+        records.forEach((rec: any) => {
+          const idx = data.findIndex((item: any) => 
+            (rec.id && item.id === rec.id) || 
+            (rec.email && item.email && item.email.toLowerCase() === rec.email.toLowerCase()) ||
+            (rec.order_number && item.order_number && item.order_number === rec.order_number)
+          );
+          if (idx >= 0) {
+            data[idx] = { ...data[idx], ...rec };
+          } else {
+            data.unshift({
+              id: rec.id || ('rec_' + Math.random().toString(36).substring(2, 11)),
+              created_at: rec.created_at || new Date().toISOString(),
+              ...rec
+            });
+          }
+        });
+        localStorage.setItem(key, JSON.stringify(data));
+        return { data: records, error: null };
+      }
 
       if (this.action === 'insert') {
         const records = Array.isArray(this.payload) ? this.payload : [this.payload];
@@ -237,7 +294,15 @@ function createMockSupabaseClient(): any {
           created_at: rec.created_at || new Date().toISOString(),
           ...rec
         }));
-        data = [...inserted, ...data];
+        // Avoid duplicate IDs if already present
+        inserted.forEach((item: any) => {
+          const existingIdx = data.findIndex((d: any) => d.id === item.id);
+          if (existingIdx >= 0) {
+            data[existingIdx] = { ...data[existingIdx], ...item };
+          } else {
+            data.unshift(item);
+          }
+        });
         localStorage.setItem(key, JSON.stringify(data));
         return { data: inserted, error: null };
       }
@@ -268,6 +333,12 @@ function createMockSupabaseClient(): any {
       this.filters.forEach(f => {
         result = result.filter((r: any) => r[f.field] === f.value);
       });
+      this.neqFilters.forEach(f => {
+        result = result.filter((r: any) => r[f.field] !== f.value);
+      });
+      this.inFilters.forEach(f => {
+        result = result.filter((r: any) => Array.isArray(f.values) && f.values.includes(r[f.field]));
+      });
 
       if (this.orderField) {
         const field = this.orderField;
@@ -279,6 +350,14 @@ function createMockSupabaseClient(): any {
           if (valA < valB) return asc ? -1 : 1;
           return 0;
         });
+      }
+
+      if (this.limitCount !== null && this.limitCount > 0) {
+        result = result.slice(0, this.limitCount);
+      }
+
+      if (this.isMaybeSingle) {
+        return { data: result.length > 0 ? result[0] : null, error: null };
       }
 
       if (this.isSingle) {

@@ -7373,9 +7373,17 @@ export function AppContent() {
                 ) : userRole === "supervisor" ? (
                   <SupervisorTasksView
                     category={assignedCategory || "Pavimentação"}
+                    user={currentUser}
                     reports={allSystemReports}
                     onUpdateStatus={handleUpdateReportStatus}
                     onViewDetails={(report) => setActiveReport(report)}
+                    onRefresh={async () => {
+                      if (currentUser?.id || currentUser?.email) {
+                        await fetchUserData(currentUser.id, currentUser.email);
+                      }
+                      await fetchSystemStatistics();
+                    }}
+                    onTabChange={handleTabChange}
                   />
                 ) : (
                   <TasksView

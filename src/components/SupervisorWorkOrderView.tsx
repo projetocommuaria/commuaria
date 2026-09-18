@@ -56,6 +56,8 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
 
   const [activeSubTab, setActiveSubTab] = useState<"new_order" | "citizen_reports" | "history">("citizen_reports");
   const [workOrders, setWorkOrders] = useState<WorkOrderItem[]>([]);
+  const [internalReports, setInternalReports] = useState<ReportItem[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -79,6 +81,39 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
     (c) => c.id.toLowerCase() === assignedCategory.toLowerCase()
   );
 
+  // Normalization helper for resilient sector matching
+  const normalizeSector = (cat?: string) => {
+    if (!cat) return "";
+    const c = cat.toLowerCase();
+    if (c.includes("pav") || c.includes("via") || c.includes("asfalt") || c.includes("burac")) return "pavimentação";
+    if (c.includes("ilu") || c.includes("luz") || c.includes("post") || c.includes("lamp")) return "iluminação pública";
+    if (c.includes("limp") || c.includes("lixo") || c.includes("entulh") || c.includes("varri")) return "limpeza urbana";
+    if (c.includes("san") || c.includes("esgot") || c.includes("bueir") || c.includes("pluvi") || c.includes("agua") || c.includes("água")) return "saneamento";
+    if (c.includes("arb") || c.includes("arvor") || c.includes("árvor") || c.includes("poda") || c.includes("praca") || c.includes("praça")) return "arborização";
+    return c.trim();
+  };
+
+  const currentSectorNormalized = normalizeSector(assignedCategory);
+
+  const matchesCurrentSector = (itemCategory?: string, itemTitle?: string) => {
+    if (!assignedCategory) return true;
+    const normAssigned = currentSectorNormalized;
+    if (!normAssigned || normAssigned === "geral" || normAssigned === "todas" || normAssigned === "todos" || normAssigned === "supervisor geral") {
+      return true;
+    }
+    const catNorm = normalizeSector(itemCategory);
+    if (catNorm && catNorm === normAssigned) return true;
+    const titleNorm = normalizeSector(itemTitle);
+    if (titleNorm && titleNorm === normAssigned) return true;
+
+    if (itemCategory) {
+      const ic = itemCategory.toLowerCase();
+      const ac = assignedCategory.toLowerCase();
+      if (ic.includes(ac) || ac.includes(ic)) return true;
+    }
+    return false;
+  };
+
   // Generate readable protocol prefix
   const categoryCode =
     assignedCategory.toLowerCase().includes("pav")
@@ -93,10 +128,13 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
       ? "ARB"
       : "ZEL";
 
-  // Load Work Orders from LocalStorage & Supabase
+  // Load Work Orders and Reports from LocalStorage & Supabase
   const loadWorkOrders = async () => {
     try {
+      setIsRefreshing(true);
       let dbOrders: WorkOrderItem[] = [];
+      let dbReports: ReportItem[] = [];
+
       if (supabase) {
         try {
           const { data, error } = await supabase
@@ -109,11 +147,23 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         } catch (dbErr) {
           console.warn("Tabela work_orders no Supabase:", dbErr);
         }
+
+        try {
+          const { data: repData, error: repErr } = await supabase
+            .from("reports")
+            .select("*")
+            .order("created_at", { ascending: false });
+          if (!repErr && repData) {
+            dbReports = repData;
+          }
+        } catch (repErr) {
+          console.warn("Tabela reports no Supabase:", repErr);
+        }
       }
 
+      // Work Orders merge
       const stored = localStorage.getItem("commuaria_work_orders");
       let localList: WorkOrderItem[] = stored ? JSON.parse(stored) : [];
-
       const merged = [...dbOrders];
       localList.forEach((lo) => {
         if (!merged.some((m) => m.id === lo.id || m.order_number === lo.order_number)) {
@@ -121,19 +171,31 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         }
       });
 
+      // Reports merge
+      const storedReports = localStorage.getItem("commuaria_reports");
+      let localReportsList: ReportItem[] = storedReports ? JSON.parse(storedReports) : [];
+      const mergedReports = [...dbReports];
+      localReportsList.forEach((lr) => {
+        if (!mergedReports.some((mr) => mr.id === lr.id)) {
+          mergedReports.push(lr);
+        }
+      });
+      setInternalReports(mergedReports);
+
       // Filter by sector if assigned
       let filtered = merged;
       if (assignedCategory) {
-        const normAssigned = assignedCategory.toLowerCase();
-        filtered = filtered.filter((o) => {
-          if (!o.category) return true;
-          const oCat = o.category.toLowerCase();
-          return oCat.includes(normAssigned) || normAssigned.includes(oCat);
-        });
+        filtered = filtered.filter((o) => matchesCurrentSector(o.category, o.title));
       }
       setWorkOrders(filtered);
+
+      if (onRefresh) {
+        await onRefresh();
+      }
     } catch (e) {
       console.warn("Erro ao carregar Ordens de Serviço:", e);
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -277,6 +339,49 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         }
       }
 
+      // 4. Update the linked citizen report if one was selected
+      if (linkedReportId) {
+        const linkNote = `O.S. ${generatedOrderNumber} emitida e despachada para ${newOrder.assigned_team}. Prazo: ${orderDeadline || "48h"}.`;
+
+        // Update in localStorage
+        const curReports = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+        const updatedReports = curReports.map((r: any) => {
+          if (r.id === linkedReportId) {
+            return {
+              ...r,
+              status: "in_progress",
+              work_order_number: generatedOrderNumber,
+              assigned_team: newOrder.assigned_team,
+              status_notes: linkNote,
+            };
+          }
+          return r;
+        });
+        localStorage.setItem("commuaria_reports", JSON.stringify(updatedReports));
+
+        // Update in Supabase
+        if (supabase) {
+          try {
+            await supabase
+              .from("reports")
+              .update({
+                status: "in_progress",
+                work_order_number: generatedOrderNumber,
+                assigned_team: newOrder.assigned_team,
+                status_notes: linkNote,
+              })
+              .eq("id", linkedReportId);
+          } catch (linkErr) {
+            console.warn("Aviso ao vincular chamado no Supabase:", linkErr);
+          }
+        }
+
+        // Notify parent state if handler is provided
+        if (onUpdateReportStatus) {
+          await onUpdateReportStatus(linkedReportId, "in_progress", linkNote);
+        }
+      }
+
       setSuccessMessage(`Ordem de Serviço ${generatedOrderNumber} emitida com sucesso!`);
       // Clear form
       setOrderTitle("");
@@ -311,8 +416,10 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
       const existingOrders: WorkOrderItem[] = JSON.parse(
         localStorage.getItem("commuaria_work_orders") || "[]"
       );
+      let targetOrder: WorkOrderItem | undefined;
       const updated = existingOrders.map((o) => {
         if (o.id === orderId) {
+          targetOrder = o;
           return {
             ...o,
             status: newStatus,
@@ -371,6 +478,48 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         }
       }
 
+      // If this O.S. was linked to a citizen report, update that citizen report as well
+      const linkedId = targetOrder?.linked_report_id;
+      if (linkedId) {
+        const linkedStatus = newStatus === "completed" ? "resolved" : newStatus === "cancelled" ? "unresolved" : "in_progress";
+        const linkedNotes = notes || (newStatus === "completed"
+          ? `Serviço concluído em campo pela equipe ${targetOrder?.assigned_team || "operacional"}.`
+          : `O.S. vinculada atualizada para ${newStatus}.`);
+
+        const curLocalReports = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+        const updatedLinked = curLocalReports.map((r: any) => {
+          if (r.id === linkedId) {
+            return {
+              ...r,
+              status: linkedStatus,
+              status_notes: linkedNotes,
+              resolved_at: newStatus === "completed" ? new Date().toISOString() : r.resolved_at,
+            };
+          }
+          return r;
+        });
+        localStorage.setItem("commuaria_reports", JSON.stringify(updatedLinked));
+
+        if (supabase) {
+          try {
+            await supabase
+              .from("reports")
+              .update({
+                status: linkedStatus,
+                status_notes: linkedNotes,
+                resolved_at: newStatus === "completed" ? new Date().toISOString() : null,
+              })
+              .eq("id", linkedId);
+          } catch (e) {
+            console.warn("Erro ao atualizar chamado vinculado no Supabase:", e);
+          }
+        }
+
+        if (onUpdateReportStatus) {
+          await onUpdateReportStatus(linkedId, linkedStatus, linkedNotes);
+        }
+      }
+
       await loadWorkOrders();
       if (selectedOrderDetail && selectedOrderDetail.id === orderId) {
         setSelectedOrderDetail((prev) =>
@@ -389,25 +538,11 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // Normalization helper for resilient sector matching
-  const normalizeSector = (cat?: string) => {
-    if (!cat) return "";
-    const c = cat.toLowerCase();
-    if (c.includes("pav") || c.includes("via") || c.includes("asfalt") || c.includes("burac")) return "pavimentação";
-    if (c.includes("ilu") || c.includes("luz") || c.includes("post") || c.includes("lamp")) return "iluminação pública";
-    if (c.includes("limp") || c.includes("lixo") || c.includes("entulh") || c.includes("varri")) return "limpeza urbana";
-    if (c.includes("san") || c.includes("esgot") || c.includes("bueir") || c.includes("pluvi")) return "saneamento";
-    if (c.includes("arb") || c.includes("arvor") || c.includes("poda") || c.includes("praca")) return "arborização";
-    return c.trim();
-  };
-
-  const currentSectorNormalized = normalizeSector(assignedCategory);
-
   // All sector citizen reports (excluding work orders themselves)
-  const sectorCitizenReports = reports.filter((r) => {
+  const allReportsSource = reports && reports.length > 0 ? reports : internalReports;
+  const sectorCitizenReports = allReportsSource.filter((r) => {
     if (r.is_work_order) return false;
-    const rSector = normalizeSector(r.category || r.title);
-    return !rSector || rSector === currentSectorNormalized || !currentSectorNormalized;
+    return matchesCurrentSector(r.category, r.title);
   });
 
   // Pending sector citizen reports for linking / action
@@ -557,6 +692,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
           <div className="flex items-center gap-2">
             <button
               onClick={loadWorkOrders}
+              disabled={isRefreshing}
               title="Atualizar dados"
               className={`p-2 rounded-xl border transition-all ${
                 isDark
@@ -564,7 +700,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
                   : "bg-black/5 border-black/10 text-[#2d4a3b]/70 hover:bg-black/10 hover:text-[#183a2b]"
               }`}
             >
-              <RefreshCw size={16} />
+              <RefreshCw size={16} className={isRefreshing ? "animate-spin text-emerald-500" : ""} />
             </button>
           </div>
         </div>

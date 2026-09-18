@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Search,
   Filter,
@@ -12,10 +12,12 @@ import {
   Sparkles,
   Layers,
   Wrench,
+  RefreshCw,
 } from "lucide-react";
 import { useTheme } from "../ThemeContext";
 import { CATEGORIES_CONFIG, ReportCategory, ReportItem, UserProfile } from "../types";
 import { SafeLogoImage } from "./SafeLogoImage";
+import { supabase } from "../lib/supabase";
 
 interface SupervisorTasksViewProps {
   reports: ReportItem[];
@@ -28,6 +30,7 @@ interface SupervisorTasksViewProps {
     statusNotes?: string
   ) => Promise<void>;
   onTabChange?: (tab: "home" | "report" | "tasks") => void;
+  onRefresh?: () => Promise<void> | void;
 }
 
 export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
@@ -37,6 +40,7 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
   onViewDetails,
   onUpdateStatus,
   onTabChange,
+  onRefresh,
 }) => {
   const { isDark } = useTheme();
   const assignedCategory = category || user?.assigned_category || "Pavimentação";
@@ -46,8 +50,57 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<
     "all" | "unresolved" | "in_analysis" | "in_progress" | "resolved"
   >("all");
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [internalReports, setInternalReports] = useState<ReportItem[]>([]);
 
-  const safeReports = Array.isArray(reports) ? reports : [];
+  // Load and refresh reports from Supabase & LocalStorage
+  const loadReportsDirectly = async () => {
+    try {
+      setIsRefreshing(true);
+      let supaReports: ReportItem[] = [];
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from("reports")
+            .select("*")
+            .order("created_at", { ascending: false });
+          if (!error && data && data.length > 0) {
+            supaReports = data;
+          }
+        } catch (dbErr) {
+          console.warn("Aviso ao buscar chamados no Supabase:", dbErr);
+        }
+      }
+
+      const localReports = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+      const combined = [...supaReports];
+      localReports.forEach((lr: any) => {
+        const matchIdx = combined.findIndex((cr: any) => cr.id === lr.id);
+        if (matchIdx === -1) {
+          combined.push(lr);
+        } else {
+          // Merge local data if it has newer properties
+          combined[matchIdx] = { ...combined[matchIdx], ...lr };
+        }
+      });
+      setInternalReports(combined);
+
+      if (onRefresh) {
+        await onRefresh();
+      }
+    } catch (err) {
+      console.warn("Erro ao atualizar chamados:", err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    loadReportsDirectly();
+  }, [assignedCategory]);
+
+  const displayReports = reports && reports.length > 0 ? reports : internalReports;
+  const safeReports = Array.isArray(displayReports) ? displayReports : [];
 
   const catConfig = CATEGORIES_CONFIG.find(
     (c) => c.id.toLowerCase() === assignedCategory.toLowerCase()
@@ -60,8 +113,8 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
     if (c.includes("pav") || c.includes("via") || c.includes("asfalt") || c.includes("burac")) return "pavimentação";
     if (c.includes("ilu") || c.includes("luz") || c.includes("post") || c.includes("lamp")) return "iluminação pública";
     if (c.includes("limp") || c.includes("lixo") || c.includes("entulh") || c.includes("varri")) return "limpeza urbana";
-    if (c.includes("san") || c.includes("esgot") || c.includes("bueir") || c.includes("pluvi")) return "saneamento";
-    if (c.includes("arb") || c.includes("arvor") || c.includes("poda") || c.includes("praca")) return "arborização";
+    if (c.includes("san") || c.includes("esgot") || c.includes("bueir") || c.includes("pluvi") || c.includes("agua") || c.includes("água")) return "saneamento";
+    if (c.includes("arb") || c.includes("arvor") || c.includes("árvor") || c.includes("poda") || c.includes("praca") || c.includes("praça")) return "arborização";
     return c.trim();
   };
 
@@ -69,14 +122,21 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
 
   const matchesCurrentSector = (report: ReportItem) => {
     if (!assignedCategory) return true;
+    const normAssigned = currentSectorNormalized;
+    if (!normAssigned || normAssigned === "geral" || normAssigned === "todas" || normAssigned === "todos" || normAssigned === "supervisor geral") {
+      return true;
+    }
     const catNorm = normalizeSector(report.category);
+    if (catNorm && catNorm === normAssigned) return true;
     const titleNorm = normalizeSector(report.title);
-    return (
-      catNorm === currentSectorNormalized ||
-      titleNorm === currentSectorNormalized ||
-      (report.category && report.category.toLowerCase().includes(assignedCategory.toLowerCase())) ||
-      (report.title && report.title.toLowerCase().includes(assignedCategory.toLowerCase()))
-    );
+    if (titleNorm && titleNorm === normAssigned) return true;
+
+    if (report.category) {
+      const rc = report.category.toLowerCase();
+      const ac = assignedCategory.toLowerCase();
+      if (rc.includes(ac) || ac.includes(rc)) return true;
+    }
+    return false;
   };
 
   // Filter reports
@@ -203,6 +263,23 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
               Setor de {assignedCategory}
             </span>
           </div>
+        </div>
+
+        {/* Refresh button */}
+        <div className="absolute top-8 right-6 sm:right-10 z-20">
+          <button
+            onClick={loadReportsDirectly}
+            disabled={isRefreshing}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold backdrop-blur-md border shadow-md transition-all active:scale-95 ${
+              isDark
+                ? "bg-black/40 hover:bg-black/60 border-white/20 text-white"
+                : "bg-white/85 hover:bg-white border-emerald-300 text-[#183a2b]"
+            }`}
+            title="Sincronizar chamados com Supabase"
+          >
+            <RefreshCw size={14} className={isRefreshing ? "animate-spin text-emerald-500" : "text-emerald-600"} />
+            <span className="hidden sm:inline">{isRefreshing ? "Sincronizando..." : "Sincronizar"}</span>
+          </button>
         </div>
 
         <div className="relative z-10 px-8 text-left mt-auto">
