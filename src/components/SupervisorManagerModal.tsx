@@ -191,6 +191,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
           name: cleanName,
           role: "supervisor",
           assigned_category: assignedCat,
+          is_admin: false,
           ...(formPassword ? { password: formPassword } : {}),
         };
       } else {
@@ -205,12 +206,34 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
           name: cleanName,
           role: "supervisor",
           assigned_category: assignedCat,
+          is_admin: false,
           ...(formPassword ? { password: formPassword } : {}),
         };
       } else {
         localProfiles.push(updatedProfile);
       }
       localStorage.setItem("commuaria_profiles", JSON.stringify(localProfiles));
+
+      // Update active session if it's the current user
+      const activeSessionStr = localStorage.getItem("commuaria_active_session");
+      if (activeSessionStr) {
+        try {
+          const activeSession = JSON.parse(activeSessionStr);
+          const activeEmail = (activeSession.email || "").toLowerCase().trim();
+          if (cleanEmail === activeEmail || targetId === activeSession.id) {
+            localStorage.setItem(
+              "commuaria_active_session",
+              JSON.stringify({
+                ...activeSession,
+                name: cleanName,
+                role: "supervisor",
+                assigned_category: assignedCat,
+                is_admin: false,
+              })
+            );
+          }
+        } catch (_) {}
+      }
 
       // 2. If Supabase is connected, register in Auth and sync to profiles table
       if (supabase) {

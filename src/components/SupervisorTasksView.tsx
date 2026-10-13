@@ -65,7 +65,15 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
             .select("*")
             .order("created_at", { ascending: false });
           if (!error && data && data.length > 0) {
-            supaReports = data;
+            supaReports = data.map((r: any) => ({
+              ...r,
+              category:
+                r.category ||
+                r.maintenance_type ||
+                (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) ||
+                assignedCategory ||
+                "Pavimentação",
+            }));
           }
         } catch (dbErr) {
           console.warn("Aviso ao buscar chamados no Supabase:", dbErr);
@@ -110,7 +118,7 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
   const normalizeSector = (cat?: string) => {
     if (!cat) return "";
     const c = cat.toLowerCase();
-    if (c.includes("pav") || c.includes("via") || c.includes("asfalt") || c.includes("burac")) return "pavimentação";
+    if (c.includes("pav") || c.includes("via") || c.includes("asfalt") || c.includes("burac") || c.includes("rua")) return "pavimentação";
     if (c.includes("ilu") || c.includes("luz") || c.includes("post") || c.includes("lamp")) return "iluminação pública";
     if (c.includes("limp") || c.includes("lixo") || c.includes("entulh") || c.includes("varri")) return "limpeza urbana";
     if (c.includes("san") || c.includes("esgot") || c.includes("bueir") || c.includes("pluvi") || c.includes("agua") || c.includes("água")) return "saneamento";

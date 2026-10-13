@@ -26,7 +26,7 @@ import {
 import { useTheme } from "../ThemeContext";
 import { CATEGORIES_CONFIG, ReportCategory, ReportItem, UserProfile, WorkOrderItem } from "../types";
 import { SafeLogoImage } from "./SafeLogoImage";
-import { supabase } from "../lib/supabase";
+import { supabase, isUUID, generateUUID } from "../lib/supabase";
 
 interface SupervisorWorkOrderViewProps {
   category?: string;
@@ -85,7 +85,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
   const normalizeSector = (cat?: string) => {
     if (!cat) return "";
     const c = cat.toLowerCase();
-    if (c.includes("pav") || c.includes("via") || c.includes("asfalt") || c.includes("burac")) return "pavimentação";
+    if (c.includes("pav") || c.includes("via") || c.includes("asfalt") || c.includes("burac") || c.includes("rua")) return "pavimentação";
     if (c.includes("ilu") || c.includes("luz") || c.includes("post") || c.includes("lamp")) return "iluminação pública";
     if (c.includes("limp") || c.includes("lixo") || c.includes("entulh") || c.includes("varri")) return "limpeza urbana";
     if (c.includes("san") || c.includes("esgot") || c.includes("bueir") || c.includes("pluvi") || c.includes("agua") || c.includes("água")) return "saneamento";
@@ -154,7 +154,15 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
             .select("*")
             .order("created_at", { ascending: false });
           if (!repErr && repData) {
-            dbReports = repData;
+            dbReports = repData.map((r: any) => ({
+              ...r,
+              category:
+                r.category ||
+                r.maintenance_type ||
+                (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) ||
+                assignedCategory ||
+                "Pavimentação",
+            }));
           }
         } catch (repErr) {
           console.warn("Tabela reports no Supabase:", repErr);
@@ -315,25 +323,29 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
             console.warn("Supabase work_orders insert notice:", woErr);
           }
 
-          // B. Insert into reports table
-          await supabase.from("reports").insert([
-            {
-              id: newOrderId,
-              title: reportRepresentation.title,
-              description: reportRepresentation.description,
-              category: reportRepresentation.category,
-              address: reportRepresentation.address,
-              latitude: reportRepresentation.latitude,
-              longitude: reportRepresentation.longitude,
-              status: "in_progress",
-              status_notes: reportRepresentation.status_notes,
-              is_work_order: true,
-              work_order_number: generatedOrderNumber,
-              assigned_team: newOrder.assigned_team,
-              priority: orderPriority,
-              deadline: orderDeadline,
-            },
-          ]);
+          // B. Insert into reports table if tracking representation is desired
+          try {
+            const reportUuid = generateUUID();
+            await supabase.from("reports").insert([
+              {
+                id: reportUuid,
+                title: reportRepresentation.title,
+                description: `[Categoria: ${assignedCategory}]\n${reportRepresentation.description}`,
+                maintenance_type: assignedCategory,
+                address: reportRepresentation.address,
+                latitude: reportRepresentation.latitude,
+                longitude: reportRepresentation.longitude,
+                status: "in_progress",
+                is_work_order: true,
+                work_order_number: generatedOrderNumber,
+                assigned_team: newOrder.assigned_team,
+                priority: orderPriority,
+                deadline: orderDeadline || null,
+              },
+            ]);
+          } catch (rErr) {
+            console.warn("Aviso ao espelhar O.S. na tabela reports:", rErr);
+          }
         } catch (dbErr) {
           console.warn("Supabase O.S. insert warning:", dbErr);
         }
@@ -360,7 +372,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         localStorage.setItem("commuaria_reports", JSON.stringify(updatedReports));
 
         // Update in Supabase
-        if (supabase) {
+        if (supabase && isUUID(linkedReportId)) {
           try {
             await supabase
               .from("reports")
@@ -368,7 +380,6 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
                 status: "in_progress",
                 work_order_number: generatedOrderNumber,
                 assigned_team: newOrder.assigned_team,
-                status_notes: linkNote,
               })
               .eq("id", linkedReportId);
           } catch (linkErr) {
@@ -460,17 +471,8 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
             .from("work_orders")
             .update({
               status: newStatus,
-              status_notes: notes,
+              status_notes: notes || null,
               completed_at: newStatus === "completed" ? new Date().toISOString() : null,
-            })
-            .eq("id", orderId);
-
-          await supabase
-            .from("reports")
-            .update({
-              status: newStatus === "completed" ? "resolved" : "in_progress",
-              status_notes: notes || `O.S. atualizada para ${newStatus}.`,
-              resolved_at: newStatus === "completed" ? new Date().toISOString() : null,
             })
             .eq("id", orderId);
         } catch (dbErr) {
@@ -500,14 +502,12 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         });
         localStorage.setItem("commuaria_reports", JSON.stringify(updatedLinked));
 
-        if (supabase) {
+        if (supabase && isUUID(linkedId)) {
           try {
             await supabase
               .from("reports")
               .update({
                 status: linkedStatus,
-                status_notes: linkedNotes,
-                resolved_at: newStatus === "completed" ? new Date().toISOString() : null,
               })
               .eq("id", linkedId);
           } catch (e) {

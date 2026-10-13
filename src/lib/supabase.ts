@@ -1,5 +1,24 @@
 import { createClient } from '@supabase/supabase-js';
 
+export const DEFAULT_SUPABASE_URL = 'https://jmdwkpuerwoiwrntswhu.supabase.co';
+export const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_9jBHjd3XLczKe6bzRo5WJA_Kl5-d0sh';
+
+export const isUUID = (str?: string | null): boolean =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str || '');
+
+export const generateUUID = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    try {
+      return crypto.randomUUID();
+    } catch (_) {}
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
+
 // Sanitize inputs by stripping extra quotes or whitespace
 const getStoredConfig = () => {
   let url = import.meta.env.VITE_SUPABASE_URL || '';
@@ -12,8 +31,8 @@ const getStoredConfig = () => {
     if (customKey) key = customKey;
   }
 
-  const cleanUrl = url.replace(/^['"]|['"]$/g, '').trim();
-  const cleanKey = key.replace(/^['"]|['"]$/g, '').trim();
+  const cleanUrl = (url || DEFAULT_SUPABASE_URL).replace(/^['"]|['"]$/g, '').trim();
+  const cleanKey = (key || DEFAULT_SUPABASE_ANON_KEY).replace(/^['"]|['"]$/g, '').trim();
 
   return { url: cleanUrl, key: cleanKey };
 };
@@ -771,19 +790,25 @@ export async function syncAllDataToSupabase(): Promise<{
     const rawReports = JSON.parse(localStorage.getItem('commuaria_reports') || '[]');
     if (Array.isArray(rawReports) && rawReports.length > 0) {
       for (const r of rawReports) {
+        const reportId = isUUID(r.id) ? r.id : generateUUID();
+        const validUserId = isUUID(r.user_id) ? r.user_id : null;
+        const cat = r.category || 'Pavimentação';
+        const formattedDesc = r.description?.includes('[Categoria:')
+          ? r.description
+          : `[Categoria: ${cat}]\n${r.description || ''}`;
+
         const payload = {
-          id: r.id,
+          id: reportId,
           title: r.title || 'Ocorrência',
-          description: r.description || '',
-          category: r.category || 'Pavimentação',
+          description: formattedDesc,
+          maintenance_type: cat,
           address: r.address || 'Araucária - PR',
           latitude: typeof r.latitude === 'number' ? r.latitude : -25.5901,
           longitude: typeof r.longitude === 'number' ? r.longitude : -49.4851,
           status: r.status || 'unresolved',
-          status_notes: r.status_notes || null,
           image_url: r.image_url || null,
           anonymous: !!r.anonymous,
-          user_id: r.user_id || null,
+          user_id: validUserId,
           user_email: r.user_email || null,
           user_name: r.user_name || null,
           is_work_order: !!r.is_work_order,

@@ -59,7 +59,7 @@ import {
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
-import { supabase, isRealSupabase } from "./lib/supabase";
+import { supabase, isRealSupabase, generateUUID, isUUID } from "./lib/supabase";
 import {
   CATEGORIES_CONFIG,
   ReportCategory,
@@ -919,20 +919,24 @@ const LoginView = ({
               localStorage.getItem("commuaria_profiles") || "[]",
             );
             const matchedLocalProfile = localProfiles.find(
-              (p) => (p.email || "").toLowerCase() === targetEmail
+              (p) => (p.email || "").toLowerCase().trim() === targetEmail
             );
 
+            // Give strict precedence to explicit roles (especially supervisor)
+            const explicitRole: UserRole | null =
+              (resolvedProfile?.role && resolvedProfile.role !== "user" ? resolvedProfile.role : null) ||
+              (matchedLocalProfile?.role && matchedLocalProfile.role !== "user" ? matchedLocalProfile.role : null) ||
+              (resolvedProfile?.role === "user" || matchedLocalProfile?.role === "user" ? "user" : null);
+
             const finalRole: UserRole =
-              isMasterAdminEmail
-                ? "admin"
-                : (resolvedProfile?.role && resolvedProfile.role !== "user" ? resolvedProfile.role : null) ||
-                  (matchedLocalProfile?.role && matchedLocalProfile.role !== "user" ? matchedLocalProfile.role : null) ||
-                  (resolvedProfile?.is_admin || matchedLocalProfile?.is_admin ? "admin" : "user");
+              explicitRole ||
+              (resolvedProfile?.is_admin || matchedLocalProfile?.is_admin ? "admin" : null) ||
+              (isMasterAdminEmail ? "admin" : "user");
 
             const finalCategory =
               resolvedProfile?.assigned_category ||
               matchedLocalProfile?.assigned_category ||
-              null;
+              (finalRole === "supervisor" ? "Pavimentação" : null);
 
             const finalName =
               resolvedProfile?.name ||
@@ -941,7 +945,7 @@ const LoginView = ({
               targetEmail.split("@")[0];
 
             const candidateProfile = resolvedProfile || matchedLocalProfile;
-            if (!isMasterAdminEmail && candidateProfile) {
+            if (finalRole !== "admin" && candidateProfile) {
               const blockStatus = checkAccountBlockStatus(candidateProfile);
               if (blockStatus.isBlocked) {
                 if (onBlocked) {
@@ -1024,22 +1028,25 @@ const LoginView = ({
           return;
         }
 
+        const explicitRole: UserRole | null =
+          (matchedLocalProfile?.role && matchedLocalProfile.role !== "user" ? matchedLocalProfile.role : null) ||
+          (matchedLocalUser?.role && matchedLocalUser.role !== "user" ? matchedLocalUser.role : null) ||
+          (matchedLocalProfile?.role === "user" || matchedLocalUser?.role === "user" ? "user" : null);
+
         const userRole: UserRole =
-          isMasterAdminEmail
-            ? "admin"
-            : matchedLocalProfile?.role ||
-              matchedLocalUser?.role ||
-              (matchedLocalProfile?.is_admin || matchedLocalUser?.is_admin ? "admin" : "user");
+          explicitRole ||
+          (matchedLocalProfile?.is_admin || matchedLocalUser?.is_admin ? "admin" : null) ||
+          (isMasterAdminEmail ? "admin" : "user");
 
         const category =
           matchedLocalProfile?.assigned_category ||
           matchedLocalUser?.assigned_category ||
-          null;
+          (userRole === "supervisor" ? "Pavimentação" : null);
 
         const resolvedId = matchedLocalProfile?.id || matchedLocalUser?.id || "u_" + targetEmail.replace(/[^a-zA-Z0-9]/g, "_");
 
         const candidateLocal = matchedLocalProfile || matchedLocalUser;
-        if (!isMasterAdminEmail && candidateLocal) {
+        if (userRole !== "admin" && candidateLocal) {
           const blockStatus = checkAccountBlockStatus(candidateLocal);
           if (blockStatus.isBlocked) {
             if (onBlocked) {
@@ -2366,7 +2373,7 @@ const BottomNav = ({
   const { isDark } = useTheme();
 
   return (
-    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 pointer-events-auto flex items-center justify-center">
+    <div className="fixed bottom-6 sm:bottom-8 left-0 right-0 mx-auto w-fit z-50 pointer-events-auto flex items-center justify-center">
       <div
         className={`rounded-[40px] drop-shadow-2xl border flex items-center justify-center transition-all duration-300 backdrop-blur-2xl ${
           isAdmin
@@ -3943,8 +3950,9 @@ const ReportView = ({
         });
       }
 
+      const reportId = generateUUID();
       const newReportData: ReportItem = {
-        id: "report_" + Math.random().toString(36).substring(2, 9),
+        id: reportId,
         title: title.trim(),
         description: title.trim(),
         category: category,
@@ -3966,37 +3974,42 @@ const ReportView = ({
       localReports.unshift(newReportData);
       localStorage.setItem("commuaria_reports", JSON.stringify(localReports));
 
-      // 2. Try Supabase insert if connected
+      // 2. Persist to Supabase
       if (supabase) {
         try {
-          const { error } = await supabase.from("reports").insert({
-            id: newReportData.id,
+          const validUserId = isUUID(activeUserId) ? activeUserId : null;
+          const formattedDesc = `[Categoria: ${category}]\n${title.trim()}`;
+
+          const supabasePayload = {
+            id: reportId,
             title: title.trim(),
-            description: title.trim(),
-            category: category,
+            description: formattedDesc,
+            maintenance_type: category,
             address: locationQuery || "Endereço não informado",
             latitude: mapCenter[0] || -25.5929,
             longitude: mapCenter[1] || -49.4891,
-            image_url: imageUrl,
-            anonymous: anonymous,
-            user_id: activeUserId,
-            user_email: activeUserEmail,
-            user_name: activeUserName,
+            image_url: imageUrl || null,
+            anonymous: !!anonymous,
+            user_id: validUserId,
+            user_email: activeUserEmail || null,
+            user_name: activeUserName || null,
             status: "unresolved",
-          });
+            created_at: newReportData.created_at,
+          };
+
+          const { error } = await supabase.from("reports").insert([supabasePayload]);
           if (error) {
             console.warn("Supabase insert notice, attempting simplified payload:", error);
-            await supabase.from("reports").insert({
+            await supabase.from("reports").insert([{
+              id: reportId,
               title: title.trim(),
-              description: title.trim(),
-              category: category,
+              description: formattedDesc,
+              maintenance_type: category,
               address: locationQuery || "Endereço não informado",
               latitude: mapCenter[0] || -25.5929,
               longitude: mapCenter[1] || -49.4891,
-              image_url: imageUrl,
-              anonymous: anonymous,
               status: "unresolved",
-            });
+            }]);
           }
         } catch (subErr) {
           console.warn("Erro ao enviar para o Supabase (salvo no cache local):", subErr);
@@ -6441,7 +6454,14 @@ export function AppContent() {
           .select("*")
           .order("created_at", { ascending: false });
         if (data && data.length > 0) {
-          reportsData = data;
+          reportsData = data.map((r: any) => ({
+            ...r,
+            category:
+              r.category ||
+              r.maintenance_type ||
+              (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) ||
+              "Pavimentação",
+          }));
         }
       }
     } catch (e) {
@@ -6529,13 +6549,12 @@ export function AppContent() {
     );
 
     // 3. Atualizar no Supabase se conectado
-    if (supabase) {
+    if (supabase && isUUID(reportId)) {
       try {
         await supabase
           .from("reports")
           .update({
             status: newStatus,
-            status_notes: notes,
           })
           .eq("id", reportId);
       } catch (err) {
@@ -6679,20 +6698,58 @@ export function AppContent() {
 
     if (supabase) {
       try {
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("*")
-          .eq("id", userId)
-          .maybeSingle();
-        dbProfile = profile;
+        if (isUUID(userId)) {
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("*")
+            .eq("id", userId)
+            .maybeSingle();
+          dbProfile = profile;
 
-        const { data: reports } = await supabase
-          .from("reports")
-          .select("*")
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false });
-        if (reports && reports.length > 0) {
-          dbReports = reports;
+          const { data: reports } = await supabase
+            .from("reports")
+            .select("*")
+            .eq("user_id", userId)
+            .order("created_at", { ascending: false });
+          if (reports && reports.length > 0) {
+            dbReports = reports.map((r: any) => ({
+              ...r,
+              category:
+                r.category ||
+                r.maintenance_type ||
+                (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) ||
+                "Pavimentação",
+            }));
+          }
+        }
+        
+        if (!dbProfile && userEmail) {
+          const { data: profileByEmail } = await supabase
+            .from("profiles")
+            .select("*")
+            .ilike("email", userEmail.toLowerCase())
+            .maybeSingle();
+          if (profileByEmail) {
+            dbProfile = profileByEmail;
+          }
+        }
+
+        if (userEmail && dbReports.length === 0) {
+          const { data: reports } = await supabase
+            .from("reports")
+            .select("*")
+            .eq("user_email", userEmail.toLowerCase())
+            .order("created_at", { ascending: false });
+          if (reports && reports.length > 0) {
+            dbReports = reports.map((r: any) => ({
+              ...r,
+              category:
+                r.category ||
+                r.maintenance_type ||
+                (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) ||
+                "Pavimentação",
+            }));
+          }
         }
       } catch (err) {
         console.warn("Supabase fetch user data fallback:", err);
@@ -6708,22 +6765,30 @@ export function AppContent() {
     );
     const targetEmail = (userEmail || dbProfile?.email || currentUser.email || "").toLowerCase();
     const localMatched =
-      localProfiles.find((p) => (userId && p.id === userId) || (targetEmail && (p.email || "").toLowerCase() === targetEmail)) ||
-      localUsers.find((u) => (userId && u.id === userId) || (targetEmail && (u.email || "").toLowerCase() === targetEmail));
+      localProfiles.find((p) => (userId && p.id === userId) || (targetEmail && (p.email || "").toLowerCase().trim() === targetEmail)) ||
+      localUsers.find((u) => (userId && u.id === userId) || (targetEmail && (u.email || "").toLowerCase().trim() === targetEmail));
 
     const isMasterAdminEmail =
       targetEmail === "admin@commuaria.com" ||
       targetEmail === "admin" ||
       targetEmail === "projetocomnuaria831@gmail.com";
 
+    // Strict priority for explicit assigned roles
+    const explicitRole: UserRole | null =
+      (dbProfile?.role && dbProfile.role !== "user" ? dbProfile.role : null) ||
+      (localMatched?.role && localMatched.role !== "user" ? localMatched.role : null) ||
+      (dbProfile?.role === "user" || localMatched?.role === "user" ? "user" : null);
+
     const resolvedRole: UserRole =
-      isMasterAdminEmail
-        ? "admin"
-        : (dbProfile?.role && dbProfile.role !== "user" ? dbProfile.role : null) ||
-          (localMatched?.role && localMatched.role !== "user" ? localMatched.role : null) ||
-          (dbProfile?.is_admin || localMatched?.is_admin ? "admin" : currentUser.role || "user");
+      explicitRole ||
+      (dbProfile?.is_admin || localMatched?.is_admin ? "admin" : null) ||
+      (isMasterAdminEmail ? "admin" : currentUser.role || "user");
+
     const resolvedCat =
-      dbProfile?.assigned_category || localMatched?.assigned_category || currentUser.assigned_category || null;
+      dbProfile?.assigned_category ||
+      localMatched?.assigned_category ||
+      currentUser.assigned_category ||
+      (resolvedRole === "supervisor" ? "Pavimentação" : null);
     const resolvedName =
       dbProfile?.name || localMatched?.name || currentUser.name || (targetEmail ? targetEmail.split("@")[0] : "Usuário");
     const resolvedEmail =
@@ -6776,7 +6841,7 @@ export function AppContent() {
     };
 
     // Check if account has been blocked by an administrator
-    if (!isMasterAdminEmail) {
+    if (resolvedRole !== "admin") {
       const blockStatus = checkAccountBlockStatus(resolvedUser);
       if (blockStatus.isBlocked) {
         localStorage.removeItem("commuaria_active_session");
@@ -7412,6 +7477,25 @@ export function AppContent() {
                   currentAdminId={currentUser?.id}
                   currentAdminEmail={currentUser?.email}
                   onRefreshStats={fetchSystemStatistics}
+                  onRoleChanged={(idOrEmail, newRole, newCat) => {
+                    const cleanTarget = (idOrEmail || "").toLowerCase().trim();
+                    const currentEmail = (currentUser?.email || "").toLowerCase().trim();
+                    const currentId = currentUser?.id || "";
+                    if (cleanTarget === currentEmail || cleanTarget === currentId) {
+                      setUserRole(newRole);
+                      setIsAdmin(newRole === "admin");
+                      setAssignedCategory(newCat);
+                      setCurrentUser((prev) => ({
+                        ...prev,
+                        role: newRole,
+                        assigned_category: newCat,
+                        is_admin: newRole === "admin",
+                      }));
+                      if (newRole === "supervisor") {
+                        setScreen("tasks");
+                      }
+                    }
+                  }}
                 />
               </motion.div>
             )}

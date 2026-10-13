@@ -23,27 +23,38 @@ import {
 } from "lucide-react";
 import { useTheme } from "../ThemeContext";
 import { UserProfile, UserRole, ReportCategory, CATEGORIES_CONFIG } from "../types";
-import { supabase, syncAllDataToSupabase } from "../lib/supabase";
+import { supabase, syncAllDataToSupabase, isUUID, generateUUID } from "../lib/supabase";
 import { checkAccountBlockStatus } from "../utils/blockUtils";
-import { SafeLogoImage } from "./SafeLogoImage";
 
 interface AdminAccountsViewProps {
   currentAdminId?: string;
   currentAdminEmail?: string;
   onRefreshStats?: () => Promise<void>;
   onViewDetails?: (user: UserProfile) => void;
+  onRoleChanged?: (userIdOrEmail: string, newRole: UserRole, newCategory: string | null) => void;
 }
 
 export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
   currentAdminId,
   currentAdminEmail,
   onRefreshStats,
+  onRoleChanged,
 }) => {
   const { isDark } = useTheme();
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+
+  // Helper to determine accurate effective role with high priority for supervisor
+  const getEffectiveRole = (p?: UserProfile | null): UserRole => {
+    if (!p) return "user";
+    if (p.role === "supervisor") return "supervisor";
+    if (p.role === "admin") return "admin";
+    if (p.role === "user") return "user";
+    if (p.is_admin) return "admin";
+    return "user";
+  };
 
   // Filters & Search
   const [searchQuery, setSearchQuery] = useState("");
@@ -125,23 +136,42 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
       // 1. Add Supabase profiles
       supaProfiles.forEach((p) => {
-        const key = (p.email || p.id).toLowerCase();
+        const key = (p.email || p.id).toLowerCase().trim();
         mergedMap.set(key, p);
       });
 
       // 2. Add local profiles
       localProfiles.forEach((lp) => {
-        const key = (lp.email || lp.id).toLowerCase();
+        const key = (lp.email || lp.id).toLowerCase().trim();
         if (!mergedMap.has(key)) {
           mergedMap.set(key, lp);
         } else {
           const existing = mergedMap.get(key)!;
+          // Determine the most authoritative role
+          // If local profile has an explicit role (e.g. supervisor), respect it
+          const resolvedRole: UserRole =
+            lp.role && lp.role !== "user"
+              ? lp.role
+              : existing.role && existing.role !== "user"
+              ? existing.role
+              : lp.role === "user" || existing.role === "user"
+              ? "user"
+              : (lp.is_admin || existing.is_admin ? "admin" : "user");
+
+          const isReallyAdmin = resolvedRole === "admin";
+
           mergedMap.set(key, {
             ...existing,
+            ...lp,
+            role: resolvedRole,
+            is_admin: isReallyAdmin,
+            assigned_category:
+              resolvedRole === "supervisor"
+                ? (lp.assigned_category || existing.assigned_category || "Pavimentação")
+                : null,
             is_blocked: lp.is_blocked !== undefined ? lp.is_blocked : existing.is_blocked,
             blocked_until: lp.blocked_until !== undefined ? lp.blocked_until : existing.blocked_until,
             block_reason: lp.block_reason || existing.block_reason,
-            assigned_category: lp.assigned_category || existing.assigned_category,
           });
         }
       });
@@ -384,51 +414,128 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
     setRoleChangeLoading(true);
 
     try {
+      const cleanEmail = (selectedUserForRoleChange.email || "").toLowerCase().trim();
+      const targetUserId = selectedUserForRoleChange.id;
+      const targetCategory = newRole === "supervisor" ? (newCategory || "Pavimentação") : null;
+
       const updatePayload = {
         role: newRole,
-        assigned_category: newRole === "supervisor" ? newCategory : null,
+        assigned_category: targetCategory,
         is_admin: newRole === "admin",
       };
 
-      // 1. Update in LocalStorage
+      // 1. Update in LocalStorage commuaria_profiles
       const localProfiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+      let foundInProfiles = false;
       const updatedProfiles = localProfiles.map((p: any) => {
-        if (p.id === selectedUserForRoleChange.id || p.email?.toLowerCase() === selectedUserForRoleChange.email?.toLowerCase()) {
-          return { ...p, ...updatePayload };
+        const pEmail = (p.email || "").toLowerCase().trim();
+        if ((targetUserId && p.id === targetUserId) || (cleanEmail && pEmail === cleanEmail)) {
+          foundInProfiles = true;
+          return {
+            ...p,
+            ...updatePayload,
+            is_admin: newRole === "admin",
+          };
         }
         return p;
       });
+      if (!foundInProfiles) {
+        updatedProfiles.push({
+          ...selectedUserForRoleChange,
+          ...updatePayload,
+          is_admin: newRole === "admin",
+        });
+      }
       localStorage.setItem("commuaria_profiles", JSON.stringify(updatedProfiles));
 
+      // 2. Update in LocalStorage commuaria_users
       const localUsers = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+      let foundInUsers = false;
       const updatedUsers = localUsers.map((u: any) => {
-        if (u.id === selectedUserForRoleChange.id || u.email?.toLowerCase() === selectedUserForRoleChange.email?.toLowerCase()) {
-          return { ...u, ...updatePayload };
+        const uEmail = (u.email || "").toLowerCase().trim();
+        if ((targetUserId && u.id === targetUserId) || (cleanEmail && uEmail === cleanEmail)) {
+          foundInUsers = true;
+          return {
+            ...u,
+            ...updatePayload,
+            is_admin: newRole === "admin",
+          };
         }
         return u;
       });
+      if (!foundInUsers) {
+        updatedUsers.push({
+          ...selectedUserForRoleChange,
+          ...updatePayload,
+          is_admin: newRole === "admin",
+        });
+      }
       localStorage.setItem("commuaria_users", JSON.stringify(updatedUsers));
 
-      // 2. Update in Supabase
+      // 3. Update active session if it's the currently logged-in account
+      const activeSessionStr = localStorage.getItem("commuaria_active_session");
+      if (activeSessionStr) {
+        try {
+          const activeSession = JSON.parse(activeSessionStr);
+          const activeEmail = (activeSession.email || "").toLowerCase().trim();
+          if (
+            (targetUserId && activeSession.id === targetUserId) ||
+            (cleanEmail && activeEmail === cleanEmail)
+          ) {
+            const updatedSession = {
+              ...activeSession,
+              ...updatePayload,
+              is_admin: newRole === "admin",
+            };
+            localStorage.setItem("commuaria_active_session", JSON.stringify(updatedSession));
+          }
+        } catch (_) {}
+      }
+
+      // 4. Update in Supabase
       if (supabase) {
         try {
-          await supabase
-            .from("profiles")
-            .update(updatePayload)
-            .eq("id", selectedUserForRoleChange.id);
+          if (cleanEmail) {
+            await supabase
+              .from("profiles")
+              .update(updatePayload)
+              .ilike("email", cleanEmail);
+          }
 
-          await supabase
+          if (isUUID(targetUserId)) {
+            await supabase
+              .from("profiles")
+              .update(updatePayload)
+              .eq("id", targetUserId);
+          }
+
+          // If profile didn't exist in Supabase yet, upsert it
+          const { data: checkDb } = await supabase
             .from("profiles")
-            .update(updatePayload)
-            .eq("email", selectedUserForRoleChange.email);
+            .select("id")
+            .ilike("email", cleanEmail)
+            .maybeSingle();
+
+          if (!checkDb) {
+            await supabase.from("profiles").upsert({
+              id: isUUID(targetUserId) ? targetUserId : generateUUID(),
+              name: selectedUserForRoleChange.name || cleanEmail.split("@")[0] || "Usuário",
+              email: cleanEmail,
+              ...updatePayload,
+              created_at: selectedUserForRoleChange.created_at || new Date().toISOString(),
+            });
+          }
         } catch (err) {
           console.warn("Supabase role update fallback:", err);
         }
       }
 
-      setActionSuccess(`Cargo de "${selectedUserForRoleChange.name || selectedUserForRoleChange.email}" atualizado.`);
+      setActionSuccess(`Cargo de "${selectedUserForRoleChange.name || selectedUserForRoleChange.email}" atualizado para ${newRole === "supervisor" ? `Supervisor (${targetCategory})` : newRole === "admin" ? "Administrador" : "Cidadão"}.`);
       setSelectedUserForRoleChange(null);
       await loadAllAccounts();
+      if (onRoleChanged) {
+        onRoleChanged(targetUserId || cleanEmail, newRole, targetCategory);
+      }
       if (onRefreshStats) await onRefreshStats();
     } catch (e: any) {
       alert("Erro ao atualizar cargo: " + (e.message || "Tente novamente"));
@@ -446,6 +553,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
     const cleanEmail = addEmail.trim().toLowerCase();
     const cleanName = addName.trim();
+    const targetCategory = addRole === "supervisor" ? addCategory : null;
 
     if (!cleanEmail || !cleanName) {
       setAddError("Preencha todos os campos obrigatórios.");
@@ -454,13 +562,13 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
     }
 
     try {
-      const uuid = "user_" + Math.random().toString(36).substring(2, 9);
+      const uuid = generateUUID();
       const newAccount: UserProfile = {
         id: uuid,
         name: cleanName,
         email: cleanEmail,
         role: addRole,
-        assigned_category: addRole === "supervisor" ? addCategory : null,
+        assigned_category: targetCategory,
         is_admin: addRole === "admin",
         password: addPassword.trim() || "senha123",
         created_at: new Date().toISOString(),
@@ -479,20 +587,28 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
       // 2. Supabase
       if (supabase) {
         try {
-          await supabase.from("profiles").insert({
-            id: uuid,
+          const { data: existingProfile } = await supabase
+            .from("profiles")
+            .select("id")
+            .ilike("email", cleanEmail)
+            .maybeSingle();
+
+          const dbId = existingProfile?.id || uuid;
+          await supabase.from("profiles").upsert({
+            id: dbId,
             name: cleanName,
             email: cleanEmail,
             role: addRole,
-            assigned_category: addRole === "supervisor" ? addCategory : null,
+            assigned_category: targetCategory,
             is_admin: addRole === "admin",
+            created_at: new Date().toISOString(),
           });
         } catch (err) {
           console.warn("Supabase insert user fallback:", err);
         }
       }
 
-      setActionSuccess(`Conta de "${cleanName}" criada com sucesso.`);
+      setActionSuccess(`Conta de "${cleanName}" criada com sucesso como ${addRole === "supervisor" ? `Supervisor (${targetCategory})` : addRole === "admin" ? "Administrador" : "Cidadão"}.`);
       setShowAddAccountModal(false);
       setAddName("");
       setAddEmail("");
@@ -519,15 +635,16 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
         (p.assigned_category && p.assigned_category.toLowerCase().includes(q));
 
       const blockStatus = checkAccountBlockStatus(p);
+      const effectiveRole = getEffectiveRole(p);
 
       // Role filter tab
       let matchRole = true;
       if (roleFilter === "admin") {
-        matchRole = p.role === "admin" || p.is_admin === true;
+        matchRole = effectiveRole === "admin";
       } else if (roleFilter === "supervisor") {
-        matchRole = p.role === "supervisor";
+        matchRole = effectiveRole === "supervisor";
       } else if (roleFilter === "user") {
-        matchRole = p.role === "user" || !p.role;
+        matchRole = effectiveRole === "user";
       } else if (roleFilter === "blocked") {
         matchRole = blockStatus.isBlocked;
       }
@@ -555,9 +672,10 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
       const blockStatus = checkAccountBlockStatus(p);
       if (blockStatus.isBlocked) totalBlocked++;
 
-      if (p.role === "admin" || p.is_admin) {
+      const effectiveRole = getEffectiveRole(p);
+      if (effectiveRole === "admin") {
         totalAdmins++;
-      } else if (p.role === "supervisor") {
+      } else if (effectiveRole === "supervisor") {
         totalSupervisors++;
       } else {
         totalCitizens++;
@@ -577,7 +695,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
   return (
     <div
       className={`relative min-h-[100dvh] sm:min-h-full w-full overflow-y-auto overflow-x-hidden font-sans pb-36 transition-colors duration-300 ${
-        isDark ? "bg-[#5A635C] text-white" : "bg-[#F0F4F1] text-[#183a2b]"
+        isDark ? "bg-[#5A635C] text-white" : "bg-white text-[#183a2b]"
       }`}
     >
       {/* Clean Municipal Header Bar */}
@@ -590,13 +708,11 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
       >
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5">
-            {/* Brand identity */}
+            {/* Brand identity - clean icon badge */}
             <div className="flex items-center gap-3">
-              <SafeLogoImage
-                isMinimal
-                className="w-10 h-10 object-contain drop-shadow-sm"
-                alt="Logo Commuária"
-              />
+              <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 border border-emerald-500/30 shadow-sm">
+                <Users size={20} />
+              </div>
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-lg font-serif font-bold tracking-wider">
@@ -653,7 +769,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
           className={`p-6 sm:p-7 rounded-[28px] border relative overflow-hidden transition-all duration-300 shadow-sm ${
             isDark
               ? "bg-gradient-to-br from-white/10 to-white/5 border-white/15 text-white"
-              : "bg-gradient-to-br from-white to-[#E8EFEA] border-[#183a2b]/10 text-[#183a2b]"
+              : "bg-white border-[#183a2b]/10 text-[#183a2b]"
           }`}
         >
           <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-5">
@@ -886,14 +1002,14 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
           </div>
 
           {/* Segmented Filter Pills */}
-          <div className="flex items-center gap-2 overflow-x-auto pb-1 pt-1 border-t border-black/5 dark:border-white/10">
+          <div className="flex items-center justify-center flex-wrap gap-2 pb-1 pt-1 border-t border-black/5 dark:border-white/10">
             <button
               type="button"
               onClick={() => setRoleFilter("all")}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
                 roleFilter === "all"
                   ? isDark
-                    ? "bg-white text-[#5A635C] shadow-sm"
+                    ? "bg-white text-[#162A2C] shadow-sm"
                     : "bg-[#183a2b] text-white shadow-sm"
                   : isDark
                   ? "bg-white/5 text-white/70 hover:bg-white/10"
@@ -908,7 +1024,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
                 roleFilter === "user"
                   ? isDark
-                    ? "bg-white text-[#5A635C] shadow-sm"
+                    ? "bg-white text-[#162A2C] shadow-sm"
                     : "bg-[#183a2b] text-white shadow-sm"
                   : isDark
                   ? "bg-white/5 text-white/70 hover:bg-white/10"
@@ -923,7 +1039,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
                 roleFilter === "supervisor"
                   ? isDark
-                    ? "bg-white text-[#5A635C] shadow-sm"
+                    ? "bg-white text-[#162A2C] shadow-sm"
                     : "bg-[#183a2b] text-white shadow-sm"
                   : isDark
                   ? "bg-white/5 text-white/70 hover:bg-white/10"
@@ -938,7 +1054,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
                 roleFilter === "admin"
                   ? isDark
-                    ? "bg-white text-[#5A635C] shadow-sm"
+                    ? "bg-white text-[#162A2C] shadow-sm"
                     : "bg-[#183a2b] text-white shadow-sm"
                   : isDark
                   ? "bg-white/5 text-white/70 hover:bg-white/10"
@@ -991,7 +1107,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                     setRoleFilter("all");
                   }}
                   className={`mt-4 px-4 py-2 rounded-xl text-xs font-bold ${
-                    isDark ? "bg-white text-[#5A635C]" : "bg-[#183a2b] text-white"
+                    isDark ? "bg-white text-[#162A2C]" : "bg-[#183a2b] text-white"
                   }`}
                 >
                   Limpar Filtros
@@ -1005,6 +1121,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                 const isMe =
                   user.id === currentAdminId ||
                   (user.email && user.email.toLowerCase() === (currentAdminEmail || "").toLowerCase());
+                const effectiveUserRole = getEffectiveRole(user);
 
                 return (
                   <motion.div
@@ -1028,9 +1145,9 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                         <div className="flex items-center gap-3">
                           <div
                             className={`w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-base shrink-0 shadow-sm ${
-                              user.role === "admin" || user.is_admin
+                              effectiveUserRole === "admin"
                                 ? "bg-emerald-600 text-white"
-                                : user.role === "supervisor"
+                                : effectiveUserRole === "supervisor"
                                 ? "bg-amber-500 text-zinc-950"
                                 : isDark
                                 ? "bg-white/10 text-white"
@@ -1073,13 +1190,13 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                           </span>
                         )}
 
-                        {user.role === "admin" || user.is_admin ? (
+                        {effectiveUserRole === "admin" ? (
                           <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
                             <Shield size={11} /> Administrador
                           </span>
-                        ) : user.role === "supervisor" ? (
+                        ) : effectiveUserRole === "supervisor" ? (
                           <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                            <HardHat size={11} /> {user.assigned_category || "Supervisor Geral"}
+                            <HardHat size={11} /> {user.assigned_category || "Pavimentação & Vias"}
                           </span>
                         ) : (
                           <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-500/20 text-slate-800 dark:text-slate-300 border border-slate-500/30 flex items-center gap-1">
@@ -1124,7 +1241,8 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                         type="button"
                         onClick={() => {
                           setSelectedUserForRoleChange(user);
-                          setNewRole(user.role || "user");
+                          const currentRole = getEffectiveRole(user);
+                          setNewRole(currentRole);
                           setNewCategory(user.assigned_category || "Pavimentação");
                         }}
                         className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
