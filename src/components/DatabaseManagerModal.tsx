@@ -86,6 +86,7 @@ ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT 
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS blocked_until TIMESTAMPTZ;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS block_reason TEXT;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS blocked_at TIMESTAMPTZ;
+UPDATE public.profiles SET role = 'admin' WHERE is_admin = true AND (role IS NULL OR role = 'user');
 
 -- 2. Tabela de Ocorrências / Chamados de Zeladoria (reports)
 CREATE TABLE IF NOT EXISTS public.reports (
@@ -93,9 +94,9 @@ CREATE TABLE IF NOT EXISTS public.reports (
   title TEXT NOT NULL,
   description TEXT,
   category TEXT DEFAULT 'Pavimentação',
-  address TEXT NOT NULL,
-  latitude DOUBLE PRECISION NOT NULL,
-  longitude DOUBLE PRECISION NOT NULL,
+  address TEXT,
+  latitude DOUBLE PRECISION,
+  longitude DOUBLE PRECISION,
   status TEXT DEFAULT 'unresolved',
   status_notes TEXT,
   image_url TEXT,
@@ -113,6 +114,13 @@ CREATE TABLE IF NOT EXISTS public.reports (
   resolved_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migrações retroativas garantidas para reports
+ALTER TABLE public.reports ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Pavimentação';
+ALTER TABLE public.reports ADD COLUMN IF NOT EXISTS maintenance_type TEXT;
+ALTER TABLE public.reports ALTER COLUMN latitude DROP NOT NULL;
+ALTER TABLE public.reports ALTER COLUMN longitude DROP NOT NULL;
+ALTER TABLE public.reports ALTER COLUMN address DROP NOT NULL;
 
 -- 3. Tabela de Ordens de Serviço (work_orders)
 CREATE TABLE IF NOT EXISTS public.work_orders (
@@ -597,9 +605,9 @@ CREATE TABLE IF NOT EXISTS public.reports (
   title TEXT NOT NULL,
   description TEXT,
   category TEXT DEFAULT 'Pavimentação',
-  address TEXT NOT NULL,
-  latitude DOUBLE PRECISION NOT NULL,
-  longitude DOUBLE PRECISION NOT NULL,
+  address TEXT,
+  latitude DOUBLE PRECISION,
+  longitude DOUBLE PRECISION,
   status TEXT DEFAULT 'unresolved',
   status_notes TEXT,
   image_url TEXT,
@@ -612,8 +620,15 @@ CREATE TABLE IF NOT EXISTS public.reports (
   assigned_team TEXT,
   priority TEXT DEFAULT 'medium',
   deadline TEXT,
+  maintenance_type TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE public.reports ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Pavimentação';
+ALTER TABLE public.reports ADD COLUMN IF NOT EXISTS maintenance_type TEXT;
+ALTER TABLE public.reports ALTER COLUMN latitude DROP NOT NULL;
+ALTER TABLE public.reports ALTER COLUMN longitude DROP NOT NULL;
+ALTER TABLE public.reports ALTER COLUMN address DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS public.work_orders (
   id TEXT PRIMARY KEY DEFAULT ('wo_' || substr(md5(random()::text), 1, 10)),

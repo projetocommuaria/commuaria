@@ -46,13 +46,11 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
-  // Helper to determine accurate effective role with high priority for supervisor
+  // Helper to determine accurate effective role
   const getEffectiveRole = (p?: UserProfile | null): UserRole => {
     if (!p) return "user";
+    if (p.is_admin === true || p.role === "admin") return "admin";
     if (p.role === "supervisor") return "supervisor";
-    if (p.role === "admin") return "admin";
-    if (p.role === "user") return "user";
-    if (p.is_admin) return "admin";
     return "user";
   };
 

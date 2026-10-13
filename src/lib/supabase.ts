@@ -818,7 +818,12 @@ export async function syncAllDataToSupabase(): Promise<{
           deadline: r.deadline || null,
           created_at: r.created_at || new Date().toISOString(),
         };
-        const { error } = await supabase.from('reports').upsert([payload]);
+        let { error } = await supabase.from('reports').upsert([payload]);
+        if (error && error.code === '23503') {
+          const noFk = { ...payload, user_id: null };
+          const retryRes = await supabase.from('reports').upsert([noFk]);
+          error = retryRes.error;
+        }
         if (!error) reportsCount++;
         else {
           console.warn("Erro ao sincronizar report:", error);

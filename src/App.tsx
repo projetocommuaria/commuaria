@@ -876,7 +876,8 @@ const LoginView = ({
 
       const isMasterAdminEmail =
         targetEmail === "admin@commuaria.com" ||
-        targetEmail === "projetocomnuaria831@gmail.com";
+        targetEmail === "admin" ||
+        targetEmail === "projetocomnuaria@gmail.com";
 
       // 1. Authenticate with Supabase Auth
       if (supabase) {
@@ -907,7 +908,7 @@ const LoginView = ({
                   .select("*")
                   .eq("email", targetEmail)
                   .maybeSingle();
-                if (profileByEmail?.role && profileByEmail.role !== "user") {
+                if (profileByEmail) {
                   resolvedProfile = profileByEmail;
                 }
               } catch (e) {
@@ -922,16 +923,28 @@ const LoginView = ({
               (p) => (p.email || "").toLowerCase().trim() === targetEmail
             );
 
-            // Give strict precedence to explicit roles (especially supervisor)
-            const explicitRole: UserRole | null =
-              (resolvedProfile?.role && resolvedProfile.role !== "user" ? resolvedProfile.role : null) ||
-              (matchedLocalProfile?.role && matchedLocalProfile.role !== "user" ? matchedLocalProfile.role : null) ||
-              (resolvedProfile?.role === "user" || matchedLocalProfile?.role === "user" ? "user" : null);
+            // Determine role hierarchy:
+            // 1. Admin: is_admin === true OR role === 'admin' OR master admin email
+            // 2. Supervisor: role === 'supervisor' and not admin
+            // 3. Citizen (user)
+            let finalRole: UserRole = "user";
+            const isAdminAccount =
+              resolvedProfile?.is_admin === true ||
+              resolvedProfile?.role === "admin" ||
+              matchedLocalProfile?.is_admin === true ||
+              matchedLocalProfile?.role === "admin" ||
+              isMasterAdminEmail;
 
-            const finalRole: UserRole =
-              explicitRole ||
-              (resolvedProfile?.is_admin || matchedLocalProfile?.is_admin ? "admin" : null) ||
-              (isMasterAdminEmail ? "admin" : "user");
+            if (isAdminAccount) {
+              finalRole = "admin";
+            } else if (
+              resolvedProfile?.role === "supervisor" ||
+              matchedLocalProfile?.role === "supervisor"
+            ) {
+              finalRole = "supervisor";
+            } else {
+              finalRole = "user";
+            }
 
             const finalCategory =
               resolvedProfile?.assigned_category ||
@@ -1028,15 +1041,24 @@ const LoginView = ({
           return;
         }
 
-        const explicitRole: UserRole | null =
-          (matchedLocalProfile?.role && matchedLocalProfile.role !== "user" ? matchedLocalProfile.role : null) ||
-          (matchedLocalUser?.role && matchedLocalUser.role !== "user" ? matchedLocalUser.role : null) ||
-          (matchedLocalProfile?.role === "user" || matchedLocalUser?.role === "user" ? "user" : null);
+        let userRole: UserRole = "user";
+        const isAdminAccount =
+          matchedLocalProfile?.is_admin === true ||
+          matchedLocalProfile?.role === "admin" ||
+          matchedLocalUser?.is_admin === true ||
+          matchedLocalUser?.role === "admin" ||
+          isMasterAdminEmail;
 
-        const userRole: UserRole =
-          explicitRole ||
-          (matchedLocalProfile?.is_admin || matchedLocalUser?.is_admin ? "admin" : null) ||
-          (isMasterAdminEmail ? "admin" : "user");
+        if (isAdminAccount) {
+          userRole = "admin";
+        } else if (
+          matchedLocalProfile?.role === "supervisor" ||
+          matchedLocalUser?.role === "supervisor"
+        ) {
+          userRole = "supervisor";
+        } else {
+          userRole = "user";
+        }
 
         const category =
           matchedLocalProfile?.assigned_category ||
@@ -3979,15 +4001,18 @@ const ReportView = ({
         try {
           const validUserId = isUUID(activeUserId) ? activeUserId : null;
           const formattedDesc = `[Categoria: ${category}]\n${title.trim()}`;
+          const safeAddress = locationQuery?.trim() || "Araucária - PR";
+          const safeLat = typeof mapCenter[0] === "number" && !isNaN(mapCenter[0]) ? mapCenter[0] : -25.5929;
+          const safeLng = typeof mapCenter[1] === "number" && !isNaN(mapCenter[1]) ? mapCenter[1] : -49.4891;
 
-          const supabasePayload = {
+          const basePayload: any = {
             id: reportId,
             title: title.trim(),
             description: formattedDesc,
             maintenance_type: category,
-            address: locationQuery || "Endereço não informado",
-            latitude: mapCenter[0] || -25.5929,
-            longitude: mapCenter[1] || -49.4891,
+            address: safeAddress,
+            latitude: safeLat,
+            longitude: safeLng,
             image_url: imageUrl || null,
             anonymous: !!anonymous,
             user_id: validUserId,
@@ -3997,19 +4022,28 @@ const ReportView = ({
             created_at: newReportData.created_at,
           };
 
-          const { error } = await supabase.from("reports").insert([supabasePayload]);
-          if (error) {
-            console.warn("Supabase insert notice, attempting simplified payload:", error);
-            await supabase.from("reports").insert([{
-              id: reportId,
-              title: title.trim(),
-              description: formattedDesc,
-              maintenance_type: category,
-              address: locationQuery || "Endereço não informado",
-              latitude: mapCenter[0] || -25.5929,
-              longitude: mapCenter[1] || -49.4891,
-              status: "unresolved",
-            }]);
+          // Try 1: with category and user_id
+          let insertResult = await supabase.from("reports").insert([{ ...basePayload, category }]);
+
+          // If category column does not exist in schema (PGRST204)
+          if (insertResult.error && insertResult.error.code === "PGRST204") {
+            insertResult = await supabase.from("reports").insert([basePayload]);
+          }
+
+          // If foreign key constraint on user_id fails (23503), retry with user_id: null
+          if (insertResult.error && insertResult.error.code === "23503") {
+            const noFkPayload = { ...basePayload, user_id: null };
+            insertResult = await supabase.from("reports").insert([noFkPayload]);
+            if (insertResult.error && insertResult.error.code === "PGRST204") {
+              delete noFkPayload.category;
+              insertResult = await supabase.from("reports").insert([noFkPayload]);
+            }
+          }
+
+          if (insertResult.error) {
+            console.warn("Aviso ao persistir no Supabase:", insertResult.error);
+          } else {
+            console.log("Chamado persistido com sucesso no Supabase:", reportId);
           }
         } catch (subErr) {
           console.warn("Erro ao enviar para o Supabase (salvo no cache local):", subErr);
@@ -6771,18 +6805,30 @@ export function AppContent() {
     const isMasterAdminEmail =
       targetEmail === "admin@commuaria.com" ||
       targetEmail === "admin" ||
-      targetEmail === "projetocomnuaria831@gmail.com";
+      targetEmail === "projetocomnuaria@gmail.com";
 
-    // Strict priority for explicit assigned roles
-    const explicitRole: UserRole | null =
-      (dbProfile?.role && dbProfile.role !== "user" ? dbProfile.role : null) ||
-      (localMatched?.role && localMatched.role !== "user" ? localMatched.role : null) ||
-      (dbProfile?.role === "user" || localMatched?.role === "user" ? "user" : null);
+    // Determine role hierarchy:
+    // 1. Admin: is_admin === true OR role === 'admin' OR master admin email
+    // 2. Supervisor: role === 'supervisor' and not admin
+    // 3. Citizen (user)
+    let resolvedRole: UserRole = "user";
+    const isAdminAccount =
+      dbProfile?.is_admin === true ||
+      dbProfile?.role === "admin" ||
+      localMatched?.is_admin === true ||
+      localMatched?.role === "admin" ||
+      isMasterAdminEmail;
 
-    const resolvedRole: UserRole =
-      explicitRole ||
-      (dbProfile?.is_admin || localMatched?.is_admin ? "admin" : null) ||
-      (isMasterAdminEmail ? "admin" : currentUser.role || "user");
+    if (isAdminAccount) {
+      resolvedRole = "admin";
+    } else if (
+      dbProfile?.role === "supervisor" ||
+      localMatched?.role === "supervisor"
+    ) {
+      resolvedRole = "supervisor";
+    } else {
+      resolvedRole = "user";
+    }
 
     const resolvedCat =
       dbProfile?.assigned_category ||

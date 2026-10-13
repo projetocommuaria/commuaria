@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "../ThemeContext";
 import { CATEGORIES_CONFIG, ReportCategory, UserProfile } from "../types";
-import { supabase } from "../lib/supabase";
+import { supabase, isUUID, generateUUID } from "../lib/supabase";
 
 interface SupervisorManagerModalProps {
   onClose: () => void;
@@ -240,36 +240,39 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
         try {
           let authUserId: string | null = null;
 
-          // Attempt to register in Supabase Auth if not already there
-          try {
-            const { data: authData } = await supabase.auth.signUp({
-              email: cleanEmail,
-              password: formPassword || "super123",
-              options: {
-                data: {
-                  name: cleanName,
-                  role: "supervisor",
-                  assigned_category: assignedCat,
+          // Only attempt signUp if nobody is logged in, to avoid hijacking the admin's active session
+          const { data: currentSessionData } = await supabase.auth.getSession();
+          if (!currentSessionData?.session) {
+            try {
+              const { data: authData } = await supabase.auth.signUp({
+                email: cleanEmail,
+                password: formPassword || "super123",
+                options: {
+                  data: {
+                    name: cleanName,
+                    role: "supervisor",
+                    assigned_category: assignedCat,
+                  },
                 },
-              },
-            });
-            if (authData?.user?.id) {
-              authUserId = authData.user.id;
+              });
+              if (authData?.user?.id) {
+                authUserId = authData.user.id;
+              }
+            } catch (authErr) {
+              console.warn("Supabase auth signUp warning:", authErr);
             }
-          } catch (authErr) {
-            console.warn("Supabase auth signUp warning:", authErr);
           }
 
           // Check if profile exists with this email in database
           const { data: existingDbProfile } = await supabase
             .from("profiles")
             .select("id")
-            .eq("email", cleanEmail)
+            .ilike("email", cleanEmail)
             .maybeSingle();
 
-          const dbId = existingDbProfile?.id || authUserId || targetId;
+          const dbId = existingDbProfile?.id || authUserId || (isUUID(targetId) ? targetId : generateUUID());
 
-          // Upsert profile in Supabase
+          // Upsert profile in Supabase with explicit is_admin: false and role: "supervisor"
           const { error: upsertErr } = await supabase.from("profiles").upsert({
             id: dbId,
             name: cleanName,
@@ -289,7 +292,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
                 assigned_category: assignedCat,
                 is_admin: false,
               })
-              .eq("email", cleanEmail);
+              .ilike("email", cleanEmail);
           }
         } catch (dbErr) {
           console.warn("Supabase sync warning:", dbErr);
