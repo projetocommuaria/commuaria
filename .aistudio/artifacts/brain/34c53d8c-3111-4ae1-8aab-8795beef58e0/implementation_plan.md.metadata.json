@@ -1,0 +1,6 @@
+{
+  "summary": "Plano revisado e completo de arquitetura, hierarquia de 5 níveis (ADM, Diretor, Supervisor, Funcionário, Cidadão), tabela de histórico work_order_history, privacidade e mascaramento para Diretor, RLS, regras de não duplicação de chamados e notificações deduplicadas no Commuária.",
+  "updatedAt": "2026-11-02T21:48:15.004835481Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

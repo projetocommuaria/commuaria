@@ -82,6 +82,9 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 );
 
 -- Migrações automáticas de colunas para perfis existentes
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'user';
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS assigned_category TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS assigned_sectors TEXT[];
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS blocked_until TIMESTAMPTZ;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS block_reason TEXT;
@@ -132,17 +135,26 @@ CREATE TABLE IF NOT EXISTS public.work_orders (
   priority TEXT DEFAULT 'medium',
   deadline TEXT,
   assigned_team TEXT,
+  assigned_employee_id TEXT,
+  assigned_employee_name TEXT,
   maintenance_type TEXT,
   description TEXT,
   technical_instructions TEXT,
   status TEXT DEFAULT 'dispatched',
   status_notes TEXT,
+  resolution_notes TEXT,
+  resolution_photo_url TEXT,
   supervisor_name TEXT,
   supervisor_email TEXT,
   linked_report_id TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   completed_at TIMESTAMPTZ
 );
+
+ALTER TABLE public.work_orders ADD COLUMN IF NOT EXISTS assigned_employee_id TEXT;
+ALTER TABLE public.work_orders ADD COLUMN IF NOT EXISTS assigned_employee_name TEXT;
+ALTER TABLE public.work_orders ADD COLUMN IF NOT EXISTS resolution_notes TEXT;
+ALTER TABLE public.work_orders ADD COLUMN IF NOT EXISTS resolution_photo_url TEXT;
 
 -- 4. Tabela de Notícias e Comunicados (news)
 CREATE TABLE IF NOT EXISTS public.news (
@@ -153,22 +165,47 @@ CREATE TABLE IF NOT EXISTS public.news (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 5. Tabela de Histórico Imutável e Auditoria de O.S. (work_order_history)
+CREATE TABLE IF NOT EXISTS public.work_order_history (
+  id TEXT PRIMARY KEY DEFAULT ('woh_' || substr(md5(random()::text), 1, 10)),
+  work_order_id TEXT NOT NULL,
+  user_id TEXT,
+  user_name TEXT,
+  user_role TEXT,
+  action_type TEXT NOT NULL,
+  previous_status TEXT,
+  new_status TEXT,
+  message TEXT,
+  photo_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_wo_history_order_id ON public.work_order_history(work_order_id);
+
 -- =========================================================
--- ROW LEVEL SECURITY (RLS) - POLÍTICAS DE ACESSO LIVRE E SEGURO
+-- HIERARQUIA DE PERFIS E POLÍTICAS DE ACESSO (RLS)
+-- Perfil 1: ADM - Acesso geral central e gestão de usuários
+-- Perfil 2: Diretor - Auditoria e acompanhamento de múltiplos setores/O.S.
+-- Perfil 3: Supervisor - Gestão do setor, triagem e despacho de O.S.
+-- Perfil 4: Funcionário - Execução técnica em campo e registro de resolução/impossibilidade
+-- Perfil 5: Cidadão - Abertura de chamados e consulta dos próprios relatos
 -- =========================================================
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.work_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.work_order_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.news ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Permitir tudo em profiles" ON public.profiles;
 DROP POLICY IF EXISTS "Permitir tudo em reports" ON public.reports;
 DROP POLICY IF EXISTS "Permitir tudo em work_orders" ON public.work_orders;
+DROP POLICY IF EXISTS "Permitir tudo em work_order_history" ON public.work_order_history;
 DROP POLICY IF EXISTS "Permitir tudo em news" ON public.news;
 
 CREATE POLICY "Permitir tudo em profiles" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Permitir tudo em reports" ON public.reports FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Permitir tudo em work_orders" ON public.work_orders FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Permitir tudo em work_order_history" ON public.work_order_history FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH CHECK (true);
 `;
     navigator.clipboard.writeText(sql);

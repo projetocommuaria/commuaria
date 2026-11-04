@@ -75,6 +75,8 @@ import { checkAccountBlockStatus, BlockStatusResult } from "./utils/blockUtils";
 import { CategorySelector } from "./components/CategorySelector";
 import { SupervisorTasksView } from "./components/SupervisorTasksView";
 import { SupervisorWorkOrderView } from "./components/SupervisorWorkOrderView";
+import { DirectorDashboardView } from "./components/DirectorDashboardView";
+import { EmployeeWorkView } from "./components/EmployeeWorkView";
 import {
   registerCommuariaServiceWorker,
   requestDeviceNotificationPermission,
@@ -925,8 +927,10 @@ const LoginView = ({
 
             // Determine role hierarchy:
             // 1. Admin: is_admin === true OR role === 'admin' OR master admin email
-            // 2. Supervisor: role === 'supervisor' and not admin
-            // 3. Citizen (user)
+            // 2. Diretor: role === 'diretor'
+            // 3. Supervisor: role === 'supervisor'
+            // 4. Funcionário: role === 'funcionario'
+            // 5. Citizen (user)
             let finalRole: UserRole = "user";
             const isAdminAccount =
               resolvedProfile?.is_admin === true ||
@@ -938,10 +942,20 @@ const LoginView = ({
             if (isAdminAccount) {
               finalRole = "admin";
             } else if (
+              resolvedProfile?.role === "diretor" ||
+              matchedLocalProfile?.role === "diretor"
+            ) {
+              finalRole = "diretor";
+            } else if (
               resolvedProfile?.role === "supervisor" ||
               matchedLocalProfile?.role === "supervisor"
             ) {
               finalRole = "supervisor";
+            } else if (
+              resolvedProfile?.role === "funcionario" ||
+              matchedLocalProfile?.role === "funcionario"
+            ) {
+              finalRole = "funcionario";
             } else {
               finalRole = "user";
             }
@@ -949,7 +963,7 @@ const LoginView = ({
             const finalCategory =
               resolvedProfile?.assigned_category ||
               matchedLocalProfile?.assigned_category ||
-              (finalRole === "supervisor" ? "Pavimentação" : null);
+              (finalRole === "supervisor" || finalRole === "funcionario" ? "Pavimentação" : null);
 
             const finalName =
               resolvedProfile?.name ||
@@ -1052,10 +1066,20 @@ const LoginView = ({
         if (isAdminAccount) {
           userRole = "admin";
         } else if (
+          matchedLocalProfile?.role === "diretor" ||
+          matchedLocalUser?.role === "diretor"
+        ) {
+          userRole = "diretor";
+        } else if (
           matchedLocalProfile?.role === "supervisor" ||
           matchedLocalUser?.role === "supervisor"
         ) {
           userRole = "supervisor";
+        } else if (
+          matchedLocalProfile?.role === "funcionario" ||
+          matchedLocalUser?.role === "funcionario"
+        ) {
+          userRole = "funcionario";
         } else {
           userRole = "user";
         }
@@ -1063,7 +1087,7 @@ const LoginView = ({
         const category =
           matchedLocalProfile?.assigned_category ||
           matchedLocalUser?.assigned_category ||
-          (userRole === "supervisor" ? "Pavimentação" : null);
+          (userRole === "supervisor" || userRole === "funcionario" ? "Pavimentação" : null);
 
         const resolvedId = matchedLocalProfile?.id || matchedLocalUser?.id || "u_" + targetEmail.replace(/[^a-zA-Z0-9]/g, "_");
 
@@ -2454,8 +2478,12 @@ const BottomNav = ({
           title={
             isAdmin
               ? "Mapa Geral"
+              : userRole === "diretor"
+              ? "Auditoria Municipal & KPIs"
               : userRole === "supervisor"
               ? "Ordens de Serviço (O.S.)"
+              : userRole === "funcionario"
+              ? "Minhas O.S. em Campo"
               : "Relatar Problema"
           }
         >
@@ -2470,10 +2498,32 @@ const BottomNav = ({
                   : ""
               }
             />
+          ) : userRole === "diretor" ? (
+            <Building2
+              fill={currentTab === "report" ? "currentColor" : "none"}
+              size={28}
+              strokeWidth={1.5}
+              className={
+                currentTab !== "report"
+                  ? "group-hover:scale-110 transition-transform"
+                  : ""
+              }
+            />
           ) : userRole === "supervisor" ? (
+            <HardHat
+              fill={currentTab === "report" ? "currentColor" : "none"}
+              size={28}
+              strokeWidth={1.6}
+              className={
+                currentTab !== "report"
+                  ? "group-hover:scale-110 transition-transform"
+                  : ""
+              }
+            />
+          ) : userRole === "funcionario" ? (
             <Wrench
               fill={currentTab === "report" ? "currentColor" : "none"}
-              size={30}
+              size={28}
               strokeWidth={1.6}
               className={
                 currentTab !== "report"
@@ -2514,18 +2564,41 @@ const BottomNav = ({
               ? "text-white/50 hover:text-white"
               : "text-[#2d4a3b]/70 hover:text-[#183a2b]"
           }`}
-          title={isAdmin ? "Chamados e Ocorrências" : "Minhas Tarefas"}
+          title={
+            isAdmin
+              ? "Chamados e Ocorrências"
+              : userRole === "diretor"
+              ? "Indicadores & Auditoria"
+              : userRole === "supervisor"
+              ? "Gestão do Setor"
+              : userRole === "funcionario"
+              ? "Execução de Tarefas"
+              : "Minhas Tarefas"
+          }
         >
-          <ClipboardCheck
-            fill={currentTab === "tasks" ? "currentColor" : "none"}
-            size={isAdmin ? 28 : 32}
-            strokeWidth={1.5}
-            className={
-              currentTab !== "tasks"
-                ? "group-hover:scale-110 transition-transform"
-                : ""
-            }
-          />
+          {userRole === "diretor" ? (
+            <Activity
+              fill={currentTab === "tasks" ? "currentColor" : "none"}
+              size={28}
+              strokeWidth={1.5}
+              className={
+                currentTab !== "tasks"
+                  ? "group-hover:scale-110 transition-transform"
+                  : ""
+              }
+            />
+          ) : (
+            <ClipboardCheck
+              fill={currentTab === "tasks" ? "currentColor" : "none"}
+              size={isAdmin ? 28 : 32}
+              strokeWidth={1.5}
+              className={
+                currentTab !== "tasks"
+                  ? "group-hover:scale-110 transition-transform"
+                  : ""
+              }
+            />
+          )}
           {currentTab === "tasks" && (
             <div
               className={`w-2 h-2 rounded-full absolute -bottom-4 ${
@@ -6809,8 +6882,10 @@ export function AppContent() {
 
     // Determine role hierarchy:
     // 1. Admin: is_admin === true OR role === 'admin' OR master admin email
-    // 2. Supervisor: role === 'supervisor' and not admin
-    // 3. Citizen (user)
+    // 2. Diretor: role === 'diretor'
+    // 3. Supervisor: role === 'supervisor'
+    // 4. Funcionário: role === 'funcionario'
+    // 5. Citizen (user)
     let resolvedRole: UserRole = "user";
     const isAdminAccount =
       dbProfile?.is_admin === true ||
@@ -6822,10 +6897,20 @@ export function AppContent() {
     if (isAdminAccount) {
       resolvedRole = "admin";
     } else if (
+      dbProfile?.role === "diretor" ||
+      localMatched?.role === "diretor"
+    ) {
+      resolvedRole = "diretor";
+    } else if (
       dbProfile?.role === "supervisor" ||
       localMatched?.role === "supervisor"
     ) {
       resolvedRole = "supervisor";
+    } else if (
+      dbProfile?.role === "funcionario" ||
+      localMatched?.role === "funcionario"
+    ) {
+      resolvedRole = "funcionario";
     } else {
       resolvedRole = "user";
     }
@@ -6834,7 +6919,7 @@ export function AppContent() {
       dbProfile?.assigned_category ||
       localMatched?.assigned_category ||
       currentUser.assigned_category ||
-      (resolvedRole === "supervisor" ? "Pavimentação" : null);
+      (resolvedRole === "supervisor" || resolvedRole === "funcionario" ? "Pavimentação" : null);
     const resolvedName =
       dbProfile?.name || localMatched?.name || currentUser.name || (targetEmail ? targetEmail.split("@")[0] : "Usuário");
     const resolvedEmail =
@@ -7345,6 +7430,31 @@ export function AppContent() {
                     onViewImage={(url, title) => setActiveImage({ url, title })}
                     onDeleteReport={handleDeleteReport}
                   />
+                ) : userRole === "diretor" ? (
+                  <DirectorDashboardView
+                    user={currentUser}
+                    reports={allSystemReports}
+                    onViewReportDetails={(report) => setActiveReport(report)}
+                    onRefresh={async () => {
+                      if (currentUser?.id || currentUser?.email) {
+                        await fetchUserData(currentUser.id, currentUser.email);
+                      }
+                      await fetchSystemStatistics();
+                    }}
+                    onTabChange={handleTabChange}
+                  />
+                ) : userRole === "funcionario" ? (
+                  <EmployeeWorkView
+                    user={currentUser}
+                    category={assignedCategory || undefined}
+                    onRefresh={async () => {
+                      if (currentUser?.id || currentUser?.email) {
+                        await fetchUserData(currentUser.id, currentUser.email);
+                      }
+                      await fetchSystemStatistics();
+                    }}
+                    onTabChange={handleTabChange}
+                  />
                 ) : userRole === "supervisor" ? (
                   <SupervisorWorkOrderView
                     category={assignedCategory || "Pavimentação"}
@@ -7480,6 +7590,31 @@ export function AppContent() {
                     onViewImage={(url, title) => setActiveImage({ url, title })}
                     onDeleteReport={handleDeleteReport}
                     onViewDetails={(report) => setActiveReport(report)}
+                  />
+                ) : userRole === "diretor" ? (
+                  <DirectorDashboardView
+                    user={currentUser}
+                    reports={allSystemReports}
+                    onViewReportDetails={(report) => setActiveReport(report)}
+                    onRefresh={async () => {
+                      if (currentUser?.id || currentUser?.email) {
+                        await fetchUserData(currentUser.id, currentUser.email);
+                      }
+                      await fetchSystemStatistics();
+                    }}
+                    onTabChange={handleTabChange}
+                  />
+                ) : userRole === "funcionario" ? (
+                  <EmployeeWorkView
+                    user={currentUser}
+                    category={assignedCategory || undefined}
+                    onRefresh={async () => {
+                      if (currentUser?.id || currentUser?.email) {
+                        await fetchUserData(currentUser.id, currentUser.email);
+                      }
+                      await fetchSystemStatistics();
+                    }}
+                    onTabChange={handleTabChange}
                   />
                 ) : userRole === "supervisor" ? (
                   <SupervisorTasksView

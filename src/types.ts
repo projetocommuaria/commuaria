@@ -1,4 +1,4 @@
-export type UserRole = "user" | "supervisor" | "admin";
+export type UserRole = "user" | "funcionario" | "supervisor" | "diretor" | "admin";
 
 export type ReportStatus = "unresolved" | "in_analysis" | "in_progress" | "resolved";
 
@@ -118,6 +118,7 @@ export interface UserProfile {
   email: string;
   role: UserRole;
   assigned_category?: ReportCategory | string | null;
+  assigned_sectors?: string[] | null;
   is_admin?: boolean;
   open?: number;
   resolved?: number;
@@ -165,15 +166,60 @@ export interface WorkOrderItem {
   priority: "low" | "medium" | "high" | "emergency";
   deadline: string;
   assigned_team: string;
+  assigned_employee_id?: string | null;
+  assigned_employee_name?: string | null;
   maintenance_type: string;
   description: string;
   technical_instructions?: string;
-  status: "open" | "dispatched" | "in_progress" | "completed" | "cancelled";
+  status: "open" | "dispatched" | "in_progress" | "completed" | "cancelled" | "impossible";
   status_notes?: string;
+  resolution_notes?: string;
+  resolution_photo_url?: string;
   supervisor_name?: string;
   supervisor_email?: string;
   linked_report_id?: string;
   created_at: string;
   completed_at?: string;
 }
+
+export type WorkOrderActionType =
+  | "create"
+  | "delegate"
+  | "start"
+  | "note"
+  | "complete"
+  | "impossible"
+  | "cancel";
+
+export interface WorkOrderHistoryItem {
+  id: string;
+  work_order_id: string;
+  user_id?: string | null;
+  user_name: string;
+  user_role: UserRole;
+  action_type: WorkOrderActionType;
+  previous_status?: string | null;
+  new_status: string;
+  message: string;
+  photo_url?: string | null;
+  created_at: string;
+}
+
+export const canManageAccounts = (role?: UserRole): boolean => role === "admin";
+export const canAuditAllSectors = (role?: UserRole): boolean => role === "admin" || role === "diretor";
+export const canDispatchWorkOrders = (role?: UserRole): boolean => role === "admin" || role === "supervisor";
+export const canExecuteWorkOrders = (role?: UserRole): boolean => role === "admin" || role === "supervisor" || role === "funcionario";
+
+export const maskCitizenData = (report: ReportItem, viewerRole?: UserRole): ReportItem => {
+  if (viewerRole === "admin") return report;
+  if (viewerRole === "diretor") {
+    const neighborhood = report.address?.split("-")?.[1]?.trim() || report.address?.split(",")?.[1]?.trim() || "Araucária";
+    return {
+      ...report,
+      user_name: report.anonymous ? "Munícipe Anônimo" : `Cidadão (${neighborhood})`,
+      user_email: "privacidade.cidadao@araucaria.pr.gov.br",
+    };
+  }
+  return report;
+};
 

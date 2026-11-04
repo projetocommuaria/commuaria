@@ -22,11 +22,13 @@ import {
   HelpCircle,
   RefreshCw,
   SlidersHorizontal,
+  History,
 } from "lucide-react";
 import { useTheme } from "../ThemeContext";
-import { CATEGORIES_CONFIG, ReportCategory, ReportItem, UserProfile, WorkOrderItem } from "../types";
+import { CATEGORIES_CONFIG, ReportCategory, ReportItem, UserProfile, WorkOrderItem, WorkOrderHistoryItem } from "../types";
 import { SafeLogoImage } from "./SafeLogoImage";
 import { supabase, isUUID, generateUUID } from "../lib/supabase";
+import { createWorkOrderClean, updateWorkOrderStatusUnified, getWorkOrderHistory } from "../lib/workOrderService";
 
 interface SupervisorWorkOrderViewProps {
   category?: string;
@@ -62,9 +64,23 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedOrderDetail, setSelectedOrderDetail] = useState<WorkOrderItem | null>(null);
+  const [orderHistory, setOrderHistory] = useState<WorkOrderHistoryItem[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (selectedOrderDetail) {
+      setLoadingHistory(true);
+      getWorkOrderHistory(selectedOrderDetail.id)
+        .then((h) => setOrderHistory(h))
+        .catch((err) => console.warn("Erro ao buscar histórico da O.S.:", err))
+        .finally(() => setLoadingHistory(false));
+    } else {
+      setOrderHistory([]);
+    }
+  }, [selectedOrderDetail?.id]);
 
   // Form State
   const [orderTitle, setOrderTitle] = useState("");
@@ -76,6 +92,8 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
   const [orderDescription, setOrderDescription] = useState("");
   const [technicalInstructions, setTechnicalInstructions] = useState("");
   const [linkedReportId, setLinkedReportId] = useState("");
+  const [availableEmployees, setAvailableEmployees] = useState<UserProfile[]>([]);
+  const [assignedEmployeeId, setAssignedEmployeeId] = useState("");
 
   const catConfig = CATEGORIES_CONFIG.find(
     (c) => c.id.toLowerCase() === assignedCategory.toLowerCase()
@@ -197,6 +215,36 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
       }
       setWorkOrders(filtered);
 
+      // Load available technicians (Funcionários)
+      try {
+        const localProfiles: UserProfile[] = JSON.parse(
+          localStorage.getItem("commuaria_profiles") || "[]"
+        );
+        let employees = localProfiles.filter(
+          (p) => p.role === "funcionario" && (!p.assigned_category || matchesCurrentSector(p.assigned_category))
+        );
+
+        if (supabase) {
+          const { data: supaEmps } = await supabase
+            .from("profiles")
+            .select("*")
+            .eq("role", "funcionario");
+          if (supaEmps) {
+            supaEmps.forEach((sp: any) => {
+              if (
+                (!sp.assigned_category || matchesCurrentSector(sp.assigned_category)) &&
+                !employees.some((e) => e.id === sp.id || (e.email && e.email === sp.email))
+              ) {
+                employees.push(sp);
+              }
+            });
+          }
+        }
+        setAvailableEmployees(employees);
+      } catch (empErr) {
+        console.warn("Aviso ao carregar funcionários do setor:", empErr);
+      }
+
       if (onRefresh) {
         await onRefresh();
       }
@@ -244,6 +292,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
       const randomSuffix = Math.floor(1000 + Math.random() * 9000);
       const generatedOrderNumber = `OS-${categoryCode}-${new Date().getFullYear()}-${randomSuffix}`;
       const newOrderId = "wo_" + Math.random().toString(36).substring(2, 9);
+      const assignedEmp = availableEmployees.find((emp) => emp.id === assignedEmployeeId);
 
       const newOrder: WorkOrderItem = {
         id: newOrderId,
@@ -253,7 +302,9 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         address: orderAddress.trim(),
         priority: orderPriority,
         deadline: orderDeadline,
-        assigned_team: orderTeam.trim() || "Equipe Operacional de Plantão",
+        assigned_team: orderTeam.trim() || (assignedEmp ? `Técnico ${assignedEmp.name || assignedEmp.email}` : "Equipe Operacional de Plantão"),
+        assigned_employee_id: assignedEmployeeId || undefined,
+        assigned_employee_name: assignedEmp ? (assignedEmp.name || assignedEmp.email) : undefined,
         maintenance_type: orderType,
         description: orderDescription.trim(),
         technical_instructions: technicalInstructions.trim(),
@@ -264,133 +315,25 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         created_at: new Date().toISOString(),
       };
 
-      // 1. Save to commuaria_work_orders in local storage
-      const existingOrders: WorkOrderItem[] = JSON.parse(
-        localStorage.getItem("commuaria_work_orders") || "[]"
-      );
-      const updatedOrders = [newOrder, ...existingOrders];
-      localStorage.setItem("commuaria_work_orders", JSON.stringify(updatedOrders));
+      // 1. Cria a O.S. de forma limpa, sem duplicar na tabela de chamados, e grava histórico
+      const matchedLinkedReport = reports.find((r) => r.id === linkedReportId);
+      await createWorkOrderClean({
+        order: newOrder,
+        creator: user || {
+          id: "supervisor_1",
+          name: "Supervisor do Setor",
+          email: "supervisor@commuaria.pr.gov.br",
+          role: "supervisor",
+        },
+        linkedReport: matchedLinkedReport || null,
+      });
 
-      // 2. Also register in commuaria_reports so it shows up in system tracking as dispatched
-      const existingReports = JSON.parse(
-        localStorage.getItem("commuaria_reports") || "[]"
-      );
-      const reportRepresentation: ReportItem = {
-        id: newOrderId,
-        title: `[${generatedOrderNumber}] ${orderTitle.trim()}`,
-        description: `Ordem de Serviço emitida pelo setor de ${assignedCategory}.\nEquipe: ${newOrder.assigned_team}\nTipo: ${orderType}\n${orderDescription}`,
-        category: assignedCategory,
-        address: orderAddress.trim(),
-        latitude: -25.5925 + (Math.random() - 0.5) * 0.02,
-        longitude: -49.4055 + (Math.random() - 0.5) * 0.02,
-        status: "in_progress",
-        status_notes: `O.S. ${generatedOrderNumber} despachada para ${newOrder.assigned_team}. Prazo: ${orderDeadline}`,
-        created_at: new Date().toISOString(),
-        is_work_order: true,
-        work_order_number: generatedOrderNumber,
-        assigned_team: newOrder.assigned_team,
-        priority: orderPriority,
-        deadline: orderDeadline,
-      };
-      localStorage.setItem(
-        "commuaria_reports",
-        JSON.stringify([reportRepresentation, ...existingReports])
-      );
-
-      // 3. Persist to Supabase if connected
-      if (supabase) {
-        try {
-          // A. Insert into dedicated work_orders table
-          const { error: woErr } = await supabase.from("work_orders").insert([{
-            id: newOrderId,
-            order_number: generatedOrderNumber,
-            title: orderTitle.trim(),
-            category: assignedCategory,
-            address: orderAddress.trim(),
-            priority: orderPriority,
-            deadline: orderDeadline,
-            assigned_team: newOrder.assigned_team,
-            maintenance_type: orderType,
-            description: orderDescription.trim(),
-            technical_instructions: technicalInstructions.trim(),
-            status: "dispatched",
-            status_notes: `O.S. ${generatedOrderNumber} despachada para ${newOrder.assigned_team}.`,
-            supervisor_name: user?.name || "Supervisor do Setor",
-            supervisor_email: user?.email || "",
-            linked_report_id: linkedReportId || null,
-          }]);
-          if (woErr) {
-            console.warn("Supabase work_orders insert notice:", woErr);
-          }
-
-          // B. Insert into reports table if tracking representation is desired
-          try {
-            const reportUuid = generateUUID();
-            await supabase.from("reports").insert([
-              {
-                id: reportUuid,
-                title: reportRepresentation.title,
-                description: `[Categoria: ${assignedCategory}]\n${reportRepresentation.description}`,
-                maintenance_type: assignedCategory,
-                address: reportRepresentation.address,
-                latitude: reportRepresentation.latitude,
-                longitude: reportRepresentation.longitude,
-                status: "in_progress",
-                is_work_order: true,
-                work_order_number: generatedOrderNumber,
-                assigned_team: newOrder.assigned_team,
-                priority: orderPriority,
-                deadline: orderDeadline || null,
-              },
-            ]);
-          } catch (rErr) {
-            console.warn("Aviso ao espelhar O.S. na tabela reports:", rErr);
-          }
-        } catch (dbErr) {
-          console.warn("Supabase O.S. insert warning:", dbErr);
-        }
-      }
-
-      // 4. Update the linked citizen report if one was selected
-      if (linkedReportId) {
-        const linkNote = `O.S. ${generatedOrderNumber} emitida e despachada para ${newOrder.assigned_team}. Prazo: ${orderDeadline || "48h"}.`;
-
-        // Update in localStorage
-        const curReports = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
-        const updatedReports = curReports.map((r: any) => {
-          if (r.id === linkedReportId) {
-            return {
-              ...r,
-              status: "in_progress",
-              work_order_number: generatedOrderNumber,
-              assigned_team: newOrder.assigned_team,
-              status_notes: linkNote,
-            };
-          }
-          return r;
-        });
-        localStorage.setItem("commuaria_reports", JSON.stringify(updatedReports));
-
-        // Update in Supabase
-        if (supabase && isUUID(linkedReportId)) {
-          try {
-            await supabase
-              .from("reports")
-              .update({
-                status: "in_progress",
-                work_order_number: generatedOrderNumber,
-                assigned_team: newOrder.assigned_team,
-              })
-              .eq("id", linkedReportId);
-          } catch (linkErr) {
-            console.warn("Aviso ao vincular chamado no Supabase:", linkErr);
-          }
-        }
-
-        // Notify parent state if handler is provided
-        if (onUpdateReportStatus) {
-          await onUpdateReportStatus(linkedReportId, "in_progress", linkNote);
-        }
+      if (onUpdateReportStatus && linkedReportId) {
+        await onUpdateReportStatus(
+          linkedReportId,
+          "in_progress",
+          `O.S. ${generatedOrderNumber} emitida e despachada para ${newOrder.assigned_team}.`
+        );
       }
 
       setSuccessMessage(`Ordem de Serviço ${generatedOrderNumber} emitida com sucesso!`);
@@ -401,11 +344,9 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
       setOrderDescription("");
       setTechnicalInstructions("");
       setLinkedReportId("");
-      await loadWorkOrders();
+      setAssignedEmployeeId("");
 
-      if (onRefresh) {
-        await onRefresh();
-      }
+      await loadWorkOrders();
 
       setTimeout(() => {
         setSuccessMessage(null);
@@ -420,111 +361,30 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
 
   const handleUpdateOrderStatus = async (
     orderId: string,
-    newStatus: "open" | "dispatched" | "in_progress" | "completed" | "cancelled",
+    newStatus: "open" | "dispatched" | "in_progress" | "completed" | "cancelled" | "impossible",
     notes?: string
   ) => {
     try {
-      const existingOrders: WorkOrderItem[] = JSON.parse(
-        localStorage.getItem("commuaria_work_orders") || "[]"
-      );
-      let targetOrder: WorkOrderItem | undefined;
-      const updated = existingOrders.map((o) => {
-        if (o.id === orderId) {
-          targetOrder = o;
-          return {
-            ...o,
-            status: newStatus,
-            status_notes: notes || o.status_notes,
-            completed_at:
-              newStatus === "completed" ? new Date().toISOString() : o.completed_at,
-          };
-        }
-        return o;
+      const targetOrder = workOrders.find((o) => o.id === orderId);
+      if (!targetOrder) return;
+
+      const updated = await updateWorkOrderStatusUnified({
+        workOrder: targetOrder,
+        newStatus,
+        agentUser: user || {
+          id: "supervisor_1",
+          name: "Supervisor do Setor",
+          email: "supervisor@commuaria.pr.gov.br",
+          role: "supervisor",
+        },
+        message: notes || `Situação atualizada pelo supervisor para "${newStatus}".`,
       });
-      localStorage.setItem("commuaria_work_orders", JSON.stringify(updated));
-
-      // Also update system reports
-      const existingReports = JSON.parse(
-        localStorage.getItem("commuaria_reports") || "[]"
-      );
-      const updatedReports = existingReports.map((r: any) => {
-        if (r.id === orderId) {
-          return {
-            ...r,
-            status: newStatus === "completed" ? "resolved" : "in_progress",
-            status_notes: notes || `O.S. atualizada para ${newStatus}.`,
-            resolved_at:
-              newStatus === "completed" ? new Date().toISOString() : r.resolved_at,
-          };
-        }
-        return r;
-      });
-      localStorage.setItem(
-        "commuaria_reports",
-        JSON.stringify(updatedReports)
-      );
-
-      // Sync with Supabase
-      if (supabase) {
-        try {
-          await supabase
-            .from("work_orders")
-            .update({
-              status: newStatus,
-              status_notes: notes || null,
-              completed_at: newStatus === "completed" ? new Date().toISOString() : null,
-            })
-            .eq("id", orderId);
-        } catch (dbErr) {
-          console.warn("Supabase update error:", dbErr);
-        }
-      }
-
-      // If this O.S. was linked to a citizen report, update that citizen report as well
-      const linkedId = targetOrder?.linked_report_id;
-      if (linkedId) {
-        const linkedStatus = newStatus === "completed" ? "resolved" : newStatus === "cancelled" ? "unresolved" : "in_progress";
-        const linkedNotes = notes || (newStatus === "completed"
-          ? `Serviço concluído em campo pela equipe ${targetOrder?.assigned_team || "operacional"}.`
-          : `O.S. vinculada atualizada para ${newStatus}.`);
-
-        const curLocalReports = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
-        const updatedLinked = curLocalReports.map((r: any) => {
-          if (r.id === linkedId) {
-            return {
-              ...r,
-              status: linkedStatus,
-              status_notes: linkedNotes,
-              resolved_at: newStatus === "completed" ? new Date().toISOString() : r.resolved_at,
-            };
-          }
-          return r;
-        });
-        localStorage.setItem("commuaria_reports", JSON.stringify(updatedLinked));
-
-        if (supabase && isUUID(linkedId)) {
-          try {
-            await supabase
-              .from("reports")
-              .update({
-                status: linkedStatus,
-              })
-              .eq("id", linkedId);
-          } catch (e) {
-            console.warn("Erro ao atualizar chamado vinculado no Supabase:", e);
-          }
-        }
-
-        if (onUpdateReportStatus) {
-          await onUpdateReportStatus(linkedId, linkedStatus, linkedNotes);
-        }
-      }
 
       await loadWorkOrders();
       if (selectedOrderDetail && selectedOrderDetail.id === orderId) {
-        setSelectedOrderDetail((prev) =>
-          prev ? { ...prev, status: newStatus, status_notes: notes || prev.status_notes } : null
-        );
+        setSelectedOrderDetail(updated);
+        const updatedHistory = await getWorkOrderHistory(orderId);
+        setOrderHistory(updatedHistory);
       }
       if (onRefresh) await onRefresh();
     } catch (e) {
@@ -1233,6 +1093,39 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
               </div>
             </div>
 
+            {/* Field Technician (Funcionário) Assignment */}
+            <div className="space-y-1.5">
+              <label
+                className={`text-xs font-bold flex items-center justify-between ${
+                  isDark ? "text-white/80" : "text-[#183a2b]"
+                }`}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Wrench size={13} className="text-cyan-500" />
+                  Técnico de Campo Designado (Funcionário)
+                </span>
+                <span className="text-[10px] font-normal opacity-70">
+                  {availableEmployees.length > 0 ? `${availableEmployees.length} funcionário(s) cadastrado(s)` : "Nenhum técnico cadastrado ainda"}
+                </span>
+              </label>
+              <select
+                value={assignedEmployeeId}
+                onChange={(e) => setAssignedEmployeeId(e.target.value)}
+                className={`w-full px-4 py-2.5 rounded-2xl text-xs sm:text-sm border focus:outline-none focus:ring-2 focus:ring-cyan-500/40 ${
+                  isDark
+                    ? "bg-[#424943] border-white/15 text-white"
+                    : "bg-white border-black/15 text-[#183a2b]"
+                }`}
+              >
+                <option value="">Qualquer técnico disponível / Atribuição livre à equipe</option>
+                {availableEmployees.map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name || emp.email} — {emp.assigned_category || assignedCategory} ({emp.email})
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Link with Citizen Report */}
             {pendingSectorReports.length > 0 && (
               <div
@@ -1619,6 +1512,17 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
                 </div>
               )}
 
+              {selectedOrderDetail.assigned_employee_name && (
+                <div className="p-2.5 rounded-xl border border-cyan-500/20 bg-cyan-500/5 text-cyan-900 dark:text-cyan-200">
+                  <span className="text-[10px] uppercase font-bold text-cyan-600 dark:text-cyan-400 block">
+                    Técnico de Campo Designado
+                  </span>
+                  <div className="font-semibold text-xs mt-0.5">
+                    {selectedOrderDetail.assigned_employee_name}
+                  </div>
+                </div>
+              )}
+
               {selectedOrderDetail.technical_instructions && (
                 <div>
                   <span className="font-bold text-[11px] uppercase tracking-wider text-neutral-400">
@@ -1629,6 +1533,85 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
                   </p>
                 </div>
               )}
+
+              {/* Resolution or Impossibility Details if recorded */}
+              {(selectedOrderDetail.resolution_notes || selectedOrderDetail.resolution_photo_url) && (
+                <div className="p-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 space-y-2">
+                  <span className="font-bold text-[11px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                    <CheckCircle2 size={13} />
+                    Registro de Campo / Resolução
+                  </span>
+                  {selectedOrderDetail.resolution_notes && (
+                    <p className="text-xs text-neutral-700 dark:text-neutral-300">
+                      {selectedOrderDetail.resolution_notes}
+                    </p>
+                  )}
+                  {selectedOrderDetail.resolution_photo_url && (
+                    <div className="mt-2">
+                      <span className="text-[10px] text-neutral-400 block mb-1">Foto Comprobatória:</span>
+                      <img
+                        src={selectedOrderDetail.resolution_photo_url}
+                        alt="Comprovação do Atendimento"
+                        className="w-full max-h-48 object-cover rounded-xl border border-black/10 dark:border-white/10"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Immutable Audit Timeline */}
+              <div className="pt-2 border-t space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-[11px] uppercase tracking-wider text-neutral-400 flex items-center gap-1">
+                    <History size={13} className="text-emerald-500" />
+                    Histórico & Trilha de Auditoria (work_order_history)
+                  </span>
+                  {loadingHistory && <span className="text-[10px] text-neutral-400">Carregando...</span>}
+                </div>
+
+                {orderHistory.length === 0 && !loadingHistory ? (
+                  <p className="text-[11px] text-neutral-400 italic">
+                    Nenhum evento registrado ainda para esta O.S.
+                  </p>
+                ) : (
+                  <div className="space-y-2 relative pl-3 border-l-2 border-emerald-500/30">
+                    {orderHistory.map((h) => {
+                      const actionLabels: Record<string, { label: string; color: string }> = {
+                        create: { label: "Criação", color: "bg-blue-500/10 text-blue-600 border-blue-500/20" },
+                        delegate: { label: "Delegação", color: "bg-purple-500/10 text-purple-600 border-purple-500/20" },
+                        start: { label: "Início", color: "bg-amber-500/10 text-amber-600 border-amber-500/20" },
+                        note: { label: "Nota Técnica", color: "bg-neutral-500/10 text-neutral-600 border-neutral-500/20" },
+                        complete: { label: "Concluído", color: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20" },
+                        impossible: { label: "Impossibilidade", color: "bg-rose-500/10 text-rose-600 border-rose-500/20" },
+                        cancel: { label: "Cancelado", color: "bg-rose-500/10 text-rose-600 border-rose-500/20" },
+                      };
+                      const badge = actionLabels[h.action_type] || { label: h.action_type, color: "bg-neutral-500/10 text-neutral-600 border-neutral-500/20" };
+
+                      return (
+                        <div key={h.id} className="text-[11px] space-y-0.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${badge.color}`}>
+                              {badge.label}
+                            </span>
+                            <span className="font-semibold">{h.user_name || "Sistema"}</span>
+                            <span className="text-[10px] text-neutral-400">
+                              {new Date(h.created_at).toLocaleString("pt-BR")}
+                            </span>
+                          </div>
+                          {h.message && <p className="text-neutral-600 dark:text-neutral-300">{h.message}</p>}
+                          {h.photo_url && (
+                            <img
+                              src={h.photo_url}
+                              alt="Anexo do Histórico"
+                              className="mt-1 h-20 w-auto rounded-lg border object-cover"
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
 
               {/* Status Update Quick Select */}
               <div className="pt-2 border-t space-y-2">

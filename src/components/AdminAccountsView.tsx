@@ -20,6 +20,8 @@ import {
   UserX,
   Edit3,
   ShieldCheck,
+  Building2,
+  Wrench,
 } from "lucide-react";
 import { useTheme } from "../ThemeContext";
 import { UserProfile, UserRole, ReportCategory, CATEGORIES_CONFIG } from "../types";
@@ -50,7 +52,9 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
   const getEffectiveRole = (p?: UserProfile | null): UserRole => {
     if (!p) return "user";
     if (p.is_admin === true || p.role === "admin") return "admin";
+    if (p.role === "diretor") return "diretor";
     if (p.role === "supervisor") return "supervisor";
+    if (p.role === "funcionario") return "funcionario";
     return "user";
   };
 
@@ -148,15 +152,16 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
           // Determine the most authoritative role
           // If local profile has an explicit role (e.g. supervisor), respect it
           const resolvedRole: UserRole =
-            lp.role && lp.role !== "user"
+            existing.is_admin || lp.is_admin || existing.role === "admin" || lp.role === "admin"
+              ? "admin"
+              : lp.role && lp.role !== "user"
               ? lp.role
               : existing.role && existing.role !== "user"
               ? existing.role
-              : lp.role === "user" || existing.role === "user"
-              ? "user"
-              : (lp.is_admin || existing.is_admin ? "admin" : "user");
+              : "user";
 
           const isReallyAdmin = resolvedRole === "admin";
+          const needsSector = resolvedRole === "supervisor" || resolvedRole === "funcionario";
 
           mergedMap.set(key, {
             ...existing,
@@ -164,7 +169,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
             role: resolvedRole,
             is_admin: isReallyAdmin,
             assigned_category:
-              resolvedRole === "supervisor"
+              needsSector
                 ? (lp.assigned_category || existing.assigned_category || "Pavimentação")
                 : null,
             is_blocked: lp.is_blocked !== undefined ? lp.is_blocked : existing.is_blocked,
@@ -414,7 +419,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
     try {
       const cleanEmail = (selectedUserForRoleChange.email || "").toLowerCase().trim();
       const targetUserId = selectedUserForRoleChange.id;
-      const targetCategory = newRole === "supervisor" ? (newCategory || "Pavimentação") : null;
+      const targetCategory = (newRole === "supervisor" || newRole === "funcionario") ? (newCategory || "Pavimentação") : null;
 
       const updatePayload = {
         role: newRole,
@@ -528,7 +533,18 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
         }
       }
 
-      setActionSuccess(`Cargo de "${selectedUserForRoleChange.name || selectedUserForRoleChange.email}" atualizado para ${newRole === "supervisor" ? `Supervisor (${targetCategory})` : newRole === "admin" ? "Administrador" : "Cidadão"}.`);
+      const roleLabel =
+        newRole === "supervisor"
+          ? `Supervisor (${targetCategory})`
+          : newRole === "funcionario"
+          ? `Funcionário de Campo (${targetCategory})`
+          : newRole === "diretor"
+          ? "Diretor(a) Executivo"
+          : newRole === "admin"
+          ? "Administrador"
+          : "Cidadão";
+
+      setActionSuccess(`Cargo de "${selectedUserForRoleChange.name || selectedUserForRoleChange.email}" atualizado para ${roleLabel}.`);
       setSelectedUserForRoleChange(null);
       await loadAllAccounts();
       if (onRoleChanged) {
@@ -551,7 +567,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
     const cleanEmail = addEmail.trim().toLowerCase();
     const cleanName = addName.trim();
-    const targetCategory = addRole === "supervisor" ? addCategory : null;
+    const targetCategory = (addRole === "supervisor" || addRole === "funcionario") ? addCategory : null;
 
     if (!cleanEmail || !cleanName) {
       setAddError("Preencha todos os campos obrigatórios.");
@@ -606,7 +622,18 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
         }
       }
 
-      setActionSuccess(`Conta de "${cleanName}" criada com sucesso como ${addRole === "supervisor" ? `Supervisor (${targetCategory})` : addRole === "admin" ? "Administrador" : "Cidadão"}.`);
+      const createdLabel =
+        addRole === "supervisor"
+          ? `Supervisor (${targetCategory})`
+          : addRole === "funcionario"
+          ? `Funcionário de Campo (${targetCategory})`
+          : addRole === "diretor"
+          ? "Diretor(a) Executivo"
+          : addRole === "admin"
+          ? "Administrador"
+          : "Cidadão";
+
+      setActionSuccess(`Conta de "${cleanName}" criada com sucesso como ${createdLabel}.`);
       setShowAddAccountModal(false);
       setAddName("");
       setAddEmail("");
@@ -639,8 +666,12 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
       let matchRole = true;
       if (roleFilter === "admin") {
         matchRole = effectiveRole === "admin";
+      } else if (roleFilter === "diretor") {
+        matchRole = effectiveRole === "diretor";
       } else if (roleFilter === "supervisor") {
         matchRole = effectiveRole === "supervisor";
+      } else if (roleFilter === "funcionario") {
+        matchRole = effectiveRole === "funcionario";
       } else if (roleFilter === "user") {
         matchRole = effectiveRole === "user";
       } else if (roleFilter === "blocked") {
@@ -662,7 +693,9 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
   // Statistics
   const stats = useMemo(() => {
     let totalCitizens = 0;
+    let totalEmployees = 0;
     let totalSupervisors = 0;
+    let totalDirectors = 0;
     let totalAdmins = 0;
     let totalBlocked = 0;
 
@@ -673,8 +706,12 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
       const effectiveRole = getEffectiveRole(p);
       if (effectiveRole === "admin") {
         totalAdmins++;
+      } else if (effectiveRole === "diretor") {
+        totalDirectors++;
       } else if (effectiveRole === "supervisor") {
         totalSupervisors++;
+      } else if (effectiveRole === "funcionario") {
+        totalEmployees++;
       } else {
         totalCitizens++;
       }
@@ -683,7 +720,9 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
     return {
       total: profiles.length,
       citizens: totalCitizens,
+      employees: totalEmployees,
       supervisors: totalSupervisors,
+      directors: totalDirectors,
       admins: totalAdmins,
       blocked: totalBlocked,
       active: profiles.length - totalBlocked,
@@ -835,10 +874,10 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
         </AnimatePresence>
 
         {/* Summary Statistics Strip */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
           <div
             onClick={() => setRoleFilter("user")}
-            className={`p-4 rounded-2xl border cursor-pointer transition-all hover:scale-[1.01] ${
+            className={`p-3.5 rounded-2xl border cursor-pointer transition-all hover:scale-[1.01] ${
               roleFilter === "user"
                 ? isDark
                   ? "bg-white/15 border-white/30 shadow-md"
@@ -848,73 +887,125 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                 : "bg-white border-black/5 hover:border-black/15 shadow-sm"
             }`}
           >
-            <div className="flex items-center justify-between mb-2">
-              <span className={`text-xs font-bold ${isDark ? "text-white/70" : "text-[#2d4a3b]/70"}`}>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className={`text-[11px] font-bold ${isDark ? "text-white/70" : "text-[#2d4a3b]/70"}`}>
                 Cidadãos
               </span>
-              <div className="w-7 h-7 rounded-lg bg-slate-500/15 flex items-center justify-center text-slate-600 dark:text-slate-300">
-                <User size={14} />
+              <div className="w-6 h-6 rounded-lg bg-slate-500/15 flex items-center justify-center text-slate-600 dark:text-slate-300">
+                <User size={13} />
               </div>
             </div>
-            <span className="text-2xl font-bold font-serif">{stats.citizens}</span>
-            <span className="block text-[10px] opacity-70 mt-0.5">Usuários munícipes</span>
+            <span className="text-xl font-bold font-serif">{stats.citizens}</span>
+            <span className="block text-[10px] opacity-70 mt-0.5">Munícipes</span>
+          </div>
+
+          <div
+            onClick={() => setRoleFilter("funcionario")}
+            className={`p-3.5 rounded-2xl border cursor-pointer transition-all hover:scale-[1.01] ${
+              roleFilter === "funcionario"
+                ? isDark
+                  ? "bg-cyan-500/20 border-cyan-500/40 shadow-md"
+                  : "bg-cyan-50 border-cyan-400 shadow-md"
+                : isDark
+                ? "bg-white/5 border-white/10 hover:bg-white/10"
+                : "bg-white border-black/5 hover:border-black/15 shadow-sm"
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold text-cyan-700 dark:text-cyan-400">
+                Funcionários
+              </span>
+              <div className="w-6 h-6 rounded-lg bg-cyan-500/15 flex items-center justify-center text-cyan-600 dark:text-cyan-400">
+                <Wrench size={13} />
+              </div>
+            </div>
+            <span className="text-xl font-bold font-serif text-cyan-700 dark:text-cyan-400">
+              {stats.employees}
+            </span>
+            <span className="block text-[10px] opacity-70 mt-0.5">Operacionais O.S.</span>
           </div>
 
           <div
             onClick={() => setRoleFilter("supervisor")}
-            className={`p-4 rounded-2xl border cursor-pointer transition-all hover:scale-[1.01] ${
+            className={`p-3.5 rounded-2xl border cursor-pointer transition-all hover:scale-[1.01] ${
               roleFilter === "supervisor"
                 ? isDark
-                  ? "bg-white/15 border-white/30 shadow-md"
-                  : "bg-white border-[#183a2b]/30 shadow-md"
+                  ? "bg-amber-500/20 border-amber-500/40 shadow-md"
+                  : "bg-amber-50 border-amber-400 shadow-md"
                 : isDark
                 ? "bg-white/5 border-white/10 hover:bg-white/10"
                 : "bg-white border-black/5 hover:border-black/15 shadow-sm"
             }`}
           >
-            <div className="flex items-center justify-between mb-2">
-              <span className={`text-xs font-bold ${isDark ? "text-white/70" : "text-[#2d4a3b]/70"}`}>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold text-amber-700 dark:text-amber-400">
                 Supervisores
               </span>
-              <div className="w-7 h-7 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-600 dark:text-amber-400">
-                <HardHat size={14} />
+              <div className="w-6 h-6 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-600 dark:text-amber-400">
+                <HardHat size={13} />
               </div>
             </div>
-            <span className="text-2xl font-bold font-serif text-amber-600 dark:text-amber-400">
+            <span className="text-xl font-bold font-serif text-amber-600 dark:text-amber-400">
               {stats.supervisors}
             </span>
-            <span className="block text-[10px] opacity-70 mt-0.5">Equipes de zeladoria</span>
+            <span className="block text-[10px] opacity-70 mt-0.5">Gestores de Setor</span>
+          </div>
+
+          <div
+            onClick={() => setRoleFilter("diretor")}
+            className={`p-3.5 rounded-2xl border cursor-pointer transition-all hover:scale-[1.01] ${
+              roleFilter === "diretor"
+                ? isDark
+                  ? "bg-indigo-500/20 border-indigo-500/40 shadow-md"
+                  : "bg-indigo-50 border-indigo-400 shadow-md"
+                : isDark
+                ? "bg-white/5 border-white/10 hover:bg-white/10"
+                : "bg-white border-black/5 hover:border-black/15 shadow-sm"
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold text-indigo-700 dark:text-indigo-400">
+                Diretores
+              </span>
+              <div className="w-6 h-6 rounded-lg bg-indigo-500/15 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+                <Building2 size={13} />
+              </div>
+            </div>
+            <span className="text-xl font-bold font-serif text-indigo-700 dark:text-indigo-400">
+              {stats.directors}
+            </span>
+            <span className="block text-[10px] opacity-70 mt-0.5">Auditoria & KPIs</span>
           </div>
 
           <div
             onClick={() => setRoleFilter("admin")}
-            className={`p-4 rounded-2xl border cursor-pointer transition-all hover:scale-[1.01] ${
+            className={`p-3.5 rounded-2xl border cursor-pointer transition-all hover:scale-[1.01] ${
               roleFilter === "admin"
                 ? isDark
-                  ? "bg-white/15 border-white/30 shadow-md"
-                  : "bg-white border-[#183a2b]/30 shadow-md"
+                  ? "bg-emerald-500/20 border-emerald-500/40 shadow-md"
+                  : "bg-emerald-50 border-emerald-400 shadow-md"
                 : isDark
                 ? "bg-white/5 border-white/10 hover:bg-white/10"
                 : "bg-white border-black/5 hover:border-black/15 shadow-sm"
             }`}
           >
-            <div className="flex items-center justify-between mb-2">
-              <span className={`text-xs font-bold ${isDark ? "text-white/70" : "text-[#2d4a3b]/70"}`}>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
                 Administradores
               </span>
-              <div className="w-7 h-7 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-                <Shield size={14} />
+              <div className="w-6 h-6 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                <Shield size={13} />
               </div>
             </div>
-            <span className="text-2xl font-bold font-serif text-emerald-600 dark:text-emerald-400">
+            <span className="text-xl font-bold font-serif text-emerald-600 dark:text-emerald-400">
               {stats.admins}
             </span>
-            <span className="block text-[10px] opacity-70 mt-0.5">Gestão central</span>
+            <span className="block text-[10px] opacity-70 mt-0.5">Gestão Central</span>
           </div>
 
           <div
             onClick={() => setRoleFilter("blocked")}
-            className={`p-4 rounded-2xl border cursor-pointer transition-all hover:scale-[1.01] ${
+            className={`p-3.5 rounded-2xl border cursor-pointer transition-all hover:scale-[1.01] ${
               roleFilter === "blocked"
                 ? "bg-rose-500/20 border-rose-500/40 shadow-md"
                 : stats.blocked > 0
@@ -924,15 +1015,15 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                 : "bg-white border-black/5 hover:border-black/15 shadow-sm"
             }`}
           >
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-bold text-rose-600 dark:text-rose-400">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold text-rose-600 dark:text-rose-400">
                 Suspensões
               </span>
-              <div className="w-7 h-7 rounded-lg bg-rose-500/20 flex items-center justify-center text-rose-600 dark:text-rose-400">
-                <Ban size={14} />
+              <div className="w-6 h-6 rounded-lg bg-rose-500/20 flex items-center justify-center text-rose-600 dark:text-rose-400">
+                <Ban size={13} />
               </div>
             </div>
-            <span className="text-2xl font-bold font-serif text-rose-600 dark:text-rose-400">
+            <span className="text-xl font-bold font-serif text-rose-600 dark:text-rose-400">
               {stats.blocked}
             </span>
             <span className="block text-[10px] opacity-70 mt-0.5">Contas suspensas</span>
@@ -961,10 +1052,10 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                 placeholder="Buscar usuário por nome, e-mail, ID ou setor..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className={`w-full pl-10 pr-10 py-2.5 rounded-2xl border text-xs sm:text-sm font-sans outline-none transition-all ${
+                className={`w-full pl-10 pr-4 py-2.5 rounded-2xl border text-xs sm:text-sm outline-none transition-colors ${
                   isDark
-                    ? "bg-black/20 border-white/10 text-white placeholder-white/40 focus:border-white/30"
-                    : "bg-zinc-50 border-black/10 text-[#183a2b] placeholder-black/40 focus:border-black/30"
+                    ? "bg-black/30 border-white/15 text-white placeholder-white/40 focus:border-white/30"
+                    : "bg-zinc-50 border-black/10 text-zinc-900 placeholder-zinc-400 focus:border-[#183a2b]/30"
                 }`}
               />
               {searchQuery && (
@@ -1004,7 +1095,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
             <button
               type="button"
               onClick={() => setRoleFilter("all")}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
                 roleFilter === "all"
                   ? isDark
                     ? "bg-white text-[#162A2C] shadow-sm"
@@ -1019,7 +1110,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
             <button
               type="button"
               onClick={() => setRoleFilter("user")}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
                 roleFilter === "user"
                   ? isDark
                     ? "bg-white text-[#162A2C] shadow-sm"
@@ -1033,23 +1124,47 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setRoleFilter("supervisor")}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-                roleFilter === "supervisor"
-                  ? isDark
-                    ? "bg-white text-[#162A2C] shadow-sm"
-                    : "bg-[#183a2b] text-white shadow-sm"
+              onClick={() => setRoleFilter("funcionario")}
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+                roleFilter === "funcionario"
+                  ? "bg-cyan-600 text-white shadow-sm"
                   : isDark
-                  ? "bg-white/5 text-white/70 hover:bg-white/10"
-                  : "bg-zinc-100 text-[#2d4a3b] hover:bg-zinc-200"
+                  ? "bg-white/5 text-cyan-300 hover:bg-white/10"
+                  : "bg-zinc-100 text-cyan-800 hover:bg-zinc-200"
+              }`}
+            >
+              Funcionários ({stats.employees})
+            </button>
+            <button
+              type="button"
+              onClick={() => setRoleFilter("supervisor")}
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+                roleFilter === "supervisor"
+                  ? "bg-amber-500 text-zinc-950 shadow-sm font-extrabold"
+                  : isDark
+                  ? "bg-white/5 text-amber-300 hover:bg-white/10"
+                  : "bg-zinc-100 text-amber-800 hover:bg-zinc-200"
               }`}
             >
               Supervisores ({stats.supervisors})
             </button>
             <button
               type="button"
+              onClick={() => setRoleFilter("diretor")}
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+                roleFilter === "diretor"
+                  ? "bg-indigo-600 text-white shadow-sm font-extrabold"
+                  : isDark
+                  ? "bg-white/5 text-indigo-300 hover:bg-white/10"
+                  : "bg-zinc-100 text-indigo-800 hover:bg-zinc-200"
+              }`}
+            >
+              Diretores ({stats.directors})
+            </button>
+            <button
+              type="button"
               onClick={() => setRoleFilter("admin")}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
                 roleFilter === "admin"
                   ? isDark
                     ? "bg-white text-[#162A2C] shadow-sm"
@@ -1064,7 +1179,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
             <button
               type="button"
               onClick={() => setRoleFilter("blocked")}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
                 roleFilter === "blocked"
                   ? "bg-rose-600 text-white shadow-sm"
                   : isDark
@@ -1145,8 +1260,12 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                             className={`w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-base shrink-0 shadow-sm ${
                               effectiveUserRole === "admin"
                                 ? "bg-emerald-600 text-white"
+                                : effectiveUserRole === "diretor"
+                                ? "bg-indigo-600 text-white"
                                 : effectiveUserRole === "supervisor"
                                 ? "bg-amber-500 text-zinc-950"
+                                : effectiveUserRole === "funcionario"
+                                ? "bg-cyan-600 text-white"
                                 : isDark
                                 ? "bg-white/10 text-white"
                                 : "bg-[#183a2b] text-white"
@@ -1192,9 +1311,17 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                           <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
                             <Shield size={11} /> Administrador
                           </span>
+                        ) : effectiveUserRole === "diretor" ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-indigo-500/20 text-indigo-800 dark:text-indigo-300 border border-indigo-500/30 flex items-center gap-1">
+                            <Building2 size={11} /> Diretor Municipal
+                          </span>
                         ) : effectiveUserRole === "supervisor" ? (
                           <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                            <HardHat size={11} /> {user.assigned_category || "Pavimentação & Vias"}
+                            <HardHat size={11} /> Supervisor ({user.assigned_category || "Pavimentação"})
+                          </span>
+                        ) : effectiveUserRole === "funcionario" ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-cyan-500/20 text-cyan-800 dark:text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
+                            <Wrench size={11} /> Técnico ({user.assigned_category || "Pavimentação"})
                           </span>
                         ) : (
                           <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-500/20 text-slate-800 dark:text-slate-300 border border-slate-500/30 flex items-center gap-1">
@@ -1484,7 +1611,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
               <div className="space-y-4 text-xs sm:text-sm">
                 <div>
                   <label className="block font-bold mb-1.5">Selecione o Novo Cargo:</label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                     <button
                       type="button"
                       onClick={() => setNewRole("user")}
@@ -1498,6 +1625,21 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                     >
                       <User size={16} />
                       <span>Cidadão</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setNewRole("funcionario")}
+                      className={`p-3 rounded-2xl border text-center font-bold text-xs flex flex-col items-center gap-1.5 transition-all ${
+                        newRole === "funcionario"
+                          ? "bg-cyan-600 text-white border-cyan-600 shadow-sm font-extrabold"
+                          : isDark
+                          ? "bg-white/5 border-white/10 text-white hover:bg-white/10"
+                          : "bg-zinc-50 border-black/10 text-[#183a2b] hover:bg-zinc-100"
+                      }`}
+                    >
+                      <Wrench size={16} />
+                      <span>Funcionário</span>
                     </button>
 
                     <button
@@ -1517,8 +1659,23 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => setNewRole("admin")}
+                      onClick={() => setNewRole("diretor")}
                       className={`p-3 rounded-2xl border text-center font-bold text-xs flex flex-col items-center gap-1.5 transition-all ${
+                        newRole === "diretor"
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-sm font-extrabold"
+                          : isDark
+                          ? "bg-white/5 border-white/10 text-white hover:bg-white/10"
+                          : "bg-zinc-50 border-black/10 text-[#183a2b] hover:bg-zinc-100"
+                      }`}
+                    >
+                      <Building2 size={16} />
+                      <span>Diretor</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setNewRole("admin")}
+                      className={`p-3 rounded-2xl border text-center font-bold text-xs flex flex-col items-center gap-1.5 transition-all col-span-2 sm:col-span-1 ${
                         newRole === "admin"
                           ? "bg-emerald-600 text-white border-emerald-600 shadow-sm font-extrabold"
                           : isDark
@@ -1532,9 +1689,11 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                   </div>
                 </div>
 
-                {newRole === "supervisor" && (
+                {(newRole === "supervisor" || newRole === "funcionario") && (
                   <div>
-                    <label className="block font-bold mb-1.5">Setor de Zeladoria Designado:</label>
+                    <label className="block font-bold mb-1.5">
+                      Setor Municipal Designado ({newRole === "supervisor" ? "Supervisão" : "Atuação Operacional"}):
+                    </label>
                     <select
                       value={newCategory}
                       onChange={(e) => setNewCategory(e.target.value)}
@@ -1548,6 +1707,18 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                         </option>
                       ))}
                     </select>
+                  </div>
+                )}
+
+                {newRole === "diretor" && (
+                  <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-700 dark:text-indigo-300 text-[11px] leading-relaxed">
+                    <strong>Diretor Municipal:</strong> Acompanha indicadores estratégicos, chamados e auditoria de Ordens de Serviço em todos os setores, sem gerenciar contas ou credenciais.
+                  </div>
+                )}
+
+                {newRole === "funcionario" && (
+                  <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-800 dark:text-cyan-300 text-[11px] leading-relaxed">
+                    <strong>Técnico de Campo:</strong> Executa as Ordens de Serviço (O.S.) atribuídas em seu setor, podendo iniciar atendimento, registrar conclusão ou relatar impossibilidade com fotos e laudo.
                   </div>
                 )}
               </div>
@@ -1709,52 +1880,85 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
                 <div>
                   <label className="block font-bold mb-1">Perfil de Acesso:</label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                     <button
                       type="button"
                       onClick={() => setAddRole("user")}
-                      className={`p-2.5 rounded-xl border text-center font-bold text-xs ${
+                      className={`p-2.5 rounded-xl border text-center font-bold text-xs flex items-center justify-center gap-1.5 ${
                         addRole === "user"
-                          ? "bg-slate-600 text-white border-slate-600"
+                          ? "bg-slate-600 text-white border-slate-600 shadow-sm"
                           : isDark
                           ? "bg-white/5 border-white/10 text-white"
                           : "bg-zinc-50 border-black/10 text-[#183a2b]"
                       }`}
                     >
-                      Cidadão
+                      <User size={14} />
+                      <span>Cidadão</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAddRole("funcionario")}
+                      className={`p-2.5 rounded-xl border text-center font-bold text-xs flex items-center justify-center gap-1.5 ${
+                        addRole === "funcionario"
+                          ? "bg-cyan-600 text-white border-cyan-600 shadow-sm font-extrabold"
+                          : isDark
+                          ? "bg-white/5 border-white/10 text-white"
+                          : "bg-zinc-50 border-black/10 text-[#183a2b]"
+                      }`}
+                    >
+                      <Wrench size={14} />
+                      <span>Funcionário</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => setAddRole("supervisor")}
-                      className={`p-2.5 rounded-xl border text-center font-bold text-xs ${
+                      className={`p-2.5 rounded-xl border text-center font-bold text-xs flex items-center justify-center gap-1.5 ${
                         addRole === "supervisor"
-                          ? "bg-amber-500 text-zinc-950 border-amber-500 font-extrabold"
+                          ? "bg-amber-500 text-zinc-950 border-amber-500 font-extrabold shadow-sm"
                           : isDark
                           ? "bg-white/5 border-white/10 text-white"
                           : "bg-zinc-50 border-black/10 text-[#183a2b]"
                       }`}
                     >
-                      Supervisor
+                      <HardHat size={14} />
+                      <span>Supervisor</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAddRole("diretor")}
+                      className={`p-2.5 rounded-xl border text-center font-bold text-xs flex items-center justify-center gap-1.5 ${
+                        addRole === "diretor"
+                          ? "bg-indigo-600 text-white border-indigo-600 font-extrabold shadow-sm"
+                          : isDark
+                          ? "bg-white/5 border-white/10 text-white"
+                          : "bg-zinc-50 border-black/10 text-[#183a2b]"
+                      }`}
+                    >
+                      <Building2 size={14} />
+                      <span>Diretor</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => setAddRole("admin")}
-                      className={`p-2.5 rounded-xl border text-center font-bold text-xs ${
+                      className={`p-2.5 rounded-xl border text-center font-bold text-xs flex items-center justify-center gap-1.5 col-span-2 sm:col-span-1 ${
                         addRole === "admin"
-                          ? "bg-emerald-600 text-white border-emerald-600 font-extrabold"
+                          ? "bg-emerald-600 text-white border-emerald-600 font-extrabold shadow-sm"
                           : isDark
                           ? "bg-white/5 border-white/10 text-white"
                           : "bg-zinc-50 border-black/10 text-[#183a2b]"
                       }`}
                     >
-                      Admin
+                      <Shield size={14} />
+                      <span>Admin</span>
                     </button>
                   </div>
                 </div>
 
-                {addRole === "supervisor" && (
+                {(addRole === "supervisor" || addRole === "funcionario") && (
                   <div>
-                    <label className="block font-bold mb-1">Setor Designado:</label>
+                    <label className="block font-bold mb-1">
+                      Setor Designado ({addRole === "supervisor" ? "Supervisão" : "Atuação Operacional"}):
+                    </label>
                     <select
                       value={addCategory}
                       onChange={(e) => setAddCategory(e.target.value as ReportCategory)}
