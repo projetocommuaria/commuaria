@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "../ThemeContext";
 import { CATEGORIES_CONFIG, ReportCategory, ReportItem, WorkOrderItem, UserProfile, WorkOrderHistoryItem, maskCitizenData } from "../types";
-import { getWorkOrderHistory } from "../lib/workOrderService";
+import { fetchSystemWorkOrders, getWorkOrderHistory, normalizeSectorCategory } from "../lib/workOrderService";
 
 interface DirectorDashboardViewProps {
   user?: UserProfile;
@@ -32,6 +32,7 @@ interface DirectorDashboardViewProps {
   workOrders?: WorkOrderItem[];
   onRefresh?: () => Promise<void> | void;
   onViewReportDetails?: (report: ReportItem) => void;
+  onTabChange?: (tab: any) => void;
 }
 
 export const DirectorDashboardView: React.FC<DirectorDashboardViewProps> = ({
@@ -52,6 +53,16 @@ export const DirectorDashboardView: React.FC<DirectorDashboardViewProps> = ({
   const [orderHistory, setOrderHistory] = useState<WorkOrderHistoryItem[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [fetchedWorkOrders, setFetchedWorkOrders] = useState<WorkOrderItem[]>([]);
+
+  const loadWorkOrdersFromDb = async () => {
+    const list = await fetchSystemWorkOrders(user?.city_id || "araucaria-pr");
+    setFetchedWorkOrders(list);
+  };
+
+  useEffect(() => {
+    loadWorkOrdersFromDb();
+  }, []);
 
   useEffect(() => {
     if (activeWoDetail) {
@@ -65,59 +76,42 @@ export const DirectorDashboardView: React.FC<DirectorDashboardViewProps> = ({
     }
   }, [activeWoDetail?.id]);
 
-  // Load all work orders from localStorage if not provided or merged
+  // Merge Supabase work orders with any passed props
   const workOrders = useMemo(() => {
-    let localWos: WorkOrderItem[] = [];
-    try {
-      const stored = localStorage.getItem("commuaria_work_orders");
-      if (stored) localWos = JSON.parse(stored);
-    } catch (_) {}
-
     const map = new Map<string, WorkOrderItem>();
     initialWorkOrders.forEach((w) => map.set(w.id || w.order_number, w));
-    localWos.forEach((w) => map.set(w.id || w.order_number, w));
+    fetchedWorkOrders.forEach((w) => map.set(w.id || w.order_number, w));
 
     return Array.from(map.values()).sort(
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
-  }, [initialWorkOrders]);
+  }, [initialWorkOrders, fetchedWorkOrders]);
 
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
     try {
+      await loadWorkOrdersFromDb();
       if (onRefresh) await onRefresh();
     } finally {
       setTimeout(() => setIsRefreshing(false), 500);
     }
   };
 
+  const citizenReports = useMemo(
+    () => (Array.isArray(reports) ? reports.filter((r) => !r.is_work_order) : []),
+    [reports]
+  );
+
   // Sector normalizer helper
-  const normalizeSector = (cat?: string, title?: string): string => {
-    const text = `${cat || ""} ${title || ""}`.toLowerCase();
-    if (text.includes("pav") || text.includes("rua") || text.includes("via") || text.includes("asfalt") || text.includes("burac")) {
-      return "Pavimentação";
-    }
-    if (text.includes("ilu") || text.includes("luz") || text.includes("post") || text.includes("lamp")) {
-      return "Iluminação Pública";
-    }
-    if (text.includes("limp") || text.includes("lix") || text.includes("entulh") || text.includes("varri")) {
-      return "Limpeza Urbana";
-    }
-    if (text.includes("sane") || text.includes("esgot") || text.includes("bueir") || text.includes("vazam")) {
-      return "Saneamento";
-    }
-    if (text.includes("arbor") || text.includes("arvor") || text.includes("pod") || text.includes("galh")) {
-      return "Arborização";
-    }
-    return "Outros";
-  };
+  const normalizeSector = (cat?: string, title?: string, desc?: string): string =>
+    normalizeSectorCategory(cat, title, desc);
 
   // Filtered reports by sector and search (with LGPD citizen masking for Diretor role)
   const filteredReports = useMemo(() => {
-    return reports
+    return citizenReports
       .map((r) => maskCitizenData(r, "diretor"))
       .filter((r) => {
-        const sector = normalizeSector(r.category, r.title);
+        const sector = normalizeSector(r.category || r.maintenance_type, r.title, r.description);
         if (selectedSector !== "all" && sector !== selectedSector) return false;
 
         if (searchQuery.trim()) {
@@ -196,8 +190,8 @@ export const DirectorDashboardView: React.FC<DirectorDashboardViewProps> = ({
     ];
 
     return sectors.map((sec) => {
-      const secReports = reports.filter((r) => normalizeSector(r.category, r.title) === sec);
-      const secWos = workOrders.filter((w) => normalizeSector(w.category, w.title) === sec);
+      const secReports = citizenReports.filter((r) => normalizeSector(r.category || r.maintenance_type, r.title, r.description) === sec);
+      const secWos = workOrders.filter((w) => normalizeSector(w.category, w.title, w.description) === sec);
       const totalR = secReports.length;
       const resR = secReports.filter((r) => r.status === "resolved").length;
       const totalW = secWos.length;
@@ -220,7 +214,7 @@ export const DirectorDashboardView: React.FC<DirectorDashboardViewProps> = ({
         rate,
       };
     });
-  }, [reports, workOrders]);
+  }, [citizenReports, workOrders]);
 
   return (
     <div
@@ -236,7 +230,7 @@ export const DirectorDashboardView: React.FC<DirectorDashboardViewProps> = ({
             : "bg-white/90 border-[#183a2b]/10 text-[#183a2b]"
         }`}
       >
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5">
+        <div className="max-w-6xl mx-auto pl-4 sm:pl-6 lg:pl-8 pr-20 sm:pr-24 py-3.5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0 border border-indigo-500/30 shadow-sm">

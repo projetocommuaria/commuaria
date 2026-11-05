@@ -54,6 +54,8 @@ import {
   MapContainer,
   TileLayer,
   useMapEvents,
+  useMap,
+  GeoJSON,
   Marker,
   Popup,
 } from "react-leaflet";
@@ -61,22 +63,32 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { supabase, isRealSupabase, generateUUID, isUUID } from "./lib/supabase";
 import {
+  AppNavTab,
   CATEGORIES_CONFIG,
   ReportCategory,
   ReportItem,
   UserProfile,
   UserRole,
+  CityItem,
+  maskCitizenData,
 } from "./types";
 import { SupervisorManagerModal } from "./components/SupervisorManagerModal";
 import { DatabaseManagerModal } from "./components/DatabaseManagerModal";
 import { AdminAccountsView } from "./components/AdminAccountsView";
+import { AdminCitiesModal } from "./components/AdminCitiesModal";
+import { cityFeature, fetchCities, sanitizePublicLocation, sanitizePublicText } from "./lib/cityService";
+import { DEFAULT_SEEDED_CITIES } from "./data/rmcIbgeCities";
 import { BlockedAccountModal } from "./components/BlockedAccountModal";
 import { checkAccountBlockStatus, BlockStatusResult } from "./utils/blockUtils";
 import { CategorySelector } from "./components/CategorySelector";
 import { SupervisorTasksView } from "./components/SupervisorTasksView";
 import { SupervisorWorkOrderView } from "./components/SupervisorWorkOrderView";
 import { DirectorDashboardView } from "./components/DirectorDashboardView";
+import { DirectorExecutiveMapView } from "./components/DirectorExecutiveMapView";
+import { DirectorSlaAuditView } from "./components/DirectorSlaAuditView";
 import { EmployeeWorkView } from "./components/EmployeeWorkView";
+import { EmployeeFieldMapView } from "./components/EmployeeFieldMapView";
+import { EmployeeFieldLogView } from "./components/EmployeeFieldLogView";
 import {
   registerCommuariaServiceWorker,
   requestDeviceNotificationPermission,
@@ -294,20 +306,29 @@ const SafeLogoImage = ({
 const SignupView = ({
   onBack,
   onSignup,
+  cities,
 }: {
   onBack: () => void;
-  onSignup: (data: { id?: string; name: string; email: string; password: string }) => void;
+  onSignup: (data: { id?: string; name: string; email: string; password: string; city_id: string }) => void;
+  cities: CityItem[];
 }) => {
   const { isDark } = useTheme();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [cityId, setCityId] = useState("");
   const [error, setError] = useState("");
+  const availableCities = cities.filter((city) => city.is_active);
+  const selectedCity = availableCities.find((city) => city.id === cityId) || null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !email.trim() || !password.trim()) {
       setError("Por favor, preencha todos os campos obrigatórios.");
+      return;
+    }
+    if (!selectedCity) {
+      setError("Selecione uma cidade atendida pelo Commuária.");
       return;
     }
     setError("");
@@ -322,6 +343,7 @@ const SignupView = ({
           options: {
             data: {
               name: name.trim(),
+              city_id: selectedCity.id,
             },
           },
         });
@@ -349,6 +371,7 @@ const SignupView = ({
               email: email.trim().toLowerCase(),
               role: "user",
               is_admin: false,
+              city_id: selectedCity.id,
               created_at: new Date().toISOString(),
             });
           } catch (pErr) {
@@ -368,7 +391,7 @@ const SignupView = ({
       }
     }
 
-    onSignup({ id: registeredUserId, name, email, password });
+    onSignup({ id: registeredUserId, name, email, password, city_id: selectedCity.id });
   };
 
   return (
@@ -443,6 +466,31 @@ const SignupView = ({
 
           {/* Input Fields with Refraction */}
           <div className="space-y-4">
+            <label className={`block text-left text-xs font-semibold ${isDark ? "text-white/85" : "text-[#183a2b]"}`}>
+              Qual é a sua cidade?
+              <select
+                required
+                value={cityId}
+                onChange={(event) => { setCityId(event.target.value); setError(""); }}
+                className={`mt-1.5 w-full backdrop-blur-[6px] border rounded-full px-8 py-3.5 transition-all shadow-inner focus:outline-none ${
+                  isDark
+                    ? "bg-[#34433f] border-white/15 text-white focus:ring-1 focus:ring-white/20"
+                    : "bg-white/90 border-black/15 text-[#183a2b] focus:ring-1 focus:ring-[#183a2b]/30 focus:border-[#183a2b]"
+                }`}
+              >
+                <option value="">Selecione seu município</option>
+                {availableCities.map((availableCity) => (
+                  <option key={availableCity.id} value={availableCity.id}>
+                    {availableCity.name} · {availableCity.state}
+                  </option>
+                ))}
+              </select>
+              {availableCities.length === 0 && (
+                <span className="mt-1 block text-[11px] text-amber-700 dark:text-amber-200">
+                  Nenhum município está disponível para cadastro no momento.
+                </span>
+              )}
+            </label>
             <input
               type="text"
               placeholder="Nome"
@@ -829,7 +877,7 @@ const LoginView = ({
   onLogin: (
     role?: UserRole,
     assignedCategory?: string | null,
-    data?: { id?: string; name?: string; email: string; password: string },
+    data?: { id?: string; name?: string; email: string; password: string; city_id?: string },
   ) => void;
   onBlocked?: (blockInfo: BlockStatusResult, email: string) => void;
   onGoToSignup: () => void;
@@ -990,6 +1038,7 @@ const LoginView = ({
               name: finalName,
               email: targetEmail,
               password,
+              city_id: resolvedProfile?.city_id || matchedLocalProfile?.city_id || "araucaria-pr",
             });
             return;
           }
@@ -1110,6 +1159,7 @@ const LoginView = ({
           name: matchedLocalProfile?.name || matchedLocalUser?.name || targetEmail.split("@")[0],
           email: targetEmail,
           password,
+          city_id: matchedLocalProfile?.city_id || matchedLocalUser?.city_id || "araucaria-pr",
         });
         return;
       }
@@ -1259,72 +1309,50 @@ const LoginView = ({
   );
 };
 
+const LandingMapFocus: React.FC<{ city: CityItem | null }> = ({ city }) => {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!city) return;
+    const feature = cityFeature(city);
+    const bounds = feature ? L.geoJSON(feature).getBounds() : null;
+    if (bounds?.isValid()) {
+      map.flyToBounds(bounds, {
+        padding: [20, 20],
+        maxZoom: city.default_zoom || 12,
+        duration: 0.65,
+      });
+    } else {
+      map.flyTo([city.center_lat, city.center_lng], city.default_zoom || 12, { duration: 0.65 });
+    }
+  }, [city?.id, map]);
+
+  return null;
+};
+
 const LandingView = ({
   onEnter,
   onSignup,
   reports = [],
+  city,
+  cities,
+  onCityChange,
 }: {
   onEnter: () => void;
   onSignup: () => void;
   reports?: any[];
+  city?: CityItem | null;
+  cities: CityItem[];
+  onCityChange: (cityId: string) => void;
 }) => {
-  const sampleReportsFallback = [
-    {
-      id: "landing-r1",
-      title: "Buraco Profundo na Via",
-      description: "Buraco profundo na pista na Rua Ceará, oferecendo perigo aos motoristas e pedestres.",
-      address: "Rua Ceará, Iguaçu, Araucária - PR",
-      latitude: -25.5901,
-      longitude: -49.4851,
-      status: "unresolved",
-      created_at: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: "landing-r2",
-      title: "Poste sem Iluminação Pública",
-      description: "Lâmpada queimada há mais de uma semana.",
-      address: "Avenida Victor do Amaral, Centro, Araucária - PR",
-      latitude: -25.5925,
-      longitude: -49.4812,
-      status: "unresolved",
-      created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: "landing-r3",
-      title: "Vazamento de Água Limpa",
-      description: "Vazamento contínuo correndo pela calçada perto do parque municipal.",
-      address: "Rua Ceará, Iguaçu, Araucária - PR",
-      latitude: -25.5885,
-      longitude: -49.4891,
-      status: "resolved",
-      created_at: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: "landing-r4",
-      title: "Manutenção de Calçada e Acessibilidade",
-      description: "Desnível de calçada próximo à praça central.",
-      address: "Rua Presidente Carlos Cavalcanti, Centro, Araucária - PR",
-      latitude: -25.5945,
-      longitude: -49.4930,
-      status: "unresolved",
-      created_at: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-  ];
-
-  const displayReports =
-    reports && reports.length > 0
-      ? reports
-      : (() => {
-          try {
-            const stored = localStorage.getItem("commuaria_reports");
-            if (stored) {
-              const parsed = JSON.parse(stored);
-              if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-            }
-          } catch (_) {}
-          return sampleReportsFallback;
-        })();
-
+  const activeCities = cities.filter((candidate) => candidate.is_active && cityFeature(candidate));
+  const currentCity = activeCities.find((candidate) => candidate.id === city?.id) || activeCities[0] || null;
+  const cityName = currentCity?.name || "cidades atendidas";
+  const cityState = currentCity?.state || "";
+  const selectedCityId = currentCity?.id || "";
+  const displayReports = Array.isArray(reports)
+    ? reports.filter((report: any) => (report.city_id || "araucaria-pr") === selectedCityId)
+    : [];
   const customLandingMarkerIcon = (status: string) =>
     L.divIcon({
       className: "custom-leaflet-icon",
@@ -1397,7 +1425,7 @@ const LandingView = ({
                   isDark ? "text-white/80" : "text-[#2d4a3b]"
                 }`}
               >
-                Uma cidade melhor começa com você
+                Conectando cidadãos e cidades
               </span>
             </div>
           </div>
@@ -1442,15 +1470,7 @@ const LandingView = ({
               isDark ? "text-white drop-shadow-md" : "text-[#183a2b]"
             }`}
           >
-            Ajude a construir uma{" "}
-            <span
-              className={`underline underline-offset-8 ${
-                isDark ? "text-white decoration-white/40" : "text-[#183a2b] decoration-[#183a2b]/30"
-              }`}
-            >
-              Araucária
-            </span>{" "}
-            melhor
+            Conectando cidadãos e cidades para transformar a gestão urbana.
           </motion.h2>
 
           <motion.p
@@ -1461,7 +1481,7 @@ const LandingView = ({
               isDark ? "text-white/90 drop-shadow-sm" : "text-[#2d4a3b]"
             }`}
           >
-            A <strong>Commuária</strong> facilita a comunicação entre moradores e serviços públicos. Registre problemas da cidade, localize-os no mapa e acompanhe o andamento das solicitações.
+            Uma plataforma que aproxima cidadãos e administrações públicas, facilitando o registro de problemas urbanos, o acompanhamento de solicitações e a gestão dos serviços municipais.
           </motion.p>
 
           {/* Primary Action Buttons */}
@@ -1505,14 +1525,14 @@ const LandingView = ({
                 isDark ? "text-white drop-shadow-sm" : "text-[#183a2b]"
               }`}
             >
-              Como a Commuaria ajuda a melhorar a cidade
+              Como o Commuária transforma a gestão urbana
             </h3>
             <p
               className={`text-sm sm:text-base mt-2 ${
                 isDark ? "text-white/80" : "text-[#2d4a3b]"
               }`}
             >
-              Recursos para facilitar o registro, o acompanhamento e o acesso a informações sobre Araucária.
+              Ferramentas para aproximar cidadãos e administrações públicas em diferentes municípios.
             </p>
           </div>
 
@@ -1549,7 +1569,7 @@ const LandingView = ({
                   isDark ? "text-white/80" : "text-[#2d4a3b]"
                 }`}
               >
-                Identificou um problema na cidade? Registre uma foto, informe o endereço ou marque a localização diretamente no mapa.
+                Identificou um problema urbano? Registre uma foto, informe o endereço ou marque a localização diretamente no mapa.
               </p>
             </motion.div>
 
@@ -1621,13 +1641,13 @@ const LandingView = ({
                   isDark ? "text-white/80" : "text-[#2d4a3b]"
                 }`}
               >
-                Acesse comunicados e informações sobre obras, serviços, ações e outros acontecimentos que estão ocorrendo em Araucária.
+                Acesse comunicados e informações sobre obras, serviços, ações e outros acontecimentos que estão ocorrendo em {cityName}.
               </p>
             </motion.div>
           </div>
         </section>
 
-        {/* Interactive Map of Araucária showcasing citizen reports */}
+        {/* Interactive city map showing public-safe citizen reports */}
         <section className="mt-12 sm:mt-16 w-full max-w-4xl mx-auto">
           <div className="text-center mb-6">
             <h3
@@ -1635,14 +1655,14 @@ const LandingView = ({
                 isDark ? "text-white drop-shadow-sm" : "text-[#183a2b]"
               }`}
             >
-              Relatos e demandas pela cidade
+              Acompanhe as demandas urbanas
             </h3>
             <p
               className={`text-xs sm:text-sm mt-1.5 max-w-xl mx-auto ${
                 isDark ? "text-white/80" : "text-[#2d4a3b]"
               }`}
             >
-              Acompanhe no mapa os pontos com solicitações registradas pelos moradores em diferentes bairros de Araucária.
+              Explore as cidades atendidas pelo Commuária e visualize as ocorrências registradas pelos cidadãos em cada município.
             </p>
           </div>
 
@@ -1667,6 +1687,23 @@ const LandingView = ({
                 </span>
               </div>
 
+              <label className={`inline-flex items-center gap-2 text-xs font-semibold ${isDark ? "text-white/85" : "text-[#183a2b]"}`}>
+                Município
+                <select
+                  aria-label="Selecionar município no mapa"
+                  value={selectedCityId}
+                  disabled={activeCities.length < 2}
+                  onChange={(event) => onCityChange(event.target.value)}
+                  className={`max-w-[220px] rounded-full border px-3 py-2 outline-none transition focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-default ${isDark ? "border-white/20 bg-[#34433f] text-white" : "border-black/10 bg-white text-[#183a2b]"}`}
+                >
+                  {activeCities.map((availableCity) => (
+                    <option key={availableCity.id} value={availableCity.id}>
+                      {availableCity.name} · {availableCity.state}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
               <div className="flex items-center gap-3 text-xs font-medium">
                 <div
                   className={`flex items-center gap-1.5 ${
@@ -1684,24 +1721,23 @@ const LandingView = ({
                   <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50"></span>
                   <span>Concluído</span>
                 </div>
+                <div className={`flex items-center gap-1.5 ${isDark ? "text-white/80" : "text-[#2d4a3b]"}`}>
+                  <span className="h-3 w-3 rounded-sm border-2 border-emerald-700 bg-emerald-500/20"></span>
+                  <span>Divisa municipal</span>
+                </div>
               </div>
             </div>
 
-            {/* Real-time Araucária Map Container */}
+            {/* Real-time city map container */}
             <div
               className={`w-full h-[260px] sm:h-[320px] lg:h-[350px] rounded-2xl overflow-hidden shadow-inner border relative z-10 ${
                 isDark ? "border-white/15 bg-white/5" : "border-black/10 bg-black/5"
               }`}
             >
               <MapContainer
-                center={[-25.5929, -49.4891]}
-                zoom={13}
-                minZoom={11}
-                maxBounds={[
-                  [-25.8, -49.7],
-                  [-25.4, -49.2],
-                ]}
-                maxBoundsViscosity={1.0}
+                center={[currentCity?.center_lat || -25.633835, currentCity?.center_lng || -49.461966]}
+                zoom={currentCity?.default_zoom || 12}
+                minZoom={6}
                 zoomControl={true}
                 attributionControl={false}
                 style={{
@@ -1713,14 +1749,44 @@ const LandingView = ({
                 }}
               >
                 <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                <LandingMapFocus city={currentCity} />
+                {activeCities.map((mapCity) => (
+                  <GeoJSON
+                    key={mapCity.id}
+                    data={cityFeature(mapCity)}
+                    style={() => ({
+                      color: mapCity.id === currentCity?.id ? "#d99a1b" : "#16824b",
+                      weight: mapCity.id === currentCity?.id ? 3 : 2,
+                      fillColor: mapCity.id === currentCity?.id ? "#f0c45d" : "#43a36b",
+                      fillOpacity: mapCity.id === currentCity?.id ? 0.14 : 0.08,
+                    })}
+                    eventHandlers={{
+                      click: () => onCityChange(mapCity.id),
+                    }}
+                  />
+                ))}
                 {displayReports.map((report: any) => {
-                  if (!report.latitude || !report.longitude) return null;
+                  const latitude = Number(report.latitude);
+                  const longitude = Number(report.longitude);
+                  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+                  const category = sanitizePublicText(String(report.category || report.maintenance_type || "Ocorrência urbana"), 60);
+                  const safeDescription = sanitizePublicText(String(report.description || report.short_description || ""), 180);
+                  const safeLocation = sanitizePublicLocation(String(report.address || report.public_location || "Localização aproximada"), 160);
                   return (
                     <Marker
-                      key={report.id || `${report.latitude}-${report.longitude}`}
-                      position={[report.latitude, report.longitude]}
+                      key={report.id || `${latitude}-${longitude}`}
+                      position={[latitude, longitude]}
                       icon={customLandingMarkerIcon(report.status)}
-                    />
+                    >
+                      <Popup>
+                        <div className="max-w-[240px] font-sans text-sm text-slate-800">
+                          <strong>{category}</strong>
+                          {safeDescription && <p className="mt-1 text-xs leading-relaxed">{safeDescription}</p>}
+                          <p className="mt-1 text-xs text-slate-600">{safeLocation}</p>
+                          <p className="mt-2 text-[11px] font-semibold">{report.status === "resolved" ? "Concluída" : report.status === "in_progress" ? "Em andamento" : "Em análise"}</p>
+                        </div>
+                      </Popup>
+                    </Marker>
                   );
                 })}
               </MapContainer>
@@ -1733,7 +1799,7 @@ const LandingView = ({
               }`}
             >
               <span className="flex items-center gap-1.5">
-                <span className="text-emerald-600 dark:text-emerald-500">📍</span> Visualização geográfica das solicitações cadastradas em Araucária.
+                <span className="text-emerald-600 dark:text-emerald-500">📍</span> Exibindo ocorrências públicas de {cityName}{cityState ? ` · ${cityState}` : ""}.
               </span>
             </div>
           </div>
@@ -1856,7 +1922,7 @@ const LandingView = ({
                   isDark ? "text-white/70" : "text-[#2d4a3b]"
                 }`}
               >
-                Crie sua conta ou entre para começar a registrar e acompanhar ocorrências em Araucária.
+                Crie sua conta ou entre para começar a registrar e acompanhar ocorrências em {cityName}.
               </p>
             </div>
             <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -1897,15 +1963,15 @@ const LandingView = ({
               isDark ? "text-white" : "text-[#183a2b]"
             }`}
           >
-            © {new Date().getFullYear()} Commuária • Plataforma de Cidadania e Zeladoria de Araucária - PR
+            © {new Date().getFullYear()} Commuária • Plataforma de gestão urbana para diferentes municípios
           </p>
-          <p
-            className={`text-xs font-medium ${
-              isDark ? "text-white/90" : "text-[#2d4a3b]"
-            }`}
-          >
-            Desenvolvido para fortalecer a participação cidadã e o cuidado urbano.
-          </p>
+            <p
+              className={`text-xs font-medium ${
+                isDark ? "text-white/90" : "text-[#2d4a3b]"
+              }`}
+            >
+              Nascido em Araucária, o Commuária fortalece a participação cidadã e o cuidado urbano em diferentes municípios.
+            </p>
         </footer>
       </main>
     </div>
@@ -2215,6 +2281,7 @@ const SettingsView = ({
 
 const ProfileView = ({
   user,
+  cityName,
   onSave,
   onBack,
 }: {
@@ -2224,7 +2291,9 @@ const ProfileView = ({
     password?: string;
     resolved: number;
     open: number;
+    city_id?: string;
   };
+  cityName: string;
   onSave: (data: any) => void;
   onBack: () => void;
 }) => {
@@ -2281,13 +2350,19 @@ const ProfileView = ({
       </div>
 
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 space-y-6">
-        <h3
-          className={`text-[28px] font-serif font-bold mb-6 drop-shadow-md text-center sm:text-left ${
-            isDark ? "text-white" : "text-[#183a2b]"
-          }`}
-        >
-          Meus dados
-        </h3>
+        <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <h3
+            className={`text-[28px] font-serif font-bold drop-shadow-md text-center sm:text-left ${
+              isDark ? "text-white" : "text-[#183a2b]"
+            }`}
+          >
+            Meus dados
+          </h3>
+          <div className={`mx-auto inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-semibold sm:mx-0 ${isDark ? "border-white/10 bg-white/5 text-white/80" : "border-black/10 bg-white text-[#2d4a3b]"}`}>
+            <MapPin size={14} className="text-emerald-600 dark:text-emerald-300" />
+            Município vinculado: <span className={`font-bold ${isDark ? "text-white" : "text-[#183a2b]"}`}>{cityName}</span>
+          </div>
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
           <div
@@ -2411,18 +2486,23 @@ const BottomNav = ({
   isAdmin = false,
   userRole = "user",
 }: {
-  currentTab: "home" | "report" | "tasks" | "accounts";
-  onTabChange: (tab: "home" | "report" | "tasks" | "accounts") => void;
+  currentTab: AppNavTab;
+  onTabChange: (tab: AppNavTab) => void;
   isAdmin?: boolean;
   userRole?: UserRole;
 }) => {
   const { isDark } = useTheme();
+  const hasFourTabs =
+    isAdmin ||
+    userRole === "admin" ||
+    userRole === "diretor" ||
+    userRole === "funcionario";
 
   return (
     <div className="fixed bottom-6 sm:bottom-8 left-0 right-0 mx-auto w-fit z-50 pointer-events-auto flex items-center justify-center">
       <div
         className={`rounded-[40px] drop-shadow-2xl border flex items-center justify-center transition-all duration-300 backdrop-blur-2xl ${
-          isAdmin
+          hasFourTabs
             ? "px-7 sm:px-9 py-4 sm:py-5 gap-7 sm:gap-9"
             : "px-10 py-5 gap-12 sm:gap-16"
         } ${
@@ -2431,9 +2511,10 @@ const BottomNav = ({
             : "border-black/10 bg-black/5 shadow-xl text-[#183a2b]"
         }`}
       >
+        {/* 1st Navigation Item: Mural de Notícias / Início */}
         <button
           onClick={() => onTabChange("home")}
-          className={`relative flex flex-col items-center group transition-colors ${
+          className={`relative flex flex-col items-center group transition-colors cursor-pointer ${
             currentTab === "home"
               ? isDark
                 ? "text-white"
@@ -2446,7 +2527,7 @@ const BottomNav = ({
         >
           <Home
             fill={currentTab === "home" ? "currentColor" : "none"}
-            size={isAdmin ? 28 : 32}
+            size={hasFourTabs ? 28 : 32}
             strokeWidth={1.5}
             className={
               currentTab !== "home"
@@ -2464,9 +2545,11 @@ const BottomNav = ({
             />
           )}
         </button>
+
+        {/* 2nd Navigation Item: Map (ADM / Diretor / Funcionário) | O.S. (Supervisor) | Report (Cidadão) */}
         <button
           onClick={() => onTabChange("report")}
-          className={`relative flex flex-col items-center group transition-colors ${
+          className={`relative flex flex-col items-center group transition-colors cursor-pointer ${
             currentTab === "report"
               ? isDark
                 ? "text-white"
@@ -2476,30 +2559,19 @@ const BottomNav = ({
               : "text-[#2d4a3b]/70 hover:text-[#183a2b]"
           }`}
           title={
-            isAdmin
+            isAdmin || userRole === "admin"
               ? "Mapa Geral"
               : userRole === "diretor"
-              ? "Auditoria Municipal & KPIs"
+              ? "Mapa Executivo & Diagnóstico Territorial"
               : userRole === "supervisor"
               ? "Ordens de Serviço (O.S.)"
               : userRole === "funcionario"
-              ? "Minhas O.S. em Campo"
+              ? "Mapa Operacional de Campo"
               : "Relatar Problema"
           }
         >
-          {isAdmin ? (
+          {isAdmin || userRole === "admin" || userRole === "diretor" || userRole === "funcionario" ? (
             <Map
-              fill={currentTab === "report" ? "currentColor" : "none"}
-              size={28}
-              strokeWidth={1.5}
-              className={
-                currentTab !== "report"
-                  ? "group-hover:scale-110 transition-transform"
-                  : ""
-              }
-            />
-          ) : userRole === "diretor" ? (
-            <Building2
               fill={currentTab === "report" ? "currentColor" : "none"}
               size={28}
               strokeWidth={1.5}
@@ -2511,17 +2583,6 @@ const BottomNav = ({
             />
           ) : userRole === "supervisor" ? (
             <HardHat
-              fill={currentTab === "report" ? "currentColor" : "none"}
-              size={28}
-              strokeWidth={1.6}
-              className={
-                currentTab !== "report"
-                  ? "group-hover:scale-110 transition-transform"
-                  : ""
-              }
-            />
-          ) : userRole === "funcionario" ? (
-            <Wrench
               fill={currentTab === "report" ? "currentColor" : "none"}
               size={28}
               strokeWidth={1.6}
@@ -2553,9 +2614,11 @@ const BottomNav = ({
             />
           )}
         </button>
+
+        {/* 3rd Navigation Item: Indicadores (Diretor) | Execução de O.S. (Funcionário) | Tarefas (ADM/Supervisor/Cidadão) */}
         <button
           onClick={() => onTabChange("tasks")}
-          className={`relative flex flex-col items-center group transition-colors ${
+          className={`relative flex flex-col items-center group transition-colors cursor-pointer ${
             currentTab === "tasks"
               ? isDark
                 ? "text-white"
@@ -2565,19 +2628,19 @@ const BottomNav = ({
               : "text-[#2d4a3b]/70 hover:text-[#183a2b]"
           }`}
           title={
-            isAdmin
+            isAdmin || userRole === "admin"
               ? "Chamados e Ocorrências"
               : userRole === "diretor"
-              ? "Indicadores & Auditoria"
+              ? "Painel de Indicadores & Auditoria"
               : userRole === "supervisor"
               ? "Gestão do Setor"
               : userRole === "funcionario"
-              ? "Execução de Tarefas"
+              ? "Execução de O.S."
               : "Minhas Tarefas"
           }
         >
           {userRole === "diretor" ? (
-            <Activity
+            <Building2
               fill={currentTab === "tasks" ? "currentColor" : "none"}
               size={28}
               strokeWidth={1.5}
@@ -2587,10 +2650,21 @@ const BottomNav = ({
                   : ""
               }
             />
+          ) : userRole === "funcionario" ? (
+            <Wrench
+              fill={currentTab === "tasks" ? "currentColor" : "none"}
+              size={28}
+              strokeWidth={1.6}
+              className={
+                currentTab !== "tasks"
+                  ? "group-hover:scale-110 transition-transform"
+                  : ""
+              }
+            />
           ) : (
             <ClipboardCheck
               fill={currentTab === "tasks" ? "currentColor" : "none"}
-              size={isAdmin ? 28 : 32}
+              size={hasFourTabs ? 28 : 32}
               strokeWidth={1.5}
               className={
                 currentTab !== "tasks"
@@ -2610,11 +2684,11 @@ const BottomNav = ({
           )}
         </button>
 
-        {/* 4th Navigation Item: Accounts & Users Management (ADM Only) */}
-        {isAdmin && (
+        {/* 4th Navigation Item: Contas (ADM) | Central de SLA (Diretor) | Diário de Campo (Funcionário) */}
+        {(isAdmin || userRole === "admin") && (
           <button
             onClick={() => onTabChange("accounts")}
-            className={`relative flex flex-col items-center group transition-colors ${
+            className={`relative flex flex-col items-center group transition-colors cursor-pointer ${
               currentTab === "accounts"
                 ? isDark
                   ? "text-white"
@@ -2636,6 +2710,78 @@ const BottomNav = ({
               }
             />
             {currentTab === "accounts" && (
+              <div
+                className={`w-2 h-2 rounded-full absolute -bottom-4 ${
+                  isDark
+                    ? "bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]"
+                    : "bg-[#183a2b] shadow-[0_0_6px_rgba(24,58,43,0.4)]"
+                }`}
+              />
+            )}
+          </button>
+        )}
+
+        {!isAdmin && userRole === "diretor" && (
+          <button
+            onClick={() => onTabChange("sla")}
+            className={`relative flex flex-col items-center group transition-colors cursor-pointer ${
+              currentTab === "sla"
+                ? isDark
+                  ? "text-white"
+                  : "text-[#183a2b] font-bold"
+                : isDark
+                ? "text-white/50 hover:text-white"
+                : "text-[#2d4a3b]/70 hover:text-[#183a2b]"
+            }`}
+            title="Central de SLA, Gargalos & Impedimentos"
+          >
+            <Activity
+              fill={currentTab === "sla" ? "currentColor" : "none"}
+              size={28}
+              strokeWidth={1.5}
+              className={
+                currentTab !== "sla"
+                  ? "group-hover:scale-110 transition-transform"
+                  : ""
+              }
+            />
+            {currentTab === "sla" && (
+              <div
+                className={`w-2 h-2 rounded-full absolute -bottom-4 ${
+                  isDark
+                    ? "bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]"
+                    : "bg-[#183a2b] shadow-[0_0_6px_rgba(24,58,43,0.4)]"
+                }`}
+              />
+            )}
+          </button>
+        )}
+
+        {!isAdmin && userRole === "funcionario" && (
+          <button
+            onClick={() => onTabChange("field_log")}
+            className={`relative flex flex-col items-center group transition-colors cursor-pointer ${
+              currentTab === "field_log"
+                ? isDark
+                  ? "text-white"
+                  : "text-[#183a2b] font-bold"
+                : isDark
+                ? "text-white/50 hover:text-white"
+                : "text-[#2d4a3b]/70 hover:text-[#183a2b]"
+            }`}
+            title="Calendário de Campo"
+          >
+            <Calendar
+              fill={currentTab === "field_log" ? "currentColor" : "none"}
+              size={28}
+              strokeWidth={1.5}
+              className={
+                currentTab !== "field_log"
+                  ? "group-hover:scale-110 transition-transform"
+                  : ""
+              }
+            />
+            {currentTab === "field_log" && (
               <div
                 className={`w-2 h-2 rounded-full absolute -bottom-4 ${
                   isDark
@@ -2944,6 +3090,7 @@ const TasksView = ({
 
 const AdminMapView = ({
   reports = [],
+  city,
   onResolveReport,
   onGoToProfile,
   onGoToSettings,
@@ -2951,6 +3098,7 @@ const AdminMapView = ({
   onDeleteReport,
 }: {
   reports?: any[];
+  city?: CityItem | null;
   onResolveReport: (id: string) => Promise<void>;
   onGoToProfile: () => void;
   onGoToSettings: () => void;
@@ -2959,7 +3107,7 @@ const AdminMapView = ({
 }) => {
   const { isDark } = useTheme();
   const [selectedReport, setSelectedReport] = useState<any | null>(null);
-  const [mapCenter] = useState<[number, number]>([-25.5929, -49.4891]);
+  const mapCenter: [number, number] = [city?.center_lat || -25.633835, city?.center_lng || -49.461966];
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "resolved">("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
@@ -3304,13 +3452,8 @@ const AdminMapView = ({
           <div className="lg:col-span-7 xl:col-span-8 w-full h-[380px] lg:h-[550px] rounded-[32px] overflow-hidden shadow-2xl border border-white/20 bg-white/5 relative z-10">
             <MapContainer
               center={mapCenter}
-              zoom={13}
-              minZoom={11}
-              maxBounds={[
-                [-25.8, -49.7],
-                [-25.4, -49.2],
-              ]}
-              maxBoundsViscosity={1.0}
+              zoom={city?.default_zoom || 12}
+              minZoom={6}
               zoomControl={false}
               attributionControl={false}
               style={{
@@ -3320,6 +3463,7 @@ const AdminMapView = ({
               }}
             >
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              <MapRecenter center={mapCenter} />
               {filteredReports.map((report) => {
                 if (!report.latitude || !report.longitude) return null;
                 return (
@@ -3909,6 +4053,7 @@ const AdminTasksView = ({
 
 const ReportView = ({
   currentUser,
+  city,
   onTabChange,
   onGoToProfile,
   onGoToSettings,
@@ -3917,6 +4062,7 @@ const ReportView = ({
   anonymous = false,
 }: {
   currentUser?: UserProfile;
+  city?: CityItem | null;
   onTabChange: (tab: "home" | "report" | "tasks") => void;
   onGoToProfile: () => void;
   onGoToSettings: () => void;
@@ -3931,7 +4077,8 @@ const ReportView = ({
   const [category, setCategory] = useState<ReportCategory>("Pavimentação");
   const [locationQuery, setLocationQuery] = useState("");
   const [mapCenter, setMapCenter] = useState<[number, number]>([
-    -25.5929, -49.4891,
+    city?.center_lat || -25.633835,
+    city?.center_lng || -49.461966,
   ]);
   const [isLoadingAddress, setIsLoadingAddress] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -3968,8 +4115,9 @@ const ReportView = ({
   };
 
   useEffect(() => {
-    handleMapMove(mapCenter[0], mapCenter[1]);
-  }, []);
+    const center: [number, number] = [city?.center_lat || -25.633835, city?.center_lng || -49.461966];
+    handleMapMove(center[0], center[1]);
+  }, [city?.id]);
 
   const handleSendReport = async () => {
     if (!title.trim()) {
@@ -4046,14 +4194,16 @@ const ReportView = ({
       }
 
       const reportId = generateUUID();
+      const reportCityId = currentUser?.city_id || city?.id || "araucaria-pr";
       const newReportData: ReportItem = {
         id: reportId,
+        city_id: reportCityId,
         title: title.trim(),
         description: title.trim(),
         category: category,
         address: locationQuery || "Endereço não informado",
-        latitude: mapCenter[0] || -25.5929,
-        longitude: mapCenter[1] || -49.4891,
+        latitude: mapCenter[0] || city?.center_lat || -25.633835,
+        longitude: mapCenter[1] || city?.center_lng || -49.461966,
         image_url: imageUrl,
         anonymous: anonymous,
         user_id: activeUserId,
@@ -4074,12 +4224,13 @@ const ReportView = ({
         try {
           const validUserId = isUUID(activeUserId) ? activeUserId : null;
           const formattedDesc = `[Categoria: ${category}]\n${title.trim()}`;
-          const safeAddress = locationQuery?.trim() || "Araucária - PR";
-          const safeLat = typeof mapCenter[0] === "number" && !isNaN(mapCenter[0]) ? mapCenter[0] : -25.5929;
-          const safeLng = typeof mapCenter[1] === "number" && !isNaN(mapCenter[1]) ? mapCenter[1] : -49.4891;
+          const safeAddress = locationQuery?.trim() || `${city?.name || "Araucária"} - ${city?.state || "PR"}`;
+          const safeLat = typeof mapCenter[0] === "number" && !isNaN(mapCenter[0]) ? mapCenter[0] : (city?.center_lat || -25.633835);
+          const safeLng = typeof mapCenter[1] === "number" && !isNaN(mapCenter[1]) ? mapCenter[1] : (city?.center_lng || -49.461966);
 
           const basePayload: any = {
             id: reportId,
+            city_id: reportCityId,
             title: title.trim(),
             description: formattedDesc,
             maintenance_type: category,
@@ -4170,7 +4321,7 @@ const ReportView = ({
     if (e.key === "Enter" && locationQuery) {
       try {
         const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(locationQuery + ", Araucária, PR")}&format=json&limit=1`,
+          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(`${locationQuery}, ${city?.name || "Araucária"}, ${city?.state || "PR"}`)}&format=json&limit=1`,
         );
         if (res.ok) {
           const data = await res.json();
@@ -4419,13 +4570,8 @@ const ReportView = ({
             <div className="w-full h-80 lg:h-[350px] rounded-[24px] overflow-hidden shadow-2xl border border-white/20 bg-white/5 relative z-10 mt-1">
               <MapContainer
                 center={mapCenter}
-                zoom={15}
-                minZoom={12}
-                maxBounds={[
-                  [-25.8, -49.7],
-                  [-25.4, -49.2],
-                ]}
-                maxBoundsViscosity={1.0}
+                zoom={Math.max(11, city?.default_zoom || 12)}
+                minZoom={6}
                 zoomControl={false}
                 attributionControl={false}
                 style={{
@@ -4506,6 +4652,12 @@ const MainFeed = ({
   onGoToProfile,
   onTabChange,
   isAdmin = false,
+  cityName = "Araucária",
+  cityState = "PR",
+  cities = [],
+  activeCityId = "araucaria-pr",
+  onCityChange,
+  onManageCities,
   onViewImage,
   onViewDetails,
   pendingCount = 0,
@@ -4522,6 +4674,12 @@ const MainFeed = ({
   onGoToProfile: () => void;
   onTabChange: (tab: "home" | "report" | "tasks") => void;
   isAdmin?: boolean;
+  cityName?: string;
+  cityState?: string;
+  cities?: CityItem[];
+  activeCityId?: string;
+  onCityChange?: (cityId: string) => void;
+  onManageCities?: () => void;
   onViewImage: (url: string, title: string) => void;
   onViewDetails?: (report: any) => void;
   pendingCount?: number;
@@ -4558,7 +4716,7 @@ const MainFeed = ({
           onClick={() =>
             onViewImage(
               pexelsNandhu,
-              isAdmin ? "Transformando Araucária" : "Notícias de Araucária",
+              isAdmin ? `Transformando ${cityName}` : `Notícias de ${cityName}`,
             )
           }
           className="absolute inset-0 z-0 bg-cover bg-center scale-110 cursor-pointer"
@@ -4613,13 +4771,13 @@ const MainFeed = ({
             <>
               Transformando
               <br />
-              Araucária
+              {cityName}
             </>
           ) : (
             <>
               Notícias de
               <br />
-              Araucária
+              {cityName}
             </>
           )}
         </h2>
@@ -4629,20 +4787,31 @@ const MainFeed = ({
       <div className="relative z-10 px-6 sm:px-10 pb-40">
         {isAdmin ? (
           <>
-            <h3
-              className={`text-[32px] font-serif font-bold mb-1 mt-6 tracking-tight ${
-                isDark ? "text-white" : "text-[#183a2b]"
-              }`}
-            >
-              Monitoramento Urbano
-            </h3>
-            <p
-              className={`text-sm mb-8 font-mono ${
-                isDark ? "text-white/60" : "text-[#2d4a3b]"
-              }`}
-            >
-              Araucária - PR • Dashboard em tempo real
-            </p>
+            <div className="mb-8 mt-6 flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+              <div>
+                <h3
+                  className={`text-[32px] font-serif font-bold mb-1 tracking-tight ${
+                    isDark ? "text-white" : "text-[#183a2b]"
+                  }`}
+                >
+                  Monitoramento Urbano
+                </h3>
+                <p className={`text-sm font-mono ${isDark ? "text-white/60" : "text-[#2d4a3b]"}`}>
+                  {cityName} - {cityState} • Dashboard em tempo real
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <label className={`min-w-52 text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-white/60" : "text-[#2d4a3b]/70"}`}>
+                  Ambiente municipal
+                  <select value={activeCityId} onChange={(event) => onCityChange?.(event.target.value)} className={`mt-1 block w-full rounded-xl border px-3 py-2.5 text-xs font-semibold outline-none ${isDark ? "border-white/15 bg-[#263a34] text-white" : "border-black/10 bg-white text-[#183a2b]"}`}>
+                    {cities.map((city) => <option key={city.id} value={city.id}>{city.name} · {city.state}</option>)}
+                  </select>
+                </label>
+                <button type="button" onClick={onManageCities} className={`inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-bold transition ${isDark ? "border-white/15 bg-white/10 text-white hover:bg-white/15" : "border-black/10 bg-white text-[#183a2b] hover:bg-slate-50"}`}>
+                  <Building2 size={15} /> Gerenciar municípios
+                </button>
+              </div>
+            </div>
 
             {/* Statistics Cards Grid */}
             <div className="grid grid-cols-2 gap-4 mb-8">
@@ -4806,7 +4975,7 @@ const MainFeed = ({
                         isDark ? "text-white" : "text-[#183a2b]"
                       }`}
                     >
-                      Painel de Notícias de Araucária
+                      Painel de Notícias de {cityName}
                     </h4>
                   </div>
                   <button
@@ -5165,7 +5334,7 @@ CREATE POLICY "Admins can delete news" ON public.news FOR DELETE USING (
                 Notícias
               </h3>
               <p className="text-sm mb-6 font-mono font-bold tracking-wide uppercase text-emerald-600 dark:text-emerald-400">
-                Araucária - PR • Fique por dentro
+                {cityName} - {cityState} • Fique por dentro
               </p>
             </div>
 
@@ -5186,7 +5355,7 @@ CREATE POLICY "Admins can delete news" ON public.news FOR DELETE USING (
                     isDark ? "text-white" : "text-[#183a2b]"
                   }`}
                 >
-                  Commuária: A Ponte Entre Você e a Zeladoria de Araucária
+                  Commuária: A Ponte Entre Você e a Zeladoria de {cityName}
                 </h4>
               </div>
               <div className="space-y-4">
@@ -5195,7 +5364,7 @@ CREATE POLICY "Admins can delete news" ON public.news FOR DELETE USING (
                     isDark ? "text-white/90" : "text-[#183a2b]/90"
                   }`}
                 >
-                  Em um município dinâmico como Araucária, manter a zeladoria
+                  Em um município dinâmico como {cityName}, manter a zeladoria
                   urbana em dia é um desafio constante que exige uma comunicação
                   ágil entre a população e o poder público.
                 </p>
@@ -5491,7 +5660,7 @@ CREATE POLICY "Admins can delete news" ON public.news FOR DELETE USING (
                     Todos os Comunicados
                   </h3>
                   <p className="text-sm text-white/85 font-sans max-w-xl font-medium drop-shadow-sm">
-                    Fique sabendo de tudo que acontece em Araucária. Encontre abaixo notícias oficiais, avisos municipais e ações comunitárias.
+                    Fique sabendo de tudo que acontece em {cityName}. Encontre abaixo notícias oficiais, avisos municipais e ações comunitárias.
                   </p>
                 </div>
               </div>
@@ -5897,6 +6066,12 @@ const ReportDetailsModal = ({
   useEffect(() => {
     if (report.anonymous) {
       setAuthorName("Anônimo");
+      return;
+    }
+
+    if (userRole === "diretor" || userRole === "funcionario") {
+      const masked = maskCitizenData(report, "diretor");
+      setAuthorName(masked.user_name || "Cidadão Protegido");
       return;
     }
 
@@ -6382,11 +6557,18 @@ export function AppContent() {
     | "report"
     | "tasks"
     | "accounts"
+    | "field_log"
+    | "sla"
   >("landing");
+  const [selectedEmployeeWoId, setSelectedEmployeeWoId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [userRole, setUserRole] = useState<UserRole>("user");
   const [assignedCategory, setAssignedCategory] = useState<string | null>(null);
   const [showSupervisorManager, setShowSupervisorManager] = useState(false);
+  const [showAdminCitiesModal, setShowAdminCitiesModal] = useState(false);
+  const [cities, setCities] = useState<CityItem[]>(DEFAULT_SEEDED_CITIES);
+  const [activeCityId, setActiveCityId] = useState("araucaria-pr");
+  const activeCity = cities.find((city) => city.id === activeCityId) || cities.find((city) => city.id === "araucaria-pr") || null;
   const [blockedModalInfo, setBlockedModalInfo] = useState<{
     blockInfo: BlockStatusResult;
     email: string;
@@ -6406,6 +6588,7 @@ export function AppContent() {
     resolved: number;
     anonymous?: boolean;
     role?: UserRole;
+    city_id?: string;
     assigned_category?: string | null;
   }>({
     id: "",
@@ -6416,8 +6599,10 @@ export function AppContent() {
     resolved: 0,
     anonymous: false,
     role: "user",
+    city_id: "araucaria-pr",
     assigned_category: null,
   });
+  const linkedCity = cities.find((city) => city.id === currentUser.city_id) || null;
   const [userReports, setUserReports] = useState<any[]>([]);
   const [forgotPasswordStep, setForgotPasswordStep] = useState<"email" | "code" | "reset">("email");
 
@@ -6426,22 +6611,32 @@ export function AppContent() {
   const [systemResolvedCount, setSystemResolvedCount] = useState(0);
   const [systemPendingReports, setSystemPendingReports] = useState<any[]>([]);
   const [allSystemReports, setAllSystemReports] = useState<any[]>([]);
+  const [publicMapReports, setPublicMapReports] = useState<any[]>([]);
   const [newsList, setNewsList] = useState<any[]>([]);
   const [newsDbError, setNewsDbError] = useState<string | null>(null);
   const [showDbModal, setShowDbModal] = useState(false);
 
-  const fetchNewsList = async () => {
-    const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
-    
+  const fetchNewsList = async (cityOverride?: string) => {
+    const storedNews = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+    const cityId = cityOverride || (isAdmin || userRole === "admin" ? activeCityId : currentUser.city_id || "araucaria-pr");
+    const local = (Array.isArray(storedNews) ? storedNews : []).filter((item: any) => (item.city_id || "araucaria-pr") === cityId);
+
     if (!supabase) {
       setNewsList(local);
       return;
     }
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        // Anonymous landing pages must not read city-scoped news tables or local caches.
+        setNewsList([]);
+        return;
+      }
       const { data, error } = await supabase
         .from("news")
         .select("*")
+        .eq("city_id", cityId)
         .order("created_at", { ascending: false });
       
       if (error) throw error;
@@ -6487,11 +6682,13 @@ export function AppContent() {
   };
 
   const handleAddNews = async (title: string, description: string, category: string) => {
+    const cityId = isAdmin || userRole === "admin" ? activeCityId : currentUser.city_id || "araucaria-pr";
     const newRecord = {
       id: "news_" + Math.random().toString(36).substring(2, 9),
       title,
       description,
       category,
+      city_id: cityId,
       created_at: new Date().toISOString()
     };
 
@@ -6507,7 +6704,7 @@ export function AppContent() {
       // 2. Tentar enviar para a tabela oficial do Supabase
       const { error } = await supabase
         .from("news")
-        .insert({ title, description, category });
+        .insert({ title, description, category, city_id: cityId });
 
       if (error) throw error;
       
@@ -6551,43 +6748,68 @@ export function AppContent() {
     }
   };
 
-  const fetchSystemStatistics = async () => {
+  const fetchSystemStatistics = async (cityOverride?: string) => {
+    const cityId = cityOverride || (isAdmin || userRole === "admin" ? activeCityId : currentUser.city_id || "araucaria-pr");
     let reportsData: any[] = [];
+    let publicReportsData: any[] = [];
+    let authenticated = false;
     try {
-      await fetchNewsList();
+      await fetchNewsList(cityId);
       if (supabase) {
-        const { data } = await supabase
-          .from("reports")
-          .select("*")
-          .order("created_at", { ascending: false });
-        if (data && data.length > 0) {
-          reportsData = data.map((r: any) => ({
+        const { data: { session } } = await supabase.auth.getSession();
+        authenticated = Boolean(session?.user) || (!isRealSupabase && Boolean(currentUser?.id || currentUser?.email));
+        if (session?.user) {
+          // Private dashboard data stays city-scoped by RLS and the explicit selector filter.
+          const { data, error } = await supabase
+            .from("reports")
+            .select("*")
+            .eq("city_id", cityId)
+            .order("created_at", { ascending: false });
+          if (error) throw error;
+          reportsData = (data || []).map((r: any) => ({
             ...r,
-            category:
-              r.category ||
-              r.maintenance_type ||
-              (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) ||
-              "Pavimentação",
+            category: r.category || r.maintenance_type || (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) || "Outros",
           }));
+        }
+        if (isRealSupabase) {
+          // The homepage map always uses the public-safe projection, including for signed-in sessions.
+          const { data, error } = await supabase.rpc("get_public_city_reports", { p_city_id: cityId });
+          if (error) throw error;
+          publicReportsData = (data || []).map((r: any) => ({
+            id: r.id,
+            city_id: r.city_id,
+            title: r.title,
+            description: r.short_description,
+            category: r.category || "Outros",
+            address: r.public_location,
+            latitude: r.latitude,
+            longitude: r.longitude,
+            status: r.status,
+            created_at: r.created_at,
+          }));
+          if (!session?.user) reportsData = publicReportsData;
         }
       }
     } catch (e) {
-      console.warn("Erro ao carregar do Supabase, usando armazenamento local:", e);
+      console.warn("Erro ao carregar dados do município:", e);
     }
 
-    // Combine with LocalStorage items so user reports created locally are always included
-    const localReports = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+    setPublicMapReports(publicReportsData.filter((report: any) => report.city_id === cityId));
+
+    // Local cache is considered only for an authenticated session and only for the same city.
+    const localReports = authenticated
+      ? JSON.parse(localStorage.getItem("commuaria_reports") || "[]")
+      : [];
     const combined = [...reportsData];
-    localReports.forEach((lr: any) => {
+    (Array.isArray(localReports) ? localReports : []).forEach((lr: any) => {
+      if ((lr.city_id || "araucaria-pr") !== cityId) return;
       if (!combined.some((cr: any) => cr.id === lr.id || (cr.title === lr.title && cr.address === lr.address))) {
         combined.push(lr);
       }
     });
 
-    // Filter out locally deleted reports
     const localDeleted = JSON.parse(localStorage.getItem("commuaria_deleted_reports") || "[]");
-    const filteredData = combined.filter((r: any) => !localDeleted.includes(r.id));
-
+    const filteredData = combined.filter((r: any) => !localDeleted.includes(r.id) && (r.city_id || cityId) === cityId);
     const pending = filteredData.filter((r: any) => r.status !== "resolved");
     const resolved = filteredData.filter((r: any) => r.status === "resolved");
     setSystemPendingCount(pending.length);
@@ -6924,6 +7146,7 @@ export function AppContent() {
       dbProfile?.name || localMatched?.name || currentUser.name || (targetEmail ? targetEmail.split("@")[0] : "Usuário");
     const resolvedEmail =
       dbProfile?.email || localMatched?.email || targetEmail || currentUser.email || "";
+    const resolvedCityId = dbProfile?.city_id || localMatched?.city_id || currentUser.city_id || "araucaria-pr";
 
     // 3. Local reports resolution
     const localReports: any[] = JSON.parse(
@@ -6935,7 +7158,7 @@ export function AppContent() {
 
     // Filter reports belonging to this user (by ID or Email or local_user)
     const userMatchedLocalReports = localReports.filter((r: any) => {
-      if (localDeleted.includes(r.id)) return false;
+      if (localDeleted.includes(r.id) || (r.city_id || "araucaria-pr") !== resolvedCityId) return false;
       const matchId = r.user_id && (r.user_id === userId || r.user_id === localMatched?.id || r.user_id === currentUser.id);
       const matchEmail = resolvedEmail && r.user_email && r.user_email.toLowerCase() === resolvedEmail.toLowerCase();
       const matchLocalUser = (!r.user_id || r.user_id === "local_user") && (resolvedRole === "user");
@@ -6961,6 +7184,7 @@ export function AppContent() {
       name: resolvedName,
       email: resolvedEmail,
       role: resolvedRole,
+      city_id: resolvedCityId,
       assigned_category: resolvedCat,
       open: openCount,
       resolved: resolvedCount,
@@ -7007,15 +7231,23 @@ export function AppContent() {
     setIsAdmin(resolvedRole === "admin");
     setUserRole(resolvedRole);
     setAssignedCategory(resolvedCat);
+    if (resolvedRole !== "admin") setActiveCityId(resolvedCityId);
     setUserReports(combinedReports);
 
-    // Store active session in localStorage
+    // Store active session in localStorage with its municipality association
     localStorage.setItem("commuaria_active_session", JSON.stringify(resolvedUser));
 
-    await fetchSystemStatistics();
+    await fetchSystemStatistics(resolvedRole === "admin" ? activeCityId : resolvedCityId);
   };
 
   useEffect(() => {
+    let mounted = true;
+    fetchCities().then((items) => {
+      if (!mounted || !items.length) return;
+      setCities(items);
+      setActiveCityId((current) => items.some((city) => city.id === current) ? current : (items.find((city) => city.is_active)?.id || "araucaria-pr"));
+    }).catch((error) => console.warn("Falha ao carregar municípios:", error));
+
     // 0. Register Cross-Platform Notification Service Worker
     registerCommuariaServiceWorker();
 
@@ -7163,15 +7395,21 @@ export function AppContent() {
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
-  const handleTabChange = (tab: "home" | "report" | "tasks" | "accounts") => {
+  const handleTabChange = (tab: AppNavTab) => {
     if (tab === "home") {
       setScreen("feed");
       fetchSystemStatistics();
     }
-    if (tab === "report") setScreen("report");
+    if (tab === "report") {
+      setScreen("report");
+      fetchSystemStatistics();
+    }
     if (tab === "tasks") {
       setScreen("tasks");
       if (currentUser?.id || currentUser?.email) {
@@ -7181,6 +7419,14 @@ export function AppContent() {
     }
     if (tab === "accounts") {
       setScreen("accounts");
+      fetchSystemStatistics();
+    }
+    if (tab === "field_log") {
+      setScreen("field_log");
+      fetchSystemStatistics();
+    }
+    if (tab === "sla") {
+      setScreen("sla");
       fetchSystemStatistics();
     }
   };
@@ -7210,7 +7456,12 @@ export function AppContent() {
         }`}
       >
         <div className="absolute inset-0 flex flex-col overflow-hidden">
-          {(screen === "feed" || screen === "report" || screen === "tasks" || screen === "accounts") && (
+          {(screen === "feed" ||
+            screen === "report" ||
+            screen === "tasks" ||
+            screen === "accounts" ||
+            screen === "field_log" ||
+            screen === "sla") && (
             <FloatingMenu
               onGoToProfile={() => setScreen("profile")}
               onGoToSettings={() => setScreen("settings")}
@@ -7230,7 +7481,13 @@ export function AppContent() {
                 <LandingView
                   onEnter={() => setScreen("login")}
                   onSignup={() => setScreen("signup")}
-                  reports={allSystemReports}
+                  reports={publicMapReports}
+                  city={activeCity}
+                  cities={cities}
+                  onCityChange={(cityId) => {
+                    setActiveCityId(cityId);
+                    void fetchSystemStatistics(cityId);
+                  }}
                 />
               </motion.div>
             )}
@@ -7283,6 +7540,7 @@ export function AppContent() {
                       email: cleanEmail,
                       password: data?.password || found?.password,
                       role: determinedRole,
+                      city_id: data?.city_id || found?.city_id || "araucaria-pr",
                       assigned_category: assignedCat || null,
                       open: 0,
                       resolved: 0,
@@ -7290,6 +7548,7 @@ export function AppContent() {
                     };
 
                     setCurrentUser(loggedUser);
+                    if (determinedRole !== "admin") setActiveCityId(loggedUser.city_id || "araucaria-pr");
                     localStorage.setItem("commuaria_active_session", JSON.stringify(loggedUser));
                     fetchUserData(resolvedId, cleanEmail);
                     setScreen("feed");
@@ -7336,6 +7595,7 @@ export function AppContent() {
               >
                 <SignupView
                   onBack={() => setScreen("landing")}
+                  cities={cities}
                   onSignup={(data) => {
                     setIsAdmin(false);
                     setUserRole("user");
@@ -7349,6 +7609,7 @@ export function AppContent() {
                       email: cleanEmail,
                       password: data.password,
                       role: "user",
+                      city_id: data.city_id,
                       assigned_category: null,
                       is_admin: false,
                       open: 0,
@@ -7373,6 +7634,7 @@ export function AppContent() {
                     }
 
                     setCurrentUser(newProfile);
+                    setActiveCityId(data.city_id);
                     localStorage.setItem("commuaria_active_session", JSON.stringify(newProfile));
                     fetchUserData(newUserId, cleanEmail);
                     setScreen("feed");
@@ -7396,6 +7658,12 @@ export function AppContent() {
                   onGoToProfile={() => setScreen("profile")}
                   onTabChange={handleTabChange}
                   isAdmin={isAdmin}
+                  cityName={activeCity?.name || "Araucária"}
+                  cityState={activeCity?.state || "PR"}
+                  cities={cities}
+                  activeCityId={activeCityId}
+                  onCityChange={(cityId) => { setActiveCityId(cityId); void fetchSystemStatistics(cityId); }}
+                  onManageCities={() => setShowAdminCitiesModal(true)}
                   onViewImage={(url, title) => setActiveImage({ url, title })}
                   onViewDetails={(report) => setActiveReport(report)}
                   pendingCount={systemPendingCount}
@@ -7424,6 +7692,7 @@ export function AppContent() {
                 {isAdmin || userRole === "admin" ? (
                   <AdminMapView
                     reports={allSystemReports}
+                    city={activeCity}
                     onResolveReport={handleResolveReport}
                     onGoToProfile={() => setScreen("profile")}
                     onGoToSettings={() => setScreen("settings")}
@@ -7431,29 +7700,49 @@ export function AppContent() {
                     onDeleteReport={handleDeleteReport}
                   />
                 ) : userRole === "diretor" ? (
-                  <DirectorDashboardView
-                    user={currentUser}
+                  <DirectorExecutiveMapView
+                    user={{
+                      ...currentUser,
+                      id: currentUser?.id || "",
+                      role: "diretor",
+                    }}
+                    city={activeCity}
                     reports={allSystemReports}
                     onViewReportDetails={(report) => setActiveReport(report)}
+                    onViewImage={(url, title) => setActiveImage({ url, title })}
                     onRefresh={async () => {
                       if (currentUser?.id || currentUser?.email) {
                         await fetchUserData(currentUser.id, currentUser.email);
                       }
                       await fetchSystemStatistics();
                     }}
-                    onTabChange={handleTabChange}
                   />
                 ) : userRole === "funcionario" ? (
-                  <EmployeeWorkView
-                    user={currentUser}
+                  <EmployeeFieldMapView
+                    user={{
+                      ...currentUser,
+                      id: currentUser?.id || "",
+                      role: "funcionario",
+                    }}
+                    city={activeCity}
                     category={assignedCategory || undefined}
+                    reports={allSystemReports}
+                    selectedWorkOrderId={selectedEmployeeWoId}
+                    onViewImage={(url, title) => setActiveImage({ url, title })}
+                    onOpenFieldLog={(woId) => {
+                      setSelectedEmployeeWoId(woId);
+                      setScreen("field_log");
+                    }}
+                    onOpenWorkExecution={(woId) => {
+                      setSelectedEmployeeWoId(woId);
+                      setScreen("tasks");
+                    }}
                     onRefresh={async () => {
                       if (currentUser?.id || currentUser?.email) {
                         await fetchUserData(currentUser.id, currentUser.email);
                       }
                       await fetchSystemStatistics();
                     }}
-                    onTabChange={handleTabChange}
                   />
                 ) : userRole === "supervisor" ? (
                   <SupervisorWorkOrderView
@@ -7475,6 +7764,7 @@ export function AppContent() {
                 ) : (
                   <ReportView
                     currentUser={currentUser}
+                    city={activeCity}
                     onTabChange={handleTabChange}
                     onGoToProfile={() => setScreen("profile")}
                     onGoToSettings={() => setScreen("settings")}
@@ -7506,6 +7796,7 @@ export function AppContent() {
               >
                 <ProfileView
                   user={currentUser}
+                  cityName={linkedCity ? `${linkedCity.name} - ${linkedCity.state}` : "Município não informado"}
                   onSave={async (data) => {
                     setCurrentUser((prev) => ({ ...prev, ...data }));
                     if (supabase) {
@@ -7593,7 +7884,11 @@ export function AppContent() {
                   />
                 ) : userRole === "diretor" ? (
                   <DirectorDashboardView
-                    user={currentUser}
+                    user={{
+                      ...currentUser,
+                      id: currentUser?.id || "",
+                      role: "diretor",
+                    }}
                     reports={allSystemReports}
                     onViewReportDetails={(report) => setActiveReport(report)}
                     onRefresh={async () => {
@@ -7606,8 +7901,21 @@ export function AppContent() {
                   />
                 ) : userRole === "funcionario" ? (
                   <EmployeeWorkView
-                    user={currentUser}
+                    user={{
+                      ...currentUser,
+                      id: currentUser?.id || "",
+                      role: "funcionario",
+                    }}
                     category={assignedCategory || undefined}
+                    selectedWorkOrderId={selectedEmployeeWoId}
+                    onOpenMap={(woId) => {
+                      setSelectedEmployeeWoId(woId);
+                      setScreen("report");
+                    }}
+                    onOpenFieldLog={(woId) => {
+                      setSelectedEmployeeWoId(woId);
+                      setScreen("field_log");
+                    }}
                     onRefresh={async () => {
                       if (currentUser?.id || currentUser?.email) {
                         await fetchUserData(currentUser.id, currentUser.email);
@@ -7672,7 +7980,7 @@ export function AppContent() {
                         assigned_category: newCat,
                         is_admin: newRole === "admin",
                       }));
-                      if (newRole === "supervisor") {
+                      if (newRole !== "admin") {
                         setScreen("tasks");
                       }
                     }
@@ -7680,9 +7988,81 @@ export function AppContent() {
                 />
               </motion.div>
             )}
+
+            {screen === "field_log" && userRole === "funcionario" && (
+              <motion.div
+                key="field_log"
+                variants={screenVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                transition={pageTransition}
+                className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
+              >
+                <EmployeeFieldLogView
+                  user={{
+                    ...currentUser,
+                    id: currentUser?.id || "",
+                    role: "funcionario",
+                  }}
+                  category={assignedCategory || undefined}
+                  reports={allSystemReports}
+                  selectedWorkOrderId={selectedEmployeeWoId}
+                  onViewImage={(url, title) => setActiveImage({ url, title })}
+                  onOpenMap={(woId) => {
+                    setSelectedEmployeeWoId(woId);
+                    setScreen("report");
+                  }}
+                  onOpenWorkExecution={(woId) => {
+                    setSelectedEmployeeWoId(woId);
+                    setScreen("tasks");
+                  }}
+                  onRefresh={async () => {
+                    if (currentUser?.id || currentUser?.email) {
+                      await fetchUserData(currentUser.id, currentUser.email);
+                    }
+                    await fetchSystemStatistics();
+                  }}
+                />
+              </motion.div>
+            )}
+
+            {screen === "sla" && userRole === "diretor" && (
+              <motion.div
+                key="sla"
+                variants={screenVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                transition={pageTransition}
+                className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
+              >
+                <DirectorSlaAuditView
+                  user={{
+                    ...currentUser,
+                    id: currentUser?.id || "",
+                    role: "diretor",
+                  }}
+                  reports={allSystemReports}
+                  onViewReportDetails={(report) => setActiveReport(report)}
+                  onViewImage={(url, title) => setActiveImage({ url, title })}
+                  onRefresh={async () => {
+                    if (currentUser?.id || currentUser?.email) {
+                      await fetchUserData(currentUser.id, currentUser.email);
+                    }
+                    await fetchSystemStatistics();
+                  }}
+                />
+              </motion.div>
+            )}
           </AnimatePresence>
 
-          {(screen === "feed" || screen === "report" || screen === "tasks" || screen === "accounts") && (
+          {(screen === "feed" ||
+            screen === "report" ||
+            screen === "tasks" ||
+            screen === "accounts" ||
+            screen === "field_log" ||
+            screen === "sla") && (
             <BottomNav
               currentTab={
                 screen === "report"
@@ -7691,7 +8071,11 @@ export function AppContent() {
                     ? "tasks"
                     : screen === "accounts"
                       ? "accounts"
-                      : "home"
+                      : screen === "field_log"
+                        ? "field_log"
+                        : screen === "sla"
+                          ? "sla"
+                          : "home"
               }
               onTabChange={handleTabChange}
               isAdmin={isAdmin}
@@ -7743,6 +8127,17 @@ export function AppContent() {
                 onClose={() => setShowDbModal(false)}
                 newsDbError={newsDbError}
                 onRefresh={fetchSystemStatistics}
+              />
+            )}
+            {showAdminCitiesModal && isAdmin && (
+              <AdminCitiesModal
+                cities={cities}
+                onClose={() => setShowAdminCitiesModal(false)}
+                onSaved={async () => {
+                  const updated = await fetchCities();
+                  setCities(updated);
+                  await fetchSystemStatistics(activeCityId);
+                }}
               />
             )}
           </AnimatePresence>

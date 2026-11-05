@@ -25,10 +25,12 @@ const getStoredConfig = () => {
   let key = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
   if (typeof window !== 'undefined') {
-    const customUrl = localStorage.getItem('commuaria_custom_supabase_url');
-    const customKey = localStorage.getItem('commuaria_custom_supabase_anon_key');
-    if (customUrl) url = customUrl;
-    if (customKey) key = customKey;
+    try {
+      const customUrl = localStorage.getItem('commuaria_custom_supabase_url');
+      const customKey = localStorage.getItem('commuaria_custom_supabase_anon_key');
+      if (customUrl) url = customUrl;
+      if (customKey) key = customKey;
+    } catch (_) {}
   }
 
   const cleanUrl = (url || DEFAULT_SUPABASE_URL).replace(/^['"]|['"]$/g, '').trim();

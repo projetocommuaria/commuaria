@@ -1,4 +1,5 @@
 import express from "express";
+import { createServer as createHttpServer } from "http";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { generateNotificationEmailHtml, ReportNotificationPayload } from "./src/server/emailService.js";
@@ -19,6 +20,76 @@ async function startServer() {
     reportProtocol: string;
     subject: string;
   }> = [];
+
+  // Public IBGE municipal mesh proxy. Raw official GeoJSON is cached in memory to avoid
+  // repeated GitHub requests from the ADM Global boundary-import form.
+  const ibgeUfCodes: Record<string, string> = {
+    RO: "11", AC: "12", AM: "13", RR: "14", PA: "15", AP: "16", TO: "17",
+    MA: "21", PI: "22", CE: "23", RN: "24", PB: "25", PE: "26", AL: "27", SE: "28", BA: "29",
+    MG: "31", ES: "32", RJ: "33", SP: "35",
+    PR: "41", SC: "42", RS: "43",
+    MS: "50", MT: "51", GO: "52", DF: "53",
+  };
+  const ibgeGeoJsonCache = new Map<string, { expiresAt: number; payload: any }>();
+  const ibgeGeoJsonPending = new Map<string, Promise<any>>();
+
+  app.get("/api/ibge/state-municipalities/:uf", async (req, res) => {
+    const uf = String(req.params.uf || "").trim().toUpperCase();
+    const stateCode = ibgeUfCodes[uf];
+    if (!stateCode) {
+      return res.status(400).json({ error: "UF brasileira inválida." });
+    }
+
+    const cached = ibgeGeoJsonCache.get(uf);
+    if (cached && cached.expiresAt > Date.now()) return res.json(cached.payload);
+
+    try {
+      let pending = ibgeGeoJsonPending.get(uf);
+      if (!pending) {
+        pending = (async () => {
+          const url = `https://api.github.com/repos/tbrugz/geodata-br/contents/geojson/geojs-${stateCode}-mun.json`;
+          const response = await fetch(url, {
+            headers: {
+              Accept: "application/vnd.github.raw+json, application/vnd.github.raw",
+              "User-Agent": "Commuaria-city-boundary-import",
+            },
+          });
+          if (!response.ok) throw new Error(`Fonte oficial indisponível (HTTP ${response.status}).`);
+          const body = await response.text();
+          let payload: any;
+          try {
+            payload = JSON.parse(body);
+            if (payload?.encoding === "base64" && payload?.content) {
+              payload = JSON.parse(Buffer.from(payload.content, "base64").toString("utf8"));
+            }
+          } catch {
+            throw new Error("A resposta da fonte oficial não contém GeoJSON válido.");
+          }
+          if (payload?.type !== "FeatureCollection" || !Array.isArray(payload.features)) {
+            throw new Error("A fonte oficial não retornou uma coleção de limites municipais.");
+          }
+          const safePayload = {
+            type: "FeatureCollection",
+            features: payload.features.filter((feature: any) =>
+              feature && feature.type === "Feature" &&
+              ["Polygon", "MultiPolygon"].includes(feature.geometry?.type) &&
+              (feature.properties?.id || feature.id)
+            ),
+          };
+          ibgeGeoJsonCache.set(uf, { expiresAt: Date.now() + 12 * 60 * 60 * 1000, payload: safePayload });
+          return safePayload;
+        })();
+        ibgeGeoJsonPending.set(uf, pending);
+      }
+      const payload = await pending;
+      return res.json(payload);
+    } catch (err: any) {
+      console.error(`Falha ao importar malha IBGE de ${uf}:`, err);
+      return res.status(502).json({ error: err?.message || "Falha ao carregar os limites municipais oficiais." });
+    } finally {
+      ibgeGeoJsonPending.delete(uf);
+    }
+  });
 
   // API - Health Check
   app.get("/api/health", (req, res) => {
@@ -91,10 +162,16 @@ async function startServer() {
     });
   });
 
+  const httpServer = createHttpServer(app);
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+        hmr: process.env.DISABLE_HMR === "true" ? false : { server: httpServer },
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -106,7 +183,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Commuária server running on http://0.0.0.0:${PORT}`);
   });
 }

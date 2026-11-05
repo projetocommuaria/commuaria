@@ -1,5 +1,7 @@
 export type UserRole = "user" | "funcionario" | "supervisor" | "diretor" | "admin";
 
+export type AppNavTab = "home" | "report" | "tasks" | "accounts" | "field_log" | "sla";
+
 export type ReportStatus = "unresolved" | "in_analysis" | "in_progress" | "resolved";
 
 export type ReportCategory =
@@ -23,6 +25,37 @@ export interface CategoryDefinition {
   borderDark: string;
   textLight: string;
   textDark: string;
+}
+
+/** A municipality with a real IBGE municipal boundary. Coordinates are GeoJSON [longitude, latitude]. */
+export interface CityItem {
+  id: string;
+  ibge_code: string;
+  name: string;
+  state: string;
+  is_active: boolean;
+  center_lat: number;
+  center_lng: number;
+  default_zoom: number;
+  bounds?: [[number, number], [number, number]] | number[][] | null;
+  boundary_geojson: any;
+  description?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** Strictly public-safe fields returned by get_public_city_reports. Never add profile/user fields here. */
+export interface PublicCityReport {
+  id: string;
+  city_id: string;
+  category: string;
+  title: string;
+  short_description: string;
+  public_location: string;
+  latitude: number;
+  longitude: number;
+  status: ReportStatus | string;
+  created_at: string;
 }
 
 export const CATEGORIES_CONFIG: CategoryDefinition[] = [
@@ -117,6 +150,7 @@ export interface UserProfile {
   name: string;
   email: string;
   role: UserRole;
+  city_id?: string;
   assigned_category?: ReportCategory | string | null;
   assigned_sectors?: string[] | null;
   is_admin?: boolean;
@@ -140,6 +174,7 @@ export interface ReportItem {
   latitude: number;
   longitude: number;
   status: ReportStatus | string;
+  city_id?: string;
   status_notes?: string | null;
   image_url?: string;
   anonymous?: boolean;
@@ -163,6 +198,9 @@ export interface WorkOrderItem {
   title: string;
   category: ReportCategory | string;
   address: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  city_id?: string;
   priority: "low" | "medium" | "high" | "emergency";
   deadline: string;
   assigned_team: string;
@@ -175,6 +213,7 @@ export interface WorkOrderItem {
   status_notes?: string;
   resolution_notes?: string;
   resolution_photo_url?: string;
+  checklist_state?: Record<string, boolean> | null;
   supervisor_name?: string;
   supervisor_email?: string;
   linked_report_id?: string;
@@ -194,6 +233,7 @@ export type WorkOrderActionType =
 export interface WorkOrderHistoryItem {
   id: string;
   work_order_id: string;
+  city_id?: string;
   user_id?: string | null;
   user_name: string;
   user_role: UserRole;
@@ -213,13 +253,27 @@ export const canExecuteWorkOrders = (role?: UserRole): boolean => role === "admi
 export const maskCitizenData = (report: ReportItem, viewerRole?: UserRole): ReportItem => {
   if (viewerRole === "admin") return report;
   if (viewerRole === "diretor") {
-    const neighborhood = report.address?.split("-")?.[1]?.trim() || report.address?.split(",")?.[1]?.trim() || "Araucária";
     return {
       ...report,
-      user_name: report.anonymous ? "Munícipe Anônimo" : `Cidadão (${neighborhood})`,
-      user_email: "privacidade.cidadao@araucaria.pr.gov.br",
+      user_name: report.anonymous ? "Cidadão Anônimo" : report.user_name || "Cidadão",
+      user_email: undefined,
+      user_id: undefined,
+      image_url: report.anonymous ? undefined : report.image_url,
     };
   }
-  return report;
+  if (viewerRole === "supervisor" || viewerRole === "funcionario") {
+    return {
+      ...report,
+      user_name: "Cidadão",
+      user_email: undefined,
+      user_id: undefined,
+    };
+  }
+  return {
+    ...report,
+    user_name: report.anonymous ? "Cidadão Anônimo" : "Cidadão",
+    user_email: undefined,
+    user_id: undefined,
+    image_url: report.anonymous ? undefined : report.image_url,
+  };
 };
-
