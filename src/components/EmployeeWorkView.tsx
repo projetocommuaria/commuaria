@@ -21,13 +21,20 @@ import {
 } from "lucide-react";
 import { useTheme } from "../ThemeContext";
 import { WorkOrderItem, ReportItem, UserProfile } from "../types";
-import { supabase } from "../lib/supabase";
-import { updateWorkOrderStatusUnified } from "../lib/workOrderService";
+import {
+  fetchSystemWorkOrders,
+  filterEmployeeWorkOrders,
+  updateWorkOrderStatusUnified,
+} from "../lib/workOrderService";
 
 interface EmployeeWorkViewProps {
   user: UserProfile;
   category?: string;
+  selectedWorkOrderId?: string | null;
   onRefresh?: () => Promise<void> | void;
+  onTabChange?: (tab: any) => void;
+  onOpenMap?: (workOrderId: string) => void;
+  onOpenFieldLog?: (workOrderId: string) => void;
   onUpdateWorkOrder?: (
     orderId: string,
     status: "in_progress" | "completed" | "impossible",
@@ -39,7 +46,10 @@ interface EmployeeWorkViewProps {
 export const EmployeeWorkView: React.FC<EmployeeWorkViewProps> = ({
   user,
   category,
+  selectedWorkOrderId,
   onRefresh,
+  onOpenMap,
+  onOpenFieldLog,
   onUpdateWorkOrder,
 }) => {
   const { isDark } = useTheme();
@@ -63,33 +73,8 @@ export const EmployeeWorkView: React.FC<EmployeeWorkViewProps> = ({
   const loadWorkOrders = async () => {
     setLoading(true);
     try {
-      let supaWos: WorkOrderItem[] = [];
-      if (supabase) {
-        try {
-          const { data, error } = await supabase
-            .from("work_orders")
-            .select("*")
-            .order("created_at", { ascending: false });
-          if (!error && data) {
-            supaWos = data;
-          }
-        } catch (e) {
-          console.warn("Aviso ao buscar O.S. no Supabase:", e);
-        }
-      }
-
-      // Local storage merge
-      let localWos: WorkOrderItem[] = [];
-      try {
-        const stored = localStorage.getItem("commuaria_work_orders");
-        if (stored) localWos = JSON.parse(stored);
-      } catch (_) {}
-
-      const map = new Map<string, WorkOrderItem>();
-      supaWos.forEach((w) => map.set(w.id || w.order_number, w));
-      localWos.forEach((w) => map.set(w.id || w.order_number, w));
-
-      setWorkOrders(Array.from(map.values()));
+      const list = await fetchSystemWorkOrders(user.city_id || "araucaria-pr");
+      setWorkOrders(list);
     } finally {
       setLoading(false);
     }
@@ -105,27 +90,22 @@ export const EmployeeWorkView: React.FC<EmployeeWorkViewProps> = ({
   };
 
   // Filter orders assigned to this employee or matching their sector
-  const myWorkOrders = useMemo(() => {
-    const cleanEmail = (user.email || "").toLowerCase().trim();
-    const cleanId = user.id || "";
-    const cleanName = (user.name || "").toLowerCase().trim();
+  const myWorkOrders = useMemo(
+    () => filterEmployeeWorkOrders(workOrders, user, assignedSector),
+    [workOrders, user, assignedSector]
+  );
 
-    return workOrders.filter((wo) => {
-      // Direct assignment check
-      const matchEmpId = wo.assigned_employee_id && (wo.assigned_employee_id === cleanId);
-      const matchEmpName = wo.assigned_employee_name && cleanName && wo.assigned_employee_name.toLowerCase().includes(cleanName);
-      const matchTeam = wo.assigned_team && cleanName && wo.assigned_team.toLowerCase().includes(cleanName);
-
-      if (matchEmpId || matchEmpName || matchTeam) return true;
-
-      // If not directly assigned to someone else and matches sector, employee can view and pick it up
-      const sectorNorm = (wo.category || "").toLowerCase();
-      const mySectorNorm = (assignedSector || "").toLowerCase();
-      const isSectorMatch = sectorNorm.includes(mySectorNorm.substring(0, 4));
-
-      return isSectorMatch;
-    });
-  }, [workOrders, user, assignedSector]);
+  useEffect(() => {
+    if (!selectedWorkOrderId || myWorkOrders.length === 0) return;
+    const matched = myWorkOrders.find(
+      (w) => w.id === selectedWorkOrderId || w.order_number === selectedWorkOrderId
+    );
+    if (matched) {
+      if (matched.status === "in_progress") setActiveTab("in_progress");
+      else if (matched.status === "open" || matched.status === "dispatched") setActiveTab("pending");
+      else setActiveTab("completed");
+    }
+  }, [selectedWorkOrderId, myWorkOrders.length]);
 
   // Split into tabs
   const pendingOrders = useMemo(
@@ -262,7 +242,7 @@ export const EmployeeWorkView: React.FC<EmployeeWorkViewProps> = ({
             : "bg-white/90 border-[#183a2b]/10 text-[#183a2b]"
         }`}
       >
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3.5">
+        <div className="max-w-4xl mx-auto pl-4 sm:pl-6 pr-20 sm:pr-24 py-3.5">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 flex items-center justify-center shrink-0 border border-cyan-500/30 shadow-sm">
@@ -419,15 +399,27 @@ export const EmployeeWorkView: React.FC<EmployeeWorkViewProps> = ({
                       </div>
                     )}
 
-                    <div className="flex items-center justify-between pt-2 border-t border-black/5 dark:border-white/10">
-                      <span className="text-[11px] opacity-60">
-                        Prioridade: <strong className="uppercase">{wo.priority}</strong>
-                      </span>
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-black/5 dark:border-white/10">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] opacity-60">
+                          Prioridade: <strong className="uppercase">{wo.priority}</strong>
+                        </span>
+                        {onOpenMap && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenMap(wo.id)}
+                            className="text-xs font-bold text-cyan-600 dark:text-cyan-300 hover:underline flex items-center gap-1 cursor-pointer"
+                          >
+                            <MapPin size={12} />
+                            <span>Ver no Mapa</span>
+                          </button>
+                        )}
+                      </div>
                       <button
                         type="button"
                         onClick={() => handleStartTask(wo)}
                         disabled={isSubmitting}
-                        className="px-4 py-2 rounded-xl text-xs font-bold bg-cyan-600 hover:bg-cyan-700 text-white flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
+                        className="px-4 py-2 rounded-xl text-xs font-bold bg-cyan-600 hover:bg-cyan-700 text-white flex items-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
                       >
                         <Play size={13} />
                         <span>Iniciar Atendimento</span>
@@ -484,24 +476,53 @@ export const EmployeeWorkView: React.FC<EmployeeWorkViewProps> = ({
                       </div>
                     )}
 
-                    <div className="flex flex-col sm:flex-row items-center justify-end gap-2 pt-3 border-t border-black/10 dark:border-white/10">
-                      <button
-                        type="button"
-                        onClick={() => setImpossibleModalWo(wo)}
-                        className="w-full sm:w-auto px-3.5 py-2 rounded-xl text-xs font-bold border border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-all flex items-center justify-center gap-1.5"
-                      >
-                        <AlertTriangle size={13} />
-                        <span>Relatar Impossibilidade</span>
-                      </button>
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-3 border-t border-black/10 dark:border-white/10">
+                      <div className="flex items-center gap-2 w-full sm:w-auto">
+                        {onOpenMap && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenMap(wo.id)}
+                            className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs font-bold border flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                              isDark
+                                ? "bg-white/10 hover:bg-white/15 border-white/15 text-white"
+                                : "bg-white hover:bg-zinc-100 border-black/15 text-[#183a2b]"
+                            }`}
+                          >
+                            <MapPin size={13} className="text-emerald-500" />
+                            <span>Mapa</span>
+                          </button>
+                        )}
+                        {onOpenFieldLog && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenFieldLog(wo.id)}
+                            className="flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs font-bold border border-cyan-500/35 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-800 dark:text-cyan-300 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                          >
+                            <Calendar size={13} />
+                            <span>Calendário</span>
+                          </button>
+                        )}
+                      </div>
 
-                      <button
-                        type="button"
-                        onClick={() => setCompleteModalWo(wo)}
-                        className="w-full sm:w-auto px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all"
-                      >
-                        <CheckCircle2 size={13} />
-                        <span>Registrar Conclusão</span>
-                      </button>
+                      <div className="flex flex-col sm:flex-row items-center gap-2 w-full sm:w-auto">
+                        <button
+                          type="button"
+                          onClick={() => setImpossibleModalWo(wo)}
+                          className="w-full sm:w-auto px-3.5 py-2 rounded-xl text-xs font-bold border border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <AlertTriangle size={13} />
+                          <span>Relatar Impossibilidade</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setCompleteModalWo(wo)}
+                          className="w-full sm:w-auto px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer"
+                        >
+                          <CheckCircle2 size={13} />
+                          <span>Registrar Conclusão</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))
