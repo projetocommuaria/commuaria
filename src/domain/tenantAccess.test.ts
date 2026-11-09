@@ -29,6 +29,11 @@ function profile(overrides: Partial<UserProfile> = {}): UserProfile {
 }
 
 describe("legacy tenant access compatibility", () => {
+  it("treats a missing profile as non-admin instead of throwing", () => {
+    assert.equal(isLegacyGlobalTenantAdmin(null), false);
+    assert.equal(isLegacyGlobalTenantAdmin(undefined), false);
+  });
+
   it("keeps role=admin profiles global and preserves current admin capabilities", () => {
     const principal = resolveLegacyTenantPrincipal(profile({ role: "admin", is_admin: true }));
 

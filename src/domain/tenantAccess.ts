@@ -21,9 +21,9 @@ export interface MunicipalTenantPrincipal {
 export type TenantPrincipal = GlobalTenantPrincipal | MunicipalTenantPrincipal;
 
 export function isLegacyGlobalTenantAdmin(
-  profile: Pick<UserProfile, "role" | "is_admin">,
+  profile: Pick<UserProfile, "role" | "is_admin"> | null | undefined,
 ): boolean {
-  return profile.is_admin === true || profile.role === "admin";
+  return Boolean(profile && (profile.is_admin === true || profile.role === "admin"));
 }
 
 /**
