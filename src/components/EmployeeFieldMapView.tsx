@@ -65,6 +65,9 @@ export const EmployeeFieldMapView: React.FC<EmployeeFieldMapViewProps> = ({
 }) => {
   const { isDark } = useTheme();
   const assignedSector = category || user.assigned_category || "Pavimentação";
+  const hasValidTenantCity = Boolean(
+    city && city.is_active && city.id === user.city_id?.trim(),
+  );
 
   const [workOrders, setWorkOrders] = useState<WorkOrderItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,7 +86,11 @@ export const EmployeeFieldMapView: React.FC<EmployeeFieldMapViewProps> = ({
   const loadOrders = async () => {
     setLoading(true);
     try {
-      const list = await fetchSystemWorkOrders(user.city_id || city?.id || "araucaria-pr");
+      if (!hasValidTenantCity || !city) {
+        setWorkOrders([]);
+        return;
+      }
+      const list = await fetchSystemWorkOrders(city.id);
       setWorkOrders(list);
     } finally {
       setLoading(false);
@@ -91,8 +98,8 @@ export const EmployeeFieldMapView: React.FC<EmployeeFieldMapViewProps> = ({
   };
 
   useEffect(() => {
-    loadOrders();
-  }, []);
+    void loadOrders();
+  }, [city?.id, city?.is_active, user.city_id]);
 
   useEffect(() => {
     if (selectedWorkOrderId) {
@@ -195,7 +202,7 @@ export const EmployeeFieldMapView: React.FC<EmployeeFieldMapViewProps> = ({
       const lngSum = mappedEntries.reduce((acc, e) => acc + (e.coords?.longitude || 0), 0);
       return [latSum / mappedEntries.length, lngSum / mappedEntries.length];
     }
-    return [city?.center_lat || -25.633835, city?.center_lng || -49.461966];
+    return [city?.center_lat ?? 0, city?.center_lng ?? 0];
   }, [mappedEntries.length, city?.center_lat, city?.center_lng]);
 
   const handleLocateMe = () => {
@@ -246,7 +253,7 @@ export const EmployeeFieldMapView: React.FC<EmployeeFieldMapViewProps> = ({
     if (coords) {
       return `https://www.google.com/maps/dir/?api=1&destination=${coords.latitude},${coords.longitude}`;
     }
-    const dest = encodeURIComponent(`${wo.address}, ${city?.name || "Araucária"} - ${city?.state || "PR"}`);
+    const dest = encodeURIComponent([wo.address, city?.name, city?.state].filter(Boolean).join(", "));
     return `https://www.google.com/maps/dir/?api=1&destination=${dest}`;
   };
 
@@ -254,7 +261,7 @@ export const EmployeeFieldMapView: React.FC<EmployeeFieldMapViewProps> = ({
     if (coords) {
       return `https://waze.com/ul?ll=${coords.latitude},${coords.longitude}&navigate=yes`;
     }
-    const dest = encodeURIComponent(`${wo.address}, ${city?.name || "Araucária"} - ${city?.state || "PR"}`);
+    const dest = encodeURIComponent([wo.address, city?.name, city?.state].filter(Boolean).join(", "));
     return `https://waze.com/ul?q=${dest}&navigate=yes`;
   };
 
@@ -350,6 +357,17 @@ export const EmployeeFieldMapView: React.FC<EmployeeFieldMapViewProps> = ({
 
   const hasFilters =
     searchQuery.trim() !== "" || statusFilter !== "active" || priorityFilter !== "all";
+
+  if (!hasValidTenantCity) {
+    return (
+      <div className={`min-h-full w-full flex items-center justify-center p-6 ${isDark ? "bg-[#5A635C] text-white" : "bg-white text-[#183a2b]"}`}>
+        <div className={`max-w-lg rounded-3xl border p-8 text-center shadow-lg ${isDark ? "bg-white/5 border-white/10" : "bg-black/5 border-black/10"}`}>
+          <h2 className="text-2xl font-serif font-bold">Município não informado</h2>
+          <p className="mt-3 text-sm opacity-75">O mapa operacional exige um município ativo vinculado à sua conta.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

@@ -56,7 +56,7 @@ export const DirectorDashboardView: React.FC<DirectorDashboardViewProps> = ({
   const [fetchedWorkOrders, setFetchedWorkOrders] = useState<WorkOrderItem[]>([]);
 
   const loadWorkOrdersFromDb = async () => {
-    const list = await fetchSystemWorkOrders(user?.city_id || "araucaria-pr");
+    const list = await fetchSystemWorkOrders(user?.city_id);
     setFetchedWorkOrders(list);
   };
 
@@ -67,14 +67,17 @@ export const DirectorDashboardView: React.FC<DirectorDashboardViewProps> = ({
   useEffect(() => {
     if (activeWoDetail) {
       setLoadingHistory(true);
-      getWorkOrderHistory(activeWoDetail.id)
+      getWorkOrderHistory(
+        activeWoDetail.id,
+        activeWoDetail.city_id || user?.city_id || "",
+      )
         .then((h) => setOrderHistory(h))
         .catch((err) => console.warn("Erro ao buscar histórico da O.S.:", err))
         .finally(() => setLoadingHistory(false));
     } else {
       setOrderHistory([]);
     }
-  }, [activeWoDetail?.id]);
+  }, [activeWoDetail?.id, activeWoDetail?.city_id, user?.city_id]);
 
   // Merge Supabase work orders with any passed props
   const workOrders = useMemo(() => {

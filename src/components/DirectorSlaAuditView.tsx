@@ -107,8 +107,8 @@ export const DirectorSlaAuditView: React.FC<DirectorSlaAuditViewProps> = ({
 
   const loadOperationalData = async () => {
     const [wos, hist] = await Promise.all([
-      fetchSystemWorkOrders(user?.city_id || "araucaria-pr"),
-      fetchRecentWorkOrderHistory(200, user?.city_id || "araucaria-pr"),
+      fetchSystemWorkOrders(user?.city_id),
+      fetchRecentWorkOrderHistory(user?.city_id, 200),
     ]);
     setWorkOrders(wos);
     setRecentHistory(hist);

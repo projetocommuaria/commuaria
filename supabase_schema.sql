@@ -1,6 +1,10 @@
 -- =========================================================
--- COMMUÁRIA - SCRIPT CONSOLIDADO DE BANCO DE DADOS (SUPABASE SQL)
--- Execute este script completo no SQL Editor do seu projeto Supabase
+-- ARQUIVO LEGADO: NÃO EXECUTAR em nenhum projeto Supabase.
+-- Este script está desatualizado, cria/assume tabelas e pode substituir políticas
+-- de RLS por regras permissivas. Use apenas migrações versionadas após backup
+-- restaurável, validação de restore isolado e revisão de rollback.
+-- =========================================================
+-- COMMUÁRIA - SCRIPT CONSOLIDADO LEGADO (referência histórica; não executar)
 -- =========================================================
 
 -- 1. Tabela de Perfis de Usuário (profiles)

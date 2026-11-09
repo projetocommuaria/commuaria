@@ -528,7 +528,7 @@ export const DEFAULT_SEEDED_CITIES: CityItem[] = [
     "ibge_code": "4106902",
     "name": "Curitiba",
     "state": "PR",
-    "is_active": false,
+    "is_active": true,
     "center_lat": -25.49466,
     "center_lng": -49.286897,
     "default_zoom": 12,

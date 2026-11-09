@@ -1,7 +1,14 @@
 import { createClient } from '@supabase/supabase-js';
+import { isLegacyGlobalTenantAdmin } from '../domain/tenantAccess';
+import {
+  ARAUCARIA_CITY_ID,
+  getSupabaseAuthStorageKey,
+  isUsableSupabaseTenantConfig,
+  resolveSupabaseTenantConfig,
+} from './supabaseTenants';
+import type { SupabaseTenantConfig, SupabaseTenantEnvironment } from './supabaseTenants';
 
-export const DEFAULT_SUPABASE_URL = 'https://jmdwkpuerwoiwrntswhu.supabase.co';
-export const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_9jBHjd3XLczKe6bzRo5WJA_Kl5-d0sh';
+export { DEFAULT_SUPABASE_ANON_KEY, DEFAULT_SUPABASE_URL } from './supabaseTenants';
 
 export const isUUID = (str?: string | null): boolean =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str || '');
@@ -19,47 +26,59 @@ export const generateUUID = (): string => {
   });
 };
 
-// Sanitize inputs by stripping extra quotes or whitespace
-const getStoredConfig = () => {
-  let url = import.meta.env.VITE_SUPABASE_URL || '';
-  let key = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const getSupabaseEnvironment = (): SupabaseTenantEnvironment => {
+  const env = (import.meta as ImportMeta & { env?: SupabaseTenantEnvironment }).env;
+  return env || {};
+};
 
+const getCustomConfigStorageKeys = (cityId: string) =>
+  cityId === ARAUCARIA_CITY_ID
+    ? {
+        url: 'commuaria_custom_supabase_url',
+        anonKey: 'commuaria_custom_supabase_anon_key',
+      }
+    : {
+        url: `commuaria_custom_supabase_${cityId}_url`,
+        anonKey: `commuaria_custom_supabase_${cityId}_anon_key`,
+      };
+
+const getStoredConfig = (cityId = ARAUCARIA_CITY_ID) => {
+  let override: { url?: string; anonKey?: string } | undefined;
   if (typeof window !== 'undefined') {
     try {
-      const customUrl = localStorage.getItem('commuaria_custom_supabase_url');
-      const customKey = localStorage.getItem('commuaria_custom_supabase_anon_key');
-      if (customUrl) url = customUrl;
-      if (customKey) key = customKey;
+      const keys = getCustomConfigStorageKeys(cityId);
+      override = {
+        url: localStorage.getItem(keys.url) || undefined,
+        anonKey: localStorage.getItem(keys.anonKey) || undefined,
+      };
     } catch (_) {}
   }
 
-  const cleanUrl = (url || DEFAULT_SUPABASE_URL).replace(/^['"]|['"]$/g, '').trim();
-  const cleanKey = (key || DEFAULT_SUPABASE_ANON_KEY).replace(/^['"]|['"]$/g, '').trim();
-
-  return { url: cleanUrl, key: cleanKey };
+  return resolveSupabaseTenantConfig(cityId, getSupabaseEnvironment(), override);
 };
 
-const initialConfig = getStoredConfig();
-const supabaseUrl = initialConfig.url;
-const supabaseAnonKey = initialConfig.key;
-
-export function getSupabaseConfig() {
-  return getStoredConfig();
+export function getSupabaseConfig(cityId = ARAUCARIA_CITY_ID) {
+  const config = getStoredConfig(cityId);
+  return config
+    ? { cityId: config.cityId, url: config.url, key: config.anonKey }
+    : { cityId, url: '', key: '' };
 }
 
-export function setCustomSupabaseConfig(url: string, key: string) {
-  if (typeof window !== 'undefined') {
+export function setCustomSupabaseConfig(url: string, key: string, cityId = ARAUCARIA_CITY_ID) {
+  if (typeof window === 'undefined') return;
+  const keys = getCustomConfigStorageKeys(cityId);
+  try {
     if (url) {
-      localStorage.setItem('commuaria_custom_supabase_url', url.trim());
+      localStorage.setItem(keys.url, url.trim());
     } else {
-      localStorage.removeItem('commuaria_custom_supabase_url');
+      localStorage.removeItem(keys.url);
     }
     if (key) {
-      localStorage.setItem('commuaria_custom_supabase_anon_key', key.trim());
+      localStorage.setItem(keys.anonKey, key.trim());
     } else {
-      localStorage.removeItem('commuaria_custom_supabase_anon_key');
+      localStorage.removeItem(keys.anonKey);
     }
-  }
+  } catch (_) {}
 }
 
 function createMockSupabaseClient(): any {
@@ -200,6 +219,7 @@ function createMockSupabaseClient(): any {
     private tableName: string;
     private filters: Array<{ field: string; value: any }> = [];
     private neqFilters: Array<{ field: string; value: any }> = [];
+    private ilikeFilters: Array<{ field: string; pattern: string }> = [];
     private inFilters: Array<{ field: string; values: any[] }> = [];
     private orderField: string | null = null;
     private isAscending = false;
@@ -251,6 +271,11 @@ function createMockSupabaseClient(): any {
       return this;
     }
 
+    ilike(field: string, pattern: string) {
+      this.ilikeFilters.push({ field, pattern });
+      return this;
+    }
+
     in(field: string, values: any[]) {
       this.inFilters.push({ field, values });
       return this;
@@ -280,6 +305,22 @@ function createMockSupabaseClient(): any {
     maybeSingle() {
       this.isMaybeSingle = true;
       return this;
+    }
+
+    private matchesFilters(row: any): boolean {
+      const equalityMatches = this.filters.every((filter) => row[filter.field] === filter.value);
+      const inequalityMatches = this.neqFilters.every((filter) => row[filter.field] !== filter.value);
+      const membershipMatches = this.inFilters.every(
+        (filter) => Array.isArray(filter.values) && filter.values.includes(row[filter.field]),
+      );
+      const ilikeMatches = this.ilikeFilters.every((filter) => {
+        const escaped = filter.pattern
+          .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+          .replace(/%/g, ".*")
+          .replace(/_/g, ".");
+        return new RegExp(`^${escaped}$`, "i").test(String(row[filter.field] ?? ""));
+      });
+      return equalityMatches && inequalityMatches && membershipMatches && ilikeMatches;
     }
 
     private execute() {
@@ -329,37 +370,21 @@ function createMockSupabaseClient(): any {
       }
 
       if (this.action === 'delete') {
-        let remaining = [...data];
-        this.filters.forEach(f => {
-          remaining = remaining.filter((r: any) => r[f.field] !== f.value);
-        });
+        const remaining = data.filter((row: any) => !this.matchesFilters(row));
         localStorage.setItem(key, JSON.stringify(remaining));
         return { data: null, error: null };
       }
 
       if (this.action === 'update') {
-        data = data.map((r: any) => {
-          const match = this.filters.every(f => r[f.field] === f.value);
-          if (match) {
-            return { ...r, ...this.payload };
-          }
-          return r;
-        });
+        data = data.map((row: any) =>
+          this.matchesFilters(row) ? { ...row, ...this.payload } : row,
+        );
         localStorage.setItem(key, JSON.stringify(data));
         return { data: null, error: null };
       }
 
       // Action SELECT
-      let result = [...data];
-      this.filters.forEach(f => {
-        result = result.filter((r: any) => r[f.field] === f.value);
-      });
-      this.neqFilters.forEach(f => {
-        result = result.filter((r: any) => r[f.field] !== f.value);
-      });
-      this.inFilters.forEach(f => {
-        result = result.filter((r: any) => Array.isArray(f.values) && f.values.includes(r[f.field]));
-      });
+      let result = data.filter((row: any) => this.matchesFilters(row));
 
       if (this.orderField) {
         const field = this.orderField;
@@ -425,9 +450,18 @@ function createMockSupabaseClient(): any {
         };
       },
       async signUp({ email, password, options }: any) {
+        const requestedCityId = typeof options?.data?.city_id === 'string'
+          ? options.data.city_id.trim()
+          : '';
+        if (requestedCityId !== ARAUCARIA_CITY_ID) {
+          return { data: null, error: { message: 'Informe um município válido para o cadastro.' } };
+        }
         const users = JSON.parse(localStorage.getItem('commuaria_users') || '[]');
-        if (users.some((u: any) => u.email === email)) {
-          return { data: null, error: { message: 'Este e-mail já está cadastrado.' } };
+        if (users.some((user: any) =>
+          user.email?.trim().toLowerCase() === email.trim().toLowerCase() &&
+          (user.city_id?.trim() === ARAUCARIA_CITY_ID || isLegacyGlobalTenantAdmin(user)),
+        )) {
+          return { data: null, error: { message: 'Este e-mail já está cadastrado neste município.' } };
         }
         const newUser = {
           id: 'u_' + Math.random().toString(36).substring(2, 11),
@@ -435,6 +469,7 @@ function createMockSupabaseClient(): any {
           password,
           name: options?.data?.name || 'Novo Usuário',
           role: options?.data?.role || 'user',
+          city_id: requestedCityId,
           assigned_category: options?.data?.assigned_category || null,
           is_admin: options?.data?.role === 'admin' || false
         };
@@ -447,6 +482,7 @@ function createMockSupabaseClient(): any {
           name: newUser.name,
           email: newUser.email,
           role: newUser.role,
+          city_id: newUser.city_id,
           assigned_category: newUser.assigned_category,
           is_admin: newUser.is_admin,
           created_at: new Date().toISOString()
@@ -458,7 +494,11 @@ function createMockSupabaseClient(): any {
       },
       async signInWithPassword({ email, password }: any) {
         const users = JSON.parse(localStorage.getItem('commuaria_users') || '[]');
-        const user = users.find((u: any) => u.email === email && u.password === password);
+        const user = users.find((candidate: any) =>
+          candidate.email?.trim().toLowerCase() === email.trim().toLowerCase() &&
+          candidate.password === password &&
+          (candidate.city_id?.trim() === ARAUCARIA_CITY_ID || isLegacyGlobalTenantAdmin(candidate)),
+        );
         if (!user) {
           return { data: null, error: { message: 'E-mail ou senha incorretos.' } };
         }
@@ -467,7 +507,10 @@ function createMockSupabaseClient(): any {
       },
       async resetPasswordForEmail(email: string) {
         const users = JSON.parse(localStorage.getItem('commuaria_users') || '[]');
-        const exists = users.some((u: any) => u.email === email);
+        const exists = users.some((user: any) =>
+          user.email?.trim().toLowerCase() === email.trim().toLowerCase() &&
+          (user.city_id?.trim() === ARAUCARIA_CITY_ID || isLegacyGlobalTenantAdmin(user)),
+        );
         if (!exists) {
           return { error: { message: 'Nenhuma conta encontrada com este e-mail.' } };
         }
@@ -488,14 +531,18 @@ function createMockSupabaseClient(): any {
         const users = JSON.parse(localStorage.getItem('commuaria_users') || '[]');
         const profiles = JSON.parse(localStorage.getItem('commuaria_profiles') || '[]');
         
-        const uIdx = users.findIndex((u: any) => u.id === currentSessionUser.id);
+        const uIdx = users.findIndex((u: any) =>
+          u.id === currentSessionUser.id && u.city_id === currentSessionUser.city_id,
+        );
         if (uIdx !== -1) {
           if (data?.name) users[uIdx].name = data.name;
           if (password) users[uIdx].password = password;
           localStorage.setItem('commuaria_users', JSON.stringify(users));
         }
 
-        const pIdx = profiles.findIndex((p: any) => p.id === currentSessionUser.id);
+        const pIdx = profiles.findIndex((p: any) =>
+          p.id === currentSessionUser.id && p.city_id === currentSessionUser.city_id,
+        );
         if (pIdx !== -1) {
           if (data?.name) profiles[pIdx].name = data.name;
           localStorage.setItem('commuaria_profiles', JSON.stringify(profiles));
@@ -517,16 +564,25 @@ function createMockSupabaseClient(): any {
       if (name === 'delete_user') {
         const user = currentSessionUser;
         if (user) {
+          const cityId = typeof user.city_id === 'string' ? user.city_id.trim() : '';
+          if (!cityId) return { error: { message: 'A conta não tem município validado.' } };
+
           const users = JSON.parse(localStorage.getItem('commuaria_users') || '[]');
-          const filteredUsers = users.filter((u: any) => u.id !== user.id);
+          const filteredUsers = users.filter((candidate: any) =>
+            !(candidate.id === user.id && candidate.city_id === cityId),
+          );
           localStorage.setItem('commuaria_users', JSON.stringify(filteredUsers));
 
           const profiles = JSON.parse(localStorage.getItem('commuaria_profiles') || '[]');
-          const filteredProfiles = profiles.filter((p: any) => p.id !== user.id);
+          const filteredProfiles = profiles.filter((candidate: any) =>
+            !(candidate.id === user.id && candidate.city_id === cityId),
+          );
           localStorage.setItem('commuaria_profiles', JSON.stringify(filteredProfiles));
 
           const reports = JSON.parse(localStorage.getItem('commuaria_reports') || '[]');
-          const filteredReports = reports.filter((r: any) => r.user_id !== user.id);
+          const filteredReports = reports.filter((report: any) =>
+            !(report.user_id === user.id && report.city_id === cityId),
+          );
           localStorage.setItem('commuaria_reports', JSON.stringify(filteredReports));
         }
         return { error: null };
@@ -536,26 +592,15 @@ function createMockSupabaseClient(): any {
   };
 }
 
-export const isRealSupabase = 
-  !!supabaseUrl && 
-  !!supabaseAnonKey && 
-  supabaseUrl !== 'YOUR_SUPABASE_URL' && 
-  supabaseAnonKey !== 'YOUR_SUPABASE_ANON_KEY' &&
-  supabaseUrl.length > 10 &&
-  supabaseUrl.startsWith('https://');
+export function isRealSupabaseForCity(cityId: string | null | undefined): boolean {
+  const config = cityId ? getStoredConfig(cityId) : null;
+  return isUsableSupabaseTenantConfig(config);
+}
 
-export function clearSupabaseStorageTokens() {
-  if (typeof window === 'undefined') return;
+export function clearSupabaseStorageTokens(storageKey?: string) {
+  if (typeof window === 'undefined' || !storageKey) return;
   try {
-    const keysToRemove: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && (key.startsWith('sb-') || key.includes('supabase.auth.token') || key === 'supabase.auth.token')) {
-        keysToRemove.push(key);
-      }
-    }
-    keysToRemove.forEach((k) => localStorage.removeItem(k));
-    localStorage.removeItem('commuaria_session_user');
+    localStorage.removeItem(storageKey);
   } catch (_) {}
 }
 
@@ -577,169 +622,185 @@ const isRefreshTokenError = (error: any): boolean => {
   );
 };
 
-// Global interceptors to prevent uncaught refresh token rejection crashes & console error noise
+// Keep token cleanup scoped to the client that detected the stale refresh token.
 if (typeof window !== 'undefined') {
   const originalConsoleError = console.error.bind(console);
   console.error = (...args: any[]) => {
-    const hasRefreshErr = args.some((arg) => isRefreshTokenError(arg));
-    if (hasRefreshErr) {
-      console.warn('Stale Supabase session detected. Cleaned local tokens.');
-      clearSupabaseStorageTokens();
+    if (args.some((arg) => isRefreshTokenError(arg))) {
+      console.warn('Stale Supabase session detected.');
       return;
     }
     originalConsoleError(...args);
   };
 
   window.addEventListener('unhandledrejection', (event) => {
-    const reason = event?.reason;
-    if (isRefreshTokenError(reason)) {
-      console.warn('Stale Supabase refresh token intercepted. Clearing local credentials.');
-      clearSupabaseStorageTokens();
+    if (isRefreshTokenError(event?.reason)) {
+      console.warn('Stale Supabase refresh token intercepted.');
       event.preventDefault();
       event.stopPropagation();
     }
   });
 
   window.addEventListener('error', (event) => {
-    const msg = event?.message || event?.error;
-    if (isRefreshTokenError(msg)) {
-      console.warn('Stale Supabase refresh token intercepted in error listener. Clearing local credentials.');
-      clearSupabaseStorageTokens();
+    if (isRefreshTokenError(event?.message || event?.error)) {
+      console.warn('Stale Supabase refresh token intercepted in error listener.');
       event.preventDefault();
       event.stopPropagation();
     }
   });
 }
 
-function getSupabaseClient() {
-  if (!isRealSupabase) {
-    return createMockSupabaseClient();
-  }
-  try {
-    const realClient = createClient(supabaseUrl, supabaseAnonKey, {
-      auth: {
-        autoRefreshToken: true,
-        persistSession: true,
-        detectSessionInUrl: true,
-        storage: {
-          getItem: (key: string) => {
+const supabaseClients = new Map<string, any>();
+
+function createRealSupabaseClient(config: SupabaseTenantConfig): any {
+  const storageKey = getSupabaseAuthStorageKey(config.url);
+  const realClient = createClient(config.url, config.anonKey, {
+    auth: {
+      storageKey,
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: true,
+      storage: {
+        getItem: (key: string) => {
+          try {
+            if (typeof window === 'undefined') return null;
+            const val = window.localStorage.getItem(key);
+            if (!val) return null;
             try {
-              if (typeof window === 'undefined') return null;
-              const val = window.localStorage.getItem(key);
-              if (!val) return null;
-              try {
-                const parsed = JSON.parse(val);
-                // If the token is empty or invalid
-                if (parsed && typeof parsed === 'object' && !parsed.access_token && !parsed.refresh_token) {
-                  window.localStorage.removeItem(key);
-                  return null;
-                }
-              } catch (_) {
+              const parsed = JSON.parse(val);
+              if (parsed && typeof parsed === 'object' && !parsed.access_token && !parsed.refresh_token) {
                 window.localStorage.removeItem(key);
                 return null;
               }
-              return val;
             } catch (_) {
+              window.localStorage.removeItem(key);
               return null;
             }
-          },
-          setItem: (key: string, value: string) => {
-            try {
-              if (typeof window !== 'undefined') {
-                window.localStorage.setItem(key, value);
-              }
-            } catch (_) {}
-          },
-          removeItem: (key: string) => {
-            try {
-              if (typeof window !== 'undefined') {
-                window.localStorage.removeItem(key);
-              }
-            } catch (_) {}
-          },
+            return val;
+          } catch (_) {
+            return null;
+          }
+        },
+        setItem: (key: string, value: string) => {
+          try {
+            if (typeof window !== 'undefined') window.localStorage.setItem(key, value);
+          } catch (_) {}
+        },
+        removeItem: (key: string) => {
+          try {
+            if (typeof window !== 'undefined') window.localStorage.removeItem(key);
+          } catch (_) {}
         },
       },
-    });
+    },
+  });
 
-    // Wrap getSession to catch and sanitize invalid refresh tokens gracefully
-    const originalGetSession = realClient.auth.getSession.bind(realClient.auth);
-    realClient.auth.getSession = async () => {
-      try {
-        const res = await originalGetSession();
-        if (res.error && isRefreshTokenError(res.error)) {
-          clearSupabaseStorageTokens();
-          try {
-            await realClient.auth.signOut({ scope: 'local' });
-          } catch (_) {}
-          return { data: { session: null }, error: null };
-        }
-        return res;
-      } catch (err: any) {
-        if (isRefreshTokenError(err)) {
-          clearSupabaseStorageTokens();
-          try {
-            await realClient.auth.signOut({ scope: 'local' });
-          } catch (_) {}
-          return { data: { session: null }, error: null };
-        }
-        return { data: { session: null }, error: err };
+  const originalGetSession = realClient.auth.getSession.bind(realClient.auth);
+  realClient.auth.getSession = async () => {
+    try {
+      const res = await originalGetSession();
+      if (res.error && isRefreshTokenError(res.error)) {
+        clearSupabaseStorageTokens(storageKey);
+        try {
+          await realClient.auth.signOut({ scope: 'local' });
+        } catch (_) {}
+        return { data: { session: null }, error: null };
       }
-    };
-
-    // Wrap refreshSession
-    const originalRefreshSession = realClient.auth.refreshSession.bind(realClient.auth);
-    realClient.auth.refreshSession = async (currentSession?: any) => {
-      try {
-        const res = await originalRefreshSession(currentSession);
-        if (res.error && isRefreshTokenError(res.error)) {
-          clearSupabaseStorageTokens();
-          try {
-            await realClient.auth.signOut({ scope: 'local' });
-          } catch (_) {}
-          return { data: { session: null, user: null }, error: null };
-        }
-        return res;
-      } catch (err: any) {
-        if (isRefreshTokenError(err)) {
-          clearSupabaseStorageTokens();
-          try {
-            await realClient.auth.signOut({ scope: 'local' });
-          } catch (_) {}
-          return { data: { session: null, user: null }, error: null };
-        }
-        return { data: { session: null, user: null }, error: err };
+      return res;
+    } catch (err: any) {
+      if (isRefreshTokenError(err)) {
+        clearSupabaseStorageTokens(storageKey);
+        try {
+          await realClient.auth.signOut({ scope: 'local' });
+        } catch (_) {}
+        return { data: { session: null }, error: null };
       }
-    };
+      return { data: { session: null }, error: err };
+    }
+  };
 
-    // Wrap getUser as well to catch invalid tokens
-    const originalGetUser = realClient.auth.getUser.bind(realClient.auth);
-    realClient.auth.getUser = async (jwt?: string) => {
-      try {
-        const res = await originalGetUser(jwt);
-        if (res.error && isRefreshTokenError(res.error)) {
-          clearSupabaseStorageTokens();
-          return { data: { user: null }, error: null };
-        }
-        return res;
-      } catch (err: any) {
-        if (isRefreshTokenError(err)) {
-          clearSupabaseStorageTokens();
-          return { data: { user: null }, error: null };
-        }
-        return { data: { user: null }, error: err };
+  const originalRefreshSession = realClient.auth.refreshSession.bind(realClient.auth);
+  realClient.auth.refreshSession = async (currentSession?: any) => {
+    try {
+      const res = await originalRefreshSession(currentSession);
+      if (res.error && isRefreshTokenError(res.error)) {
+        clearSupabaseStorageTokens(storageKey);
+        try {
+          await realClient.auth.signOut({ scope: 'local' });
+        } catch (_) {}
+        return { data: { session: null, user: null }, error: null };
       }
-    };
+      return res;
+    } catch (err: any) {
+      if (isRefreshTokenError(err)) {
+        clearSupabaseStorageTokens(storageKey);
+        try {
+          await realClient.auth.signOut({ scope: 'local' });
+        } catch (_) {}
+        return { data: { session: null, user: null }, error: null };
+      }
+      return { data: { session: null, user: null }, error: err };
+    }
+  };
 
-    return realClient;
-  } catch (err) {
-    console.warn("Falha ao inicializar o cliente do Supabase, usando banco de dados local fallback:", err);
-    return createMockSupabaseClient();
+  const originalGetUser = realClient.auth.getUser.bind(realClient.auth);
+  realClient.auth.getUser = async (jwt?: string) => {
+    try {
+      const res = await originalGetUser(jwt);
+      if (res.error && isRefreshTokenError(res.error)) {
+        clearSupabaseStorageTokens(storageKey);
+        return { data: { user: null }, error: null };
+      }
+      return res;
+    } catch (err: any) {
+      if (isRefreshTokenError(err)) {
+        clearSupabaseStorageTokens(storageKey);
+        return { data: { user: null }, error: null };
+      }
+      return { data: { user: null }, error: err };
+    }
+  };
+
+  return realClient;
+}
+
+/** Returns only the client configured for the requested municipality; it never falls back to another city. */
+export function getSupabaseClientForCity(cityId: string | null | undefined): any | null {
+  const normalizedCityId = cityId?.trim();
+  if (!normalizedCityId) return null;
+  const config = getStoredConfig(normalizedCityId);
+  if (!config) return null;
+
+  const cachedClient = supabaseClients.get(normalizedCityId);
+  if (cachedClient) return cachedClient;
+
+  if (!isUsableSupabaseTenantConfig(config)) {
+    // Preserve the existing offline mock mode for Araucária. An unconfigured second
+    // municipality deliberately has no mock/remote client, preventing cross-tenant fallback.
+    if (normalizedCityId === ARAUCARIA_CITY_ID) {
+      const mockClient = createMockSupabaseClient();
+      supabaseClients.set(normalizedCityId, mockClient);
+      return mockClient;
+    }
+    return null;
+  }
+
+  try {
+    const client = createRealSupabaseClient(config);
+    supabaseClients.set(normalizedCityId, client);
+    return client;
+  } catch (error) {
+    console.warn(`Falha ao inicializar Supabase para ${normalizedCityId}:`, error);
+    if (normalizedCityId === ARAUCARIA_CITY_ID) {
+      const mockClient = createMockSupabaseClient();
+      supabaseClients.set(normalizedCityId, mockClient);
+      return mockClient;
+    }
+    return null;
   }
 }
 
-export const supabase = getSupabaseClient();
-
-export async function syncAllDataToSupabase(): Promise<{
+export async function syncAllDataToSupabase(cityId = ARAUCARIA_CITY_ID): Promise<{
   success: boolean;
   message: string;
   reportsSynced: number;
@@ -747,15 +808,46 @@ export async function syncAllDataToSupabase(): Promise<{
   newsSynced: number;
   profilesSynced: number;
 }> {
-  if (!isRealSupabase || !supabase) {
-    return {
-      success: false,
-      message: "Supabase não está configurado com credenciais válidas.",
-      reportsSynced: 0,
-      workOrdersSynced: 0,
-      newsSynced: 0,
-      profilesSynced: 0,
-    };
+  const failureResult = (message: string) => ({
+    success: false,
+    message,
+    reportsSynced: 0,
+    workOrdersSynced: 0,
+    newsSynced: 0,
+    profilesSynced: 0,
+  });
+  const scopedCityId = cityId.trim();
+  const tenantSupabase = getSupabaseClientForCity(scopedCityId);
+  const tenantIsReal = isRealSupabaseForCity(scopedCityId);
+  if (!scopedCityId || !tenantIsReal || !tenantSupabase) {
+    return failureResult("Supabase não está configurado para o município selecionado.");
+  }
+
+  let knownCityIds = new Set<string>();
+  try {
+    const { data: authData, error: authError } = await tenantSupabase.auth.getUser();
+    if (authError || !authData.user) {
+      return failureResult("Entre na sua conta ADM Global antes de iniciar a sincronização.");
+    }
+    const { data: adminProfile, error: profileError } = await tenantSupabase
+      .from("profiles")
+      .select("role,is_admin")
+      .eq("id", authData.user.id)
+      .maybeSingle();
+    if (profileError || !isLegacyGlobalTenantAdmin(adminProfile)) {
+      return failureResult("A sincronização está disponível somente para perfis ADM Global.");
+    }
+    const { data: cityRows, error: cityError } = await tenantSupabase.from("cities").select("id");
+    if (cityError || !cityRows) {
+      return failureResult("Não foi possível validar os municípios antes da sincronização.");
+    }
+    knownCityIds = new Set(
+      cityRows
+        .map((city: any) => (typeof city.id === "string" ? city.id.trim() : ""))
+        .filter(Boolean),
+    );
+  } catch {
+    return failureResult("Não foi possível validar a sessão ADM Global.");
   }
 
   let reportsCount = 0;
@@ -763,14 +855,49 @@ export async function syncAllDataToSupabase(): Promise<{
   let newsCount = 0;
   let profilesCount = 0;
   const errors: string[] = [];
+  const canSyncTenantRow = async (
+    table: "profiles" | "reports" | "work_orders" | "news",
+    id: string,
+    cityId: string | null,
+  ): Promise<boolean> => {
+    const { data, error } = await (tenantSupabase as any)
+      .from(table)
+      .select("city_id")
+      .eq("id", id)
+      .maybeSingle();
+    if (error) {
+      errors.push(`${table}: falha ao validar o município do registro (${error.message}).`);
+      return false;
+    }
+    if (!data) return true;
+    const existingCityId = typeof data.city_id === "string" ? data.city_id.trim() : "";
+    const matchesTenant = cityId ? existingCityId === cityId : !existingCityId;
+    if (!matchesTenant) {
+      errors.push(`${table}: registro ${id} pertence a outro município ou não tem município validado; sincronização ignorada.`);
+    }
+    return matchesTenant;
+  };
 
   // 1. Sync Profiles
   try {
     const rawProfiles = JSON.parse(localStorage.getItem('commuaria_profiles') || '[]');
     if (Array.isArray(rawProfiles) && rawProfiles.length > 0) {
       for (const p of rawProfiles) {
-        const payload = {
-          id: p.id,
+        const profileId = typeof p.id === "string" ? p.id.trim() : "";
+        const cityId = typeof p.city_id === "string" ? p.city_id.trim() : "";
+        const isGlobalAdmin = isLegacyGlobalTenantAdmin(p);
+        if (
+          !profileId ||
+          (!cityId && !isGlobalAdmin) ||
+          (cityId && !knownCityIds.has(cityId))
+        ) {
+          errors.push("Perfis sem município válido foram ignorados; revise o vínculo antes de sincronizar.");
+          continue;
+        }
+        if (!(await canSyncTenantRow("profiles", profileId, cityId || null))) continue;
+
+        const payload: Record<string, unknown> = {
+          id: profileId,
           name: p.name || 'Usuário',
           email: p.email || '',
           role: p.role || 'user',
@@ -778,9 +905,13 @@ export async function syncAllDataToSupabase(): Promise<{
           is_admin: !!p.is_admin,
           created_at: p.created_at || new Date().toISOString(),
         };
-        const { error } = await supabase.from('profiles').upsert([payload]);
+        if (cityId) payload.city_id = cityId;
+        const { error } = await tenantSupabase.from('profiles').upsert([payload]);
         if (!error) profilesCount++;
-        else console.warn("Erro ao sincronizar perfil:", error);
+        else {
+          console.warn("Erro ao sincronizar perfil:", error);
+          errors.push(`Perfis: ${error.message}`);
+        }
       }
     }
   } catch (e: any) {
@@ -792,7 +923,19 @@ export async function syncAllDataToSupabase(): Promise<{
     const rawReports = JSON.parse(localStorage.getItem('commuaria_reports') || '[]');
     if (Array.isArray(rawReports) && rawReports.length > 0) {
       for (const r of rawReports) {
+        const cityId = typeof r.city_id === "string" ? r.city_id.trim() : "";
+        if (!cityId || !knownCityIds.has(cityId)) {
+          errors.push("Ocorrências sem município válido foram ignoradas; revise o vínculo antes de sincronizar.");
+          continue;
+        }
         const reportId = isUUID(r.id) ? r.id : generateUUID();
+        if (!(await canSyncTenantRow("reports", reportId, cityId))) continue;
+        const latitude = Number(r.latitude);
+        const longitude = Number(r.longitude);
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+          errors.push(`Ocorrência ${reportId} sem coordenadas válidas foi ignorada.`);
+          continue;
+        }
         const validUserId = isUUID(r.user_id) ? r.user_id : null;
         const cat = r.category || 'Pavimentação';
         const formattedDesc = r.description?.includes('[Categoria:')
@@ -801,12 +944,13 @@ export async function syncAllDataToSupabase(): Promise<{
 
         const payload = {
           id: reportId,
+          city_id: cityId,
           title: r.title || 'Ocorrência',
           description: formattedDesc,
           maintenance_type: cat,
-          address: r.address || 'Araucária - PR',
-          latitude: typeof r.latitude === 'number' ? r.latitude : -25.5901,
-          longitude: typeof r.longitude === 'number' ? r.longitude : -49.4851,
+          address: r.address || 'Endereço não informado',
+          latitude,
+          longitude,
           status: r.status || 'unresolved',
           image_url: r.image_url || null,
           anonymous: !!r.anonymous,
@@ -820,10 +964,10 @@ export async function syncAllDataToSupabase(): Promise<{
           deadline: r.deadline || null,
           created_at: r.created_at || new Date().toISOString(),
         };
-        let { error } = await supabase.from('reports').upsert([payload]);
+        let { error } = await tenantSupabase.from('reports').upsert([payload]);
         if (error && error.code === '23503') {
           const noFk = { ...payload, user_id: null };
-          const retryRes = await supabase.from('reports').upsert([noFk]);
+          const retryRes = await tenantSupabase.from('reports').upsert([noFk]);
           error = retryRes.error;
         }
         if (!error) reportsCount++;
@@ -840,14 +984,33 @@ export async function syncAllDataToSupabase(): Promise<{
   // 3. Sync Work Orders
   try {
     const rawOrders = JSON.parse(localStorage.getItem('commuaria_work_orders') || '[]');
+    const cachedReportsValue = JSON.parse(localStorage.getItem('commuaria_reports') || '[]');
+    const cachedReports = Array.isArray(cachedReportsValue) ? cachedReportsValue : [];
     if (Array.isArray(rawOrders) && rawOrders.length > 0) {
       for (const o of rawOrders) {
+        const cityId = typeof o.city_id === "string" ? o.city_id.trim() : "";
+        const orderId = typeof o.id === "string" ? o.id.trim() : "";
+        if (!cityId || !knownCityIds.has(cityId) || !orderId) {
+          errors.push("Ordens de serviço sem município válido ou identificador foram ignoradas.");
+          continue;
+        }
+        if (!(await canSyncTenantRow("work_orders", orderId, cityId))) continue;
+        const linkedReportId = typeof o.linked_report_id === "string" ? o.linked_report_id.trim() : "";
+        if (linkedReportId) {
+          const cachedLinkedReport = cachedReports.find((report: any) => report.id === linkedReportId);
+          if (cachedLinkedReport && cachedLinkedReport.city_id !== cityId) {
+            errors.push(`O.S. ${orderId} referencia uma ocorrência de outro município; sincronização ignorada.`);
+            continue;
+          }
+          if (!(await canSyncTenantRow("reports", linkedReportId, cityId))) continue;
+        }
         const payload = {
-          id: o.id,
+          id: orderId,
+          city_id: cityId,
           order_number: o.order_number || `OS-${Math.floor(1000 + Math.random() * 9000)}`,
           title: o.title || 'Ordem de Serviço',
           category: o.category || 'Pavimentação',
-          address: o.address || 'Araucária - PR',
+          address: o.address || 'Endereço não informado',
           priority: o.priority || 'medium',
           deadline: o.deadline || null,
           assigned_team: o.assigned_team || 'Equipe Operacional',
@@ -862,7 +1025,7 @@ export async function syncAllDataToSupabase(): Promise<{
           created_at: o.created_at || new Date().toISOString(),
           completed_at: o.completed_at || null,
         };
-        const { error } = await supabase.from('work_orders').upsert([payload]);
+        const { error } = await tenantSupabase.from('work_orders').upsert([payload]);
         if (!error) workOrdersCount++;
         else {
           console.warn("Erro ao sincronizar work order:", error);
@@ -879,14 +1042,22 @@ export async function syncAllDataToSupabase(): Promise<{
     const rawNews = JSON.parse(localStorage.getItem('commuaria_news') || '[]');
     if (Array.isArray(rawNews) && rawNews.length > 0) {
       for (const n of rawNews) {
+        const cityId = typeof n.city_id === "string" ? n.city_id.trim() : "";
+        const newsId = typeof n.id === "string" ? n.id.trim() : "";
+        if (!cityId || !knownCityIds.has(cityId) || !newsId) {
+          errors.push("Comunicados sem município válido ou identificador foram ignorados.");
+          continue;
+        }
+        if (!(await canSyncTenantRow("news", newsId, cityId))) continue;
         const payload = {
-          id: n.id,
+          id: newsId,
+          city_id: cityId,
           title: n.title,
           description: n.description,
           category: n.category || 'Comunidade',
           created_at: n.created_at || new Date().toISOString(),
         };
-        const { error } = await supabase.from('news').upsert([payload]);
+        const { error } = await tenantSupabase.from('news').upsert([payload]);
         if (!error) newsCount++;
         else console.warn("Erro ao sincronizar news:", error);
       }
@@ -901,7 +1072,7 @@ export async function syncAllDataToSupabase(): Promise<{
   return {
     success: hasAnySuccess || errors.length === 0,
     message: hasAnySuccess
-      ? `Sincronização concluída! ${reportsCount} chamados, ${workOrdersCount} O.S. e ${newsCount} notícias atualizados no Supabase.`
+      ? `Sincronização concluída! ${reportsCount} chamados, ${workOrdersCount} O.S. e ${newsCount} notícias atualizados no Supabase.${uniqueErrors.length ? ` Avisos: ${uniqueErrors.join('; ')}` : ""}`
       : uniqueErrors.length > 0
       ? `Falha na sincronização: ${uniqueErrors.join('; ')}`
       : "Nenhum dado pendente para sincronizar.",

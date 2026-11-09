@@ -25,10 +25,19 @@ import {
 } from "lucide-react";
 import { useTheme } from "../ThemeContext";
 import { UserProfile, UserRole, ReportCategory, CATEGORIES_CONFIG } from "../types";
-import { supabase, syncAllDataToSupabase, isUUID, generateUUID } from "../lib/supabase";
+import {
+  getSupabaseClientForCity,
+  isRealSupabaseForCity,
+  syncAllDataToSupabase,
+  isUUID,
+  generateUUID,
+} from "../lib/supabase";
 import { checkAccountBlockStatus } from "../utils/blockUtils";
+import { isLegacyGlobalTenantAdmin, type MunicipalRole } from "../domain/tenantAccess";
+import { rowBelongsToCity } from "../domain/cityScopedRows";
 
 interface AdminAccountsViewProps {
+  activeCityId?: string;
   currentAdminId?: string;
   currentAdminEmail?: string;
   onRefreshStats?: () => Promise<void>;
@@ -37,12 +46,14 @@ interface AdminAccountsViewProps {
 }
 
 export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
+  activeCityId,
   currentAdminId,
   currentAdminEmail,
   onRefreshStats,
   onRoleChanged,
 }) => {
   const { isDark } = useTheme();
+  const tenantSupabase = getSupabaseClientForCity(activeCityId);
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -56,6 +67,16 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
     if (p.role === "supervisor") return "supervisor";
     if (p.role === "funcionario") return "funcionario";
     return "user";
+  };
+  const isGlobalAdminAccount = (p?: UserProfile | null): boolean =>
+    p ? isLegacyGlobalTenantAdmin(p) : false;
+  const localProfileMatchesTarget = (candidate: any, target: UserProfile): boolean => {
+    const targetCityId = target.city_id?.trim();
+    if (!targetCityId || !rowBelongsToCity(candidate, targetCityId, "araucaria-pr")) return false;
+    const targetEmail = (target.email || "").toLowerCase().trim();
+    return candidate.id === target.id || Boolean(
+      targetEmail && (candidate.email || "").toLowerCase().trim() === targetEmail,
+    );
   };
 
   // Filters & Search
@@ -82,13 +103,13 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
   const [addName, setAddName] = useState("");
   const [addEmail, setAddEmail] = useState("");
   const [addPassword, setAddPassword] = useState("senha123");
-  const [addRole, setAddRole] = useState<UserRole>("user");
+  const [addRole, setAddRole] = useState<MunicipalRole>("user");
   const [addCategory, setAddCategory] = useState<ReportCategory>("Pavimentação");
   const [addError, setAddError] = useState<string | null>(null);
   const [addLoading, setAddLoading] = useState(false);
 
   // Role Change Form
-  const [newRole, setNewRole] = useState<UserRole>("user");
+  const [newRole, setNewRole] = useState<MunicipalRole>("user");
   const [newCategory, setNewCategory] = useState<ReportCategory | string>("Pavimentação");
   const [roleChangeLoading, setRoleChangeLoading] = useState(false);
 
@@ -115,14 +136,17 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
     setLoading(true);
     try {
       let supaProfiles: UserProfile[] = [];
-      if (supabase) {
+      if (tenantSupabase) {
         try {
-          const { data, error } = await supabase
+          const { data, error } = await tenantSupabase
             .from("profiles")
             .select("*")
             .order("created_at", { ascending: false });
           if (!error && data) {
-            supaProfiles = data.filter((d: any) => !isLegacyMock(d));
+            supaProfiles = data.filter((profile: any) =>
+              !isLegacyMock(profile) &&
+              (isGlobalAdminAccount(profile) || profile.city_id?.trim() === activeCityId?.trim()),
+            );
           }
         } catch (e) {
           console.warn("Supabase profiles query error:", e);
@@ -132,19 +156,28 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
       // Local storage fallback and merge
       const localProfiles: UserProfile[] = JSON.parse(
         localStorage.getItem("commuaria_profiles") || "[]"
-      ).filter((p: any) => !isLegacyMock(p));
+      ).filter((profile: any) =>
+        !isLegacyMock(profile) &&
+        (isGlobalAdminAccount(profile) || profile.city_id?.trim() === activeCityId?.trim()),
+      );
 
       const mergedMap = new Map<string, UserProfile>();
+      const accountKey = (profile: UserProfile) => {
+        const identity = (profile.email || profile.id || "").toLowerCase().trim();
+        if (isGlobalAdminAccount(profile)) return `global:${identity}`;
+        const cityId = profile.city_id?.trim();
+        return cityId ? `city:${cityId}:${identity}` : `unassigned:${identity}`;
+      };
 
-      // 1. Add Supabase profiles
+      // 1. Add Supabase profiles, keyed by identity and municipality scope.
       supaProfiles.forEach((p) => {
-        const key = (p.email || p.id).toLowerCase().trim();
+        const key = accountKey(p);
         mergedMap.set(key, p);
       });
 
-      // 2. Add local profiles
+      // 2. Add local profiles only to the same identity and municipality scope.
       localProfiles.forEach((lp) => {
-        const key = (lp.email || lp.id).toLowerCase().trim();
+        const key = accountKey(lp);
         if (!mergedMap.has(key)) {
           mergedMap.set(key, lp);
         } else {
@@ -189,20 +222,20 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
   useEffect(() => {
     loadAllAccounts();
-  }, []);
+  }, [activeCityId]);
 
   // Synchronize with Supabase
   const handleSyncWithSupabase = async () => {
     setSyncing(true);
     setSyncMessage(null);
     try {
-      const res = await syncAllDataToSupabase();
+      const res = await syncAllDataToSupabase(activeCityId || "");
       if (res.success) {
         setSyncMessage(`Sincronização concluída! ${res.profilesSynced} perfis sincronizados.`);
         await loadAllAccounts();
         if (onRefreshStats) await onRefreshStats();
       } else {
-        setSyncMessage("Sincronização offline realizada no cache local.");
+        setSyncMessage(res.message);
       }
     } catch (e: any) {
       setSyncMessage("Erro na sincronização: " + (e.message || "Tente novamente."));
@@ -215,6 +248,18 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
   // Execute Account Block
   const handleConfirmBlock = async () => {
     if (!selectedUserForBlock) return;
+    if (isGlobalAdminAccount(selectedUserForBlock)) {
+      alert("Os perfis ADM Global são protegidos e não podem ser suspensos por esta tela.");
+      setSelectedUserForBlock(null);
+      return;
+    }
+    const targetCityId = selectedUserForBlock.city_id?.trim();
+    if (!targetCityId) {
+      alert("Não é possível suspender uma conta sem município validado.");
+      setSelectedUserForBlock(null);
+      return;
+    }
+    const targetSupabase = getSupabaseClientForCity(targetCityId);
     setBlockLoading(true);
 
     try {
@@ -258,41 +303,38 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
         blocked_at: new Date().toISOString(),
       };
 
-      // 1. Update in LocalStorage
-      const localProfiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
-      const updatedProfiles = localProfiles.map((p: any) => {
-        if (p.id === selectedUserForBlock.id || p.email?.toLowerCase() === selectedUserForBlock.email?.toLowerCase()) {
-          return { ...p, ...updatePayload };
+      // Persist to the profile's own tenant first; do not report success after a remote error.
+      if (targetSupabase && isRealSupabaseForCity(targetCityId)) {
+        if (isUUID(selectedUserForBlock.id)) {
+          const { error } = await targetSupabase
+            .from("profiles")
+            .update(updatePayload)
+            .eq("id", selectedUserForBlock.id)
+            .eq("city_id", targetCityId);
+          if (error) throw error;
         }
-        return p;
-      });
+        if (selectedUserForBlock.email) {
+          const { error } = await targetSupabase
+            .from("profiles")
+            .update(updatePayload)
+            .eq("email", selectedUserForBlock.email)
+            .eq("city_id", targetCityId);
+          if (error) throw error;
+        }
+      }
+
+      // Update only this tenant's browser-cache copies after the remote write succeeds.
+      const localProfiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+      const updatedProfiles = localProfiles.map((p: any) =>
+        localProfileMatchesTarget(p, selectedUserForBlock) ? { ...p, ...updatePayload } : p,
+      );
       localStorage.setItem("commuaria_profiles", JSON.stringify(updatedProfiles));
 
       const localUsers = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
-      const updatedUsers = localUsers.map((u: any) => {
-        if (u.id === selectedUserForBlock.id || u.email?.toLowerCase() === selectedUserForBlock.email?.toLowerCase()) {
-          return { ...u, ...updatePayload };
-        }
-        return u;
-      });
+      const updatedUsers = localUsers.map((u: any) =>
+        localProfileMatchesTarget(u, selectedUserForBlock) ? { ...u, ...updatePayload } : u,
+      );
       localStorage.setItem("commuaria_users", JSON.stringify(updatedUsers));
-
-      // 2. Update in Supabase
-      if (supabase) {
-        try {
-          await supabase
-            .from("profiles")
-            .update(updatePayload)
-            .eq("id", selectedUserForBlock.id);
-
-          await supabase
-            .from("profiles")
-            .update(updatePayload)
-            .eq("email", selectedUserForBlock.email);
-        } catch (err) {
-          console.warn("Supabase block update fallback:", err);
-        }
-      }
 
       setActionSuccess(`Conta de "${selectedUserForBlock.name || selectedUserForBlock.email}" suspensa com sucesso.`);
       setSelectedUserForBlock(null);
@@ -308,6 +350,12 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
   // Execute Unblock
   const handleUnblockUser = async (user: UserProfile) => {
+    const targetCityId = user.city_id?.trim();
+    if (!targetCityId) {
+      alert("Não é possível reativar uma conta sem município validado.");
+      return;
+    }
+    const targetSupabase = getSupabaseClientForCity(targetCityId);
     try {
       const updatePayload = {
         is_blocked: false,
@@ -316,41 +364,37 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
         blocked_at: null,
       };
 
-      // 1. Update in LocalStorage
-      const localProfiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
-      const updatedProfiles = localProfiles.map((p: any) => {
-        if (p.id === user.id || p.email?.toLowerCase() === user.email?.toLowerCase()) {
-          return { ...p, ...updatePayload };
+      // Persist to the profile's own tenant first; do not report success after a remote error.
+      if (targetSupabase && isRealSupabaseForCity(targetCityId)) {
+        if (isUUID(user.id)) {
+          const { error } = await targetSupabase
+            .from("profiles")
+            .update(updatePayload)
+            .eq("id", user.id)
+            .eq("city_id", targetCityId);
+          if (error) throw error;
         }
-        return p;
-      });
+        if (user.email) {
+          const { error } = await targetSupabase
+            .from("profiles")
+            .update(updatePayload)
+            .eq("email", user.email)
+            .eq("city_id", targetCityId);
+          if (error) throw error;
+        }
+      }
+
+      const localProfiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+      const updatedProfiles = localProfiles.map((p: any) =>
+        localProfileMatchesTarget(p, user) ? { ...p, ...updatePayload } : p,
+      );
       localStorage.setItem("commuaria_profiles", JSON.stringify(updatedProfiles));
 
       const localUsers = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
-      const updatedUsers = localUsers.map((u: any) => {
-        if (u.id === user.id || u.email?.toLowerCase() === user.email?.toLowerCase()) {
-          return { ...u, ...updatePayload };
-        }
-        return u;
-      });
+      const updatedUsers = localUsers.map((u: any) =>
+        localProfileMatchesTarget(u, user) ? { ...u, ...updatePayload } : u,
+      );
       localStorage.setItem("commuaria_users", JSON.stringify(updatedUsers));
-
-      // 2. Update in Supabase
-      if (supabase) {
-        try {
-          await supabase
-            .from("profiles")
-            .update(updatePayload)
-            .eq("id", user.id);
-
-          await supabase
-            .from("profiles")
-            .update(updatePayload)
-            .eq("email", user.email);
-        } catch (err) {
-          console.warn("Supabase unblock update fallback:", err);
-        }
-      }
 
       setActionSuccess(`Conta de "${user.name || user.email}" foi reativada.`);
       await loadAllAccounts();
@@ -365,6 +409,11 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
   // Execute Delete
   const handleConfirmDelete = async () => {
     if (!selectedUserForDelete) return;
+    if (isGlobalAdminAccount(selectedUserForDelete)) {
+      alert("Os perfis ADM Global são protegidos e não podem ser excluídos por esta tela.");
+      setSelectedUserForDelete(null);
+      return;
+    }
 
     const targetEmail = (selectedUserForDelete.email || "").toLowerCase();
     const myEmail = (currentAdminEmail || "").toLowerCase();
@@ -373,38 +422,56 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
       setSelectedUserForDelete(null);
       return;
     }
+    const targetCityId = selectedUserForDelete.city_id?.trim();
+    if (!targetCityId) {
+      alert("Não é possível excluir uma conta sem município validado.");
+      setSelectedUserForDelete(null);
+      return;
+    }
 
     setDeleteLoading(true);
     try {
-      // 1. Remove from LocalStorage
+      // Delete only in the municipality explicitly stored on the selected profile.
+      const targetSupabase = getSupabaseClientForCity(targetCityId);
+      if (targetSupabase && isRealSupabaseForCity(targetCityId)) {
+        if (isUUID(selectedUserForDelete.id)) {
+          const { error: deleteByIdError } = await targetSupabase
+            .from("profiles")
+            .delete()
+            .eq("id", selectedUserForDelete.id)
+            .eq("city_id", targetCityId);
+          if (deleteByIdError) throw deleteByIdError;
+        }
+
+        if (selectedUserForDelete.email) {
+          const { error: deleteByEmailError } = await targetSupabase
+            .from("profiles")
+            .delete()
+            .eq("email", selectedUserForDelete.email)
+            .eq("city_id", targetCityId);
+          if (deleteByEmailError) throw deleteByEmailError;
+        }
+      }
+
+      // Profile caches are updated only after the tenant database accepted the delete.
       const localProfiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
       const filteredProfiles = localProfiles.filter(
-        (p: any) => p.id !== selectedUserForDelete.id && p.email?.toLowerCase() !== targetEmail
+        (profile: any) => !localProfileMatchesTarget(profile, selectedUserForDelete),
       );
       localStorage.setItem("commuaria_profiles", JSON.stringify(filteredProfiles));
 
       const localUsers = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
       const filteredUsers = localUsers.filter(
-        (u: any) => u.id !== selectedUserForDelete.id && u.email?.toLowerCase() !== targetEmail
+        (localUser: any) => !localProfileMatchesTarget(localUser, selectedUserForDelete),
       );
       localStorage.setItem("commuaria_users", JSON.stringify(filteredUsers));
 
-      // 2. Remove from Supabase
-      if (supabase) {
-        try {
-          await supabase.from("profiles").delete().eq("id", selectedUserForDelete.id);
-          await supabase.from("profiles").delete().eq("email", selectedUserForDelete.email);
-        } catch (err) {
-          console.warn("Supabase delete profile fallback:", err);
-        }
-      }
-
-      setActionSuccess(`Conta "${selectedUserForDelete.name || selectedUserForDelete.email}" excluída.`);
+      setActionSuccess(`Perfil de "${selectedUserForDelete.name || selectedUserForDelete.email}" removido do município.`);
       setSelectedUserForDelete(null);
       await loadAllAccounts();
       if (onRefreshStats) await onRefreshStats();
     } catch (e: any) {
-      alert("Erro ao apagar conta: " + (e.message || "Tente novamente"));
+      alert("Erro ao remover perfil: " + (e.message || "Tente novamente"));
     } finally {
       setDeleteLoading(false);
       setTimeout(() => setActionSuccess(null), 4000);
@@ -414,6 +481,23 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
   // Execute Change Role
   const handleConfirmRoleChange = async () => {
     if (!selectedUserForRoleChange) return;
+    if (isGlobalAdminAccount(selectedUserForRoleChange)) {
+      alert("O cargo e as permissões dos perfis ADM Global não podem ser alterados por esta tela.");
+      setSelectedUserForRoleChange(null);
+      return;
+    }
+    const targetCityId = selectedUserForRoleChange.city_id?.trim();
+    if (!targetCityId) {
+      alert("Não é possível alterar permissões de uma conta sem município validado.");
+      setSelectedUserForRoleChange(null);
+      return;
+    }
+    const targetSupabase = getSupabaseClientForCity(targetCityId);
+    if ((newRole as UserRole) === "admin") {
+      alert("A concessão de ADM Global está bloqueada nesta tela; alterações de identidade global exigem uma migração aprovada.");
+      setSelectedUserForRoleChange(null);
+      return;
+    }
     setRoleChangeLoading(true);
 
     try {
@@ -424,20 +508,91 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
       const updatePayload = {
         role: newRole,
         assigned_category: targetCategory,
-        is_admin: newRole === "admin",
+        is_admin: false,
       };
+      let databaseProfileId: string | null = null;
+      if (targetSupabase) {
+        let profileById: any = null;
+        if (isUUID(targetUserId)) {
+          const { data, error } = await targetSupabase
+            .from("profiles")
+            .select("id,city_id")
+            .eq("id", targetUserId)
+            .maybeSingle();
+          if (error) throw error;
+          profileById = data;
+        }
+
+        let profileByEmail: any = null;
+        if (cleanEmail) {
+          const { data, error } = await targetSupabase
+            .from("profiles")
+            .select("id,city_id")
+            .ilike("email", cleanEmail)
+            .maybeSingle();
+          if (error) throw error;
+          profileByEmail = data;
+        }
+
+        if (profileById && profileByEmail && profileById.id !== profileByEmail.id) {
+          throw new Error("O identificador e o e-mail apontam para perfis diferentes; nenhuma alteração foi aplicada.");
+        }
+        const existingProfile = profileById || profileByEmail;
+        if (existingProfile) {
+          if (existingProfile.city_id?.trim() !== targetCityId) {
+            throw new Error("A conta encontrada está vinculada a outro município; nenhuma alteração foi aplicada.");
+          }
+          databaseProfileId = existingProfile.id;
+        }
+
+        const profileIdToWrite = databaseProfileId || (isUUID(targetUserId) ? targetUserId : generateUUID());
+        if (databaseProfileId) {
+          const { error } = await targetSupabase
+            .from("profiles")
+            .update({ ...updatePayload, city_id: targetCityId })
+            .eq("id", databaseProfileId)
+            .eq("city_id", targetCityId);
+          if (error) throw error;
+        } else {
+          const { error } = await targetSupabase.from("profiles").insert([{
+            id: profileIdToWrite,
+            name: selectedUserForRoleChange.name || cleanEmail.split("@")[0] || "Usuário",
+            email: cleanEmail,
+            city_id: targetCityId,
+            ...updatePayload,
+            created_at: selectedUserForRoleChange.created_at || new Date().toISOString(),
+          }]);
+          if (error) throw error;
+          databaseProfileId = profileIdToWrite;
+        }
+
+        const { data: verifiedProfile, error: verifyError } = await targetSupabase
+          .from("profiles")
+          .select("id,city_id,role,is_admin")
+          .eq("id", databaseProfileId)
+          .eq("city_id", targetCityId)
+          .maybeSingle();
+        if (verifyError) throw verifyError;
+        if (
+          !verifiedProfile ||
+          verifiedProfile.city_id?.trim() !== targetCityId ||
+          verifiedProfile.role !== newRole ||
+          verifiedProfile.is_admin === true
+        ) {
+          throw new Error("Não foi possível confirmar a alteração de cargo no município selecionado.");
+        }
+      }
 
       // 1. Update in LocalStorage commuaria_profiles
       const localProfiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
       let foundInProfiles = false;
       const updatedProfiles = localProfiles.map((p: any) => {
-        const pEmail = (p.email || "").toLowerCase().trim();
-        if ((targetUserId && p.id === targetUserId) || (cleanEmail && pEmail === cleanEmail)) {
+        if (localProfileMatchesTarget(p, selectedUserForRoleChange)) {
           foundInProfiles = true;
           return {
             ...p,
             ...updatePayload,
-            is_admin: newRole === "admin",
+            is_admin: false,
           };
         }
         return p;
@@ -446,7 +601,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
         updatedProfiles.push({
           ...selectedUserForRoleChange,
           ...updatePayload,
-          is_admin: newRole === "admin",
+          is_admin: false,
         });
       }
       localStorage.setItem("commuaria_profiles", JSON.stringify(updatedProfiles));
@@ -455,13 +610,12 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
       const localUsers = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
       let foundInUsers = false;
       const updatedUsers = localUsers.map((u: any) => {
-        const uEmail = (u.email || "").toLowerCase().trim();
-        if ((targetUserId && u.id === targetUserId) || (cleanEmail && uEmail === cleanEmail)) {
+        if (localProfileMatchesTarget(u, selectedUserForRoleChange)) {
           foundInUsers = true;
           return {
             ...u,
             ...updatePayload,
-            is_admin: newRole === "admin",
+            is_admin: false,
           };
         }
         return u;
@@ -470,7 +624,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
         updatedUsers.push({
           ...selectedUserForRoleChange,
           ...updatePayload,
-          is_admin: newRole === "admin",
+          is_admin: false,
         });
       }
       localStorage.setItem("commuaria_users", JSON.stringify(updatedUsers));
@@ -482,55 +636,18 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
           const activeSession = JSON.parse(activeSessionStr);
           const activeEmail = (activeSession.email || "").toLowerCase().trim();
           if (
-            (targetUserId && activeSession.id === targetUserId) ||
-            (cleanEmail && activeEmail === cleanEmail)
+            activeSession.city_id?.trim() === targetCityId &&
+            ((targetUserId && activeSession.id === targetUserId) ||
+              (cleanEmail && activeEmail === cleanEmail))
           ) {
             const updatedSession = {
               ...activeSession,
               ...updatePayload,
-              is_admin: newRole === "admin",
+              is_admin: false,
             };
             localStorage.setItem("commuaria_active_session", JSON.stringify(updatedSession));
           }
         } catch (_) {}
-      }
-
-      // 4. Update in Supabase
-      if (supabase) {
-        try {
-          if (cleanEmail) {
-            await supabase
-              .from("profiles")
-              .update(updatePayload)
-              .ilike("email", cleanEmail);
-          }
-
-          if (isUUID(targetUserId)) {
-            await supabase
-              .from("profiles")
-              .update(updatePayload)
-              .eq("id", targetUserId);
-          }
-
-          // If profile didn't exist in Supabase yet, upsert it
-          const { data: checkDb } = await supabase
-            .from("profiles")
-            .select("id")
-            .ilike("email", cleanEmail)
-            .maybeSingle();
-
-          if (!checkDb) {
-            await supabase.from("profiles").upsert({
-              id: isUUID(targetUserId) ? targetUserId : generateUUID(),
-              name: selectedUserForRoleChange.name || cleanEmail.split("@")[0] || "Usuário",
-              email: cleanEmail,
-              ...updatePayload,
-              created_at: selectedUserForRoleChange.created_at || new Date().toISOString(),
-            });
-          }
-        } catch (err) {
-          console.warn("Supabase role update fallback:", err);
-        }
       }
 
       const roleLabel =
@@ -540,8 +657,6 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
           ? `Funcionário de Campo (${targetCategory})`
           : newRole === "diretor"
           ? "Diretor(a) Executivo"
-          : newRole === "admin"
-          ? "Administrador"
           : "Cidadão";
 
       setActionSuccess(`Cargo de "${selectedUserForRoleChange.name || selectedUserForRoleChange.email}" atualizado para ${roleLabel}.`);
@@ -568,6 +683,14 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
     const cleanEmail = addEmail.trim().toLowerCase();
     const cleanName = addName.trim();
     const targetCategory = (addRole === "supervisor" || addRole === "funcionario") ? addCategory : null;
+    const cityId = activeCityId?.trim() || "";
+
+    if (!cityId) {
+      setAddError("Selecione um município ativo antes de criar a conta.");
+      setAddLoading(false);
+      return;
+    }
+    const citySupabase = getSupabaseClientForCity(cityId);
 
     if (!cleanEmail || !cleanName) {
       setAddError("Preencha todos os campos obrigatórios.");
@@ -576,51 +699,68 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
     }
 
     try {
+      const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+      const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+      const localProfiles: UserProfile[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+      const localUsers: UserProfile[] = Array.isArray(localUsersValue) ? localUsersValue : [];
+      const localDuplicate = [...localProfiles, ...localUsers].some(
+        (profile) => (profile.email || "").toLowerCase().trim() === cleanEmail,
+      );
+      if (localDuplicate) {
+        setAddError("Já existe uma conta com esse e-mail. Não é possível transferi-la para outro município por esta tela.");
+        return;
+      }
+
+      if (citySupabase) {
+        const { data: existingProfile, error: profileCheckError } = await citySupabase
+          .from("profiles")
+          .select("id,city_id")
+          .ilike("email", cleanEmail)
+          .maybeSingle();
+        if (profileCheckError) throw profileCheckError;
+        if (existingProfile) {
+          setAddError(
+            existingProfile.city_id?.trim() === cityId
+              ? "Já existe uma conta com esse e-mail neste município."
+              : "Esse e-mail já está vinculado a outro município; a transferência está bloqueada.",
+          );
+          return;
+        }
+      }
+
       const uuid = generateUUID();
       const newAccount: UserProfile = {
         id: uuid,
         name: cleanName,
         email: cleanEmail,
         role: addRole,
+        city_id: cityId,
         assigned_category: targetCategory,
-        is_admin: addRole === "admin",
+        is_admin: false,
         password: addPassword.trim() || "senha123",
         created_at: new Date().toISOString(),
         is_blocked: false,
       };
 
-      // 1. LocalStorage
-      const localProfiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+      if (citySupabase) {
+        const { error } = await citySupabase.from("profiles").insert([{
+          id: uuid,
+          name: cleanName,
+          email: cleanEmail,
+          role: addRole,
+          city_id: cityId,
+          assigned_category: targetCategory,
+          is_admin: false,
+          created_at: newAccount.created_at,
+        }]);
+        if (error) throw error;
+      }
+
+      // Store a city-scoped local copy after the remote tenant mapping is validated.
       localProfiles.unshift(newAccount);
       localStorage.setItem("commuaria_profiles", JSON.stringify(localProfiles));
-
-      const localUsers = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
       localUsers.unshift(newAccount);
       localStorage.setItem("commuaria_users", JSON.stringify(localUsers));
-
-      // 2. Supabase
-      if (supabase) {
-        try {
-          const { data: existingProfile } = await supabase
-            .from("profiles")
-            .select("id")
-            .ilike("email", cleanEmail)
-            .maybeSingle();
-
-          const dbId = existingProfile?.id || uuid;
-          await supabase.from("profiles").upsert({
-            id: dbId,
-            name: cleanName,
-            email: cleanEmail,
-            role: addRole,
-            assigned_category: targetCategory,
-            is_admin: addRole === "admin",
-            created_at: new Date().toISOString(),
-          });
-        } catch (err) {
-          console.warn("Supabase insert user fallback:", err);
-        }
-      }
 
       const createdLabel =
         addRole === "supervisor"
@@ -629,8 +769,6 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
           ? `Funcionário de Campo (${targetCategory})`
           : addRole === "diretor"
           ? "Diretor(a) Executivo"
-          : addRole === "admin"
-          ? "Administrador"
           : "Cidadão";
 
       setActionSuccess(`Conta de "${cleanName}" criada com sucesso como ${createdLabel}.`);
@@ -1234,6 +1372,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                 const isMe =
                   user.id === currentAdminId ||
                   (user.email && user.email.toLowerCase() === (currentAdminEmail || "").toLowerCase());
+                const isGlobalAdmin = isGlobalAdminAccount(user);
                 const effectiveUserRole = getEffectiveRole(user);
 
                 return (
@@ -1276,7 +1415,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
                           <div className="min-w-0">
                             <h4 className="font-bold text-sm sm:text-base font-serif truncate">
-                              {user.name || "Cidadão de Araucária"}
+                              {user.name || "Cidadão"}
                             </h4>
                             <div className="flex items-center gap-1.5 text-xs opacity-75 font-mono truncate">
                               <Mail size={12} className="shrink-0" />
@@ -1364,6 +1503,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                       {/* Left: Role editor button */}
                       <button
                         type="button"
+                        disabled={isGlobalAdmin}
                         onClick={() => {
                           setSelectedUserForRoleChange(user);
                           const currentRole = getEffectiveRole(user);
@@ -1374,8 +1514,8 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                           isDark
                             ? "bg-white/10 hover:bg-white/15 text-white"
                             : "bg-zinc-100 hover:bg-zinc-200 text-[#183a2b]"
-                        }`}
-                        title="Alterar cargo e setor"
+                        } ${isGlobalAdmin ? "opacity-40 cursor-not-allowed" : ""}`}
+                        title={isGlobalAdmin ? "As permissões ADM Global são protegidas" : "Alterar cargo e setor"}
                       >
                         <Edit3 size={13} />
                         <span>Cargo</span>
@@ -1402,13 +1542,19 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                               setBlockReasonPreset("Envio reiterado de chamados falsos ou trotes");
                               setBlockCustomReason("");
                             }}
-                            disabled={isMe}
+                            disabled={isMe || isGlobalAdmin}
                             className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all active:scale-95 ${
-                              isMe
+                              isMe || isGlobalAdmin
                                 ? "opacity-30 cursor-not-allowed bg-black/5 dark:bg-white/5"
                                 : "bg-rose-500/15 hover:bg-rose-500/25 text-rose-700 dark:text-rose-300 border border-rose-500/30"
                             }`}
-                            title={isMe ? "Você não pode suspender sua própria conta" : "Suspender ou bloquear conta"}
+                            title={
+                              isGlobalAdmin
+                                ? "Os perfis ADM Global são protegidos"
+                                : isMe
+                                ? "Você não pode suspender sua própria conta"
+                                : "Suspender ou bloquear conta"
+                            }
                           >
                             <Ban size={13} />
                             <span>Suspender</span>
@@ -1418,13 +1564,19 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                         <button
                           type="button"
                           onClick={() => setSelectedUserForDelete(user)}
-                          disabled={isMe}
+                          disabled={isMe || isGlobalAdmin}
                           className={`p-2 rounded-xl transition-all ${
-                            isMe
+                            isMe || isGlobalAdmin
                               ? "opacity-30 cursor-not-allowed text-zinc-400"
                               : "text-zinc-500 hover:text-rose-600 hover:bg-rose-500/10 active:scale-95"
                           }`}
-                          title={isMe ? "Você não pode excluir sua própria conta" : "Excluir conta definitivamente"}
+                          title={
+                            isGlobalAdmin
+                              ? "Os perfis ADM Global são protegidos"
+                              : isMe
+                              ? "Você não pode excluir sua própria conta"
+                              : "Remover perfil do município"
+                          }
                         >
                           <Trash2 size={14} />
                         </button>
@@ -1672,20 +1824,9 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                       <span>Diretor</span>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setNewRole("admin")}
-                      className={`p-3 rounded-2xl border text-center font-bold text-xs flex flex-col items-center gap-1.5 transition-all col-span-2 sm:col-span-1 ${
-                        newRole === "admin"
-                          ? "bg-emerald-600 text-white border-emerald-600 shadow-sm font-extrabold"
-                          : isDark
-                          ? "bg-white/5 border-white/10 text-white hover:bg-white/10"
-                          : "bg-zinc-50 border-black/10 text-[#183a2b] hover:bg-zinc-100"
-                      }`}
-                    >
-                      <Shield size={16} />
-                      <span>Admin</span>
-                    </button>
+                    <div className={`col-span-2 sm:col-span-3 rounded-xl border px-3 py-2 text-[11px] ${isDark ? "border-amber-300/20 bg-amber-300/10 text-amber-100" : "border-amber-700/15 bg-amber-50 text-amber-950"}`}>
+                      A concessão de ADM Global está bloqueada neste fluxo; alterações de identidade global exigem uma migração aprovada.
+                    </div>
                   </div>
                 </div>
 
@@ -1748,7 +1889,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
         )}
       </AnimatePresence>
 
-      {/* MODAL: Excluir Conta */}
+      {/* MODAL: Remover Perfil do Município */}
       <AnimatePresence>
         {selectedUserForDelete && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md">
@@ -1765,9 +1906,9 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
               </div>
 
               <div className="text-center space-y-2">
-                <h3 className="text-lg font-bold font-serif">Excluir Conta Permanentemente?</h3>
+                <h3 className="text-lg font-bold font-serif">Remover Perfil deste Município?</h3>
                 <p className={`text-xs ${isDark ? "text-white/70" : "text-[#2d4a3b]/70"}`}>
-                  Você está prestes a apagar a conta de <strong>{selectedUserForDelete.name || selectedUserForDelete.email}</strong> do sistema Commuária e do Supabase. Esta ação é irreversível.
+                  O perfil municipal de <strong>{selectedUserForDelete.name || selectedUserForDelete.email}</strong> será removido do cache e do projeto Supabase deste município. Esta ação não exclui a identidade do Supabase Auth.
                 </p>
               </div>
 
@@ -1788,7 +1929,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                   className="px-5 py-2.5 rounded-xl font-bold text-xs bg-rose-600 hover:bg-rose-700 text-white flex items-center gap-2 shadow-lg active:scale-95"
                 >
                   {deleteLoading ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                  <span>Excluir Definitivamente</span>
+                  <span>Remover Perfil</span>
                 </button>
               </div>
             </motion.div>
@@ -1937,20 +2078,9 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
                       <Building2 size={14} />
                       <span>Diretor</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setAddRole("admin")}
-                      className={`p-2.5 rounded-xl border text-center font-bold text-xs flex items-center justify-center gap-1.5 col-span-2 sm:col-span-1 ${
-                        addRole === "admin"
-                          ? "bg-emerald-600 text-white border-emerald-600 font-extrabold shadow-sm"
-                          : isDark
-                          ? "bg-white/5 border-white/10 text-white"
-                          : "bg-zinc-50 border-black/10 text-[#183a2b]"
-                      }`}
-                    >
-                      <Shield size={14} />
-                      <span>Admin</span>
-                    </button>
+                    <div className={`col-span-2 sm:col-span-3 rounded-xl border px-3 py-2 text-[11px] ${isDark ? "border-amber-300/20 bg-amber-300/10 text-amber-100" : "border-amber-700/15 bg-amber-50 text-amber-950"}`}>
+                      A concessão de ADM Global está bloqueada neste fluxo; alterações de identidade global exigem uma migração aprovada.
+                    </div>
                   </div>
                 </div>
 

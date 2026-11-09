@@ -1,6 +1,10 @@
-import { supabase, isRealSupabase } from "./supabase";
+import { getSupabaseClientForCity, isRealSupabaseForCity } from "./supabase";
 import { DEFAULT_SEEDED_CITIES } from "../data/rmcIbgeCities";
 import type { CityItem, PublicCityReport } from "../types";
+import { cityFeature } from "../domain/cityGeometry";
+import { sanitizePublicLocation, sanitizePublicText } from "../domain/publicCityData";
+export { cityFeature, getGeoJsonBoundsAndCenter } from "../domain/cityGeometry";
+export { sanitizePublicLocation, sanitizePublicText } from "../domain/publicCityData";
 
 const CITY_COLUMNS =
   "id,ibge_code,name,state,is_active,center_lat,center_lng,default_zoom,bounds,boundary_geojson,description,created_at,updated_at";
@@ -21,37 +25,40 @@ const asCity = (row: any): CityItem => ({
   updated_at: row.updated_at,
 });
 
-/** Fetches city metadata and real boundaries. Static IBGE seed data is a resilient offline fallback. */
+/** Fetches each seeded municipality only from its own Supabase project. */
 export async function fetchCities(): Promise<CityItem[]> {
-  if (!supabase || !isRealSupabase) return [...DEFAULT_SEEDED_CITIES];
+  const cities = await Promise.all(
+    DEFAULT_SEEDED_CITIES.map(async (seededCity) => {
+      const citySupabase = getSupabaseClientForCity(seededCity.id);
+      if (!citySupabase || !isRealSupabaseForCity(seededCity.id)) return seededCity;
 
-  try {
-    const { data, error } = await supabase
-      .from("cities")
-      .select(CITY_COLUMNS)
-      .order("state", { ascending: true })
-      .order("name", { ascending: true });
-    if (error) throw error;
+      try {
+        const { data, error } = await citySupabase
+          .from("cities")
+          .select(CITY_COLUMNS)
+          .eq("id", seededCity.id)
+          .maybeSingle();
+        if (error) throw error;
+        return data ? { ...seededCity, ...asCity(data) } : seededCity;
+      } catch (error) {
+        console.warn(`Não foi possível carregar ${seededCity.name} do seu projeto Supabase; usando os limites locais:`, error);
+        return seededCity;
+      }
+    }),
+  );
 
-    const fromDb = Array.isArray(data) ? data.map(asCity) : [];
-    const byId = new Map<string, CityItem>();
-    for (const city of DEFAULT_SEEDED_CITIES) byId.set(city.id, city);
-    for (const city of fromDb) byId.set(city.id, city);
-    return [...byId.values()].sort(
-      (a, b) => a.state.localeCompare(b.state, "pt-BR") || a.name.localeCompare(b.name, "pt-BR"),
-    );
-  } catch (error) {
-    console.warn("Não foi possível carregar os municípios do Supabase; usando limites oficiais locais:", error);
-    return [...DEFAULT_SEEDED_CITIES];
-  }
+  return cities.sort(
+    (a, b) => a.state.localeCompare(b.state, "pt-BR") || a.name.localeCompare(b.name, "pt-BR"),
+  );
 }
 
 /** Uses only the privacy-safe SECURITY DEFINER RPC; never selects from public.reports. */
 export async function fetchPublicCityReports(cityId: string): Promise<PublicCityReport[]> {
-  if (!supabase || !isRealSupabase || !cityId) return [];
+  const citySupabase = getSupabaseClientForCity(cityId);
+  if (!citySupabase || !isRealSupabaseForCity(cityId) || !cityId) return [];
 
   try {
-    const { data, error } = await supabase.rpc("get_public_city_reports", { p_city_id: cityId });
+    const { data, error } = await citySupabase.rpc("get_public_city_reports", { p_city_id: cityId });
     if (error) throw error;
     return (Array.isArray(data) ? data : []).flatMap((row: any) => {
       const latitude = Number(row.latitude);
@@ -77,68 +84,11 @@ export async function fetchPublicCityReports(cityId: string): Promise<PublicCity
   }
 }
 
-/** Lightweight client-side defense-in-depth for the already sanitized public RPC fields. */
-export function sanitizePublicText(value: string, maxLength = 180): string {
-  return value
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[dado ocultado]")
-    .replace(/\b\d{3}[.\s-]?\d{3}[.\s-]?\d{3}[.\s-]?\d{2}\b/g, "[dado ocultado]")
-    .replace(/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9?\d{4}[\s.-]?\d{4}\b/g, "[dado ocultado]")
-    .replace(/\b(?:meu nome é|me chamo|nome:)\s+[\p{L}][\p{L}\s.'-]{1,80}/giu, "[identificação removida]")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, maxLength);
-}
-
-export function sanitizePublicLocation(value: string, maxLength = 160): string {
-  return sanitizePublicText(value, maxLength)
-    .replace(/,?\s*(?:n[ºo.]?\s*)?\d{1,5}(?=\s*(?:,|$))/gi, "")
-    .replace(/\s+,/g, ",")
-    .replace(/,{2,}/g, ",")
-    .trim();
-}
-
-/** Computes a Leaflet-friendly [southWest, northEast] and center from imported GeoJSON. */
-export function getGeoJsonBoundsAndCenter(feature: any): {
-  bounds: [[number, number], [number, number]];
-  center: [number, number];
-} | null {
-  const geometry = feature?.type === "Feature" ? feature.geometry : feature;
-  if (!geometry || !["Polygon", "MultiPolygon"].includes(geometry.type)) return null;
-
-  const positions: number[][] = [];
-  const walk = (value: any): void => {
-    if (!Array.isArray(value)) return;
-    if (value.length >= 2 && typeof value[0] === "number" && typeof value[1] === "number") {
-      positions.push(value);
-      return;
-    }
-    value.forEach(walk);
-  };
-  walk(geometry.coordinates);
-  if (!positions.length) return null;
-
-  const longitudes = positions.map((point) => point[0]);
-  const latitudes = positions.map((point) => point[1]);
-  const south = Math.min(...latitudes);
-  const north = Math.max(...latitudes);
-  const west = Math.min(...longitudes);
-  const east = Math.max(...longitudes);
-  if (![south, north, west, east].every(Number.isFinite)) return null;
-
-  return {
-    bounds: [[south, west], [north, east]],
-    center: [(south + north) / 2, (west + east) / 2],
-  };
-}
-
-export function cityFeature(city: CityItem): any | null {
-  const feature = city.boundary_geojson;
-  if (!feature || !["Feature", "FeatureCollection", "Polygon", "MultiPolygon"].includes(feature.type)) return null;
-  return feature;
-}
-
 export async function saveCity(city: CityItem): Promise<CityItem> {
-  if (!supabase || !isRealSupabase) throw new Error("A conexão com o Supabase é necessária para gerenciar municípios.");
+  const citySupabase = getSupabaseClientForCity(city.id);
+  if (!citySupabase || !isRealSupabaseForCity(city.id)) {
+    throw new Error("O projeto Supabase do município selecionado não está configurado.");
+  }
   if (!city.id || !city.name.trim() || !city.state.trim() || !/^\d{7}$/.test(city.ibge_code)) {
     throw new Error("Informe nome, UF e o código IBGE de sete dígitos.");
   }
@@ -147,7 +97,7 @@ export async function saveCity(city: CityItem): Promise<CityItem> {
   if (!geometry || !["Polygon", "MultiPolygon"].includes(geometryType)) {
     throw new Error("Importe um limite municipal GeoJSON oficial (Polygon ou MultiPolygon) antes de salvar.");
   }
-  const { error } = await supabase.from("cities").upsert({
+  const { error } = await citySupabase.from("cities").upsert({
     id: city.id,
     ibge_code: city.ibge_code,
     name: city.name.trim(),
@@ -165,8 +115,11 @@ export async function saveCity(city: CityItem): Promise<CityItem> {
 }
 
 export async function setCityAvailability(cityId: string, isActive: boolean): Promise<void> {
-  if (!supabase || !isRealSupabase) throw new Error("A conexão com o Supabase é necessária para gerenciar municípios.");
-  const { data, error } = await supabase
+  const citySupabase = getSupabaseClientForCity(cityId);
+  if (!citySupabase || !isRealSupabaseForCity(cityId)) {
+    throw new Error("O projeto Supabase do município selecionado não está configurado.");
+  }
+  const { data, error } = await citySupabase
     .from("cities")
     .update({ is_active: isActive })
     .eq("id", cityId)

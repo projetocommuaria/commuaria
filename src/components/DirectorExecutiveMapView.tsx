@@ -30,6 +30,7 @@ import {
   fetchSystemWorkOrders,
   normalizeSectorCategory,
 } from "../lib/workOrderService";
+import { rowBelongsToCity } from "../domain/cityScopedRows";
 
 interface DirectorExecutiveMapViewProps {
   user?: UserProfile;
@@ -144,6 +145,9 @@ export const DirectorExecutiveMapView: React.FC<DirectorExecutiveMapViewProps> =
   onViewImage,
 }) => {
   const { isDark } = useTheme();
+  const hasValidTenantCity = Boolean(
+    city && city.is_active && city.id === user?.city_id?.trim(),
+  );
 
   const [workOrders, setWorkOrders] = useState<WorkOrderItem[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -161,13 +165,17 @@ export const DirectorExecutiveMapView: React.FC<DirectorExecutiveMapViewProps> =
   const [focusZoom, setFocusZoom] = useState<number>(14);
 
   const loadWorkOrders = async () => {
-    const list = await fetchSystemWorkOrders(city?.id || user?.city_id || "araucaria-pr");
+    if (!hasValidTenantCity || !city) {
+      setWorkOrders([]);
+      return;
+    }
+    const list = await fetchSystemWorkOrders(city.id);
     setWorkOrders(list);
   };
 
   useEffect(() => {
-    loadWorkOrders();
-  }, []);
+    void loadWorkOrders();
+  }, [city?.id, city?.is_active, user?.city_id]);
 
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
@@ -182,7 +190,9 @@ export const DirectorExecutiveMapView: React.FC<DirectorExecutiveMapViewProps> =
   // Consolida chamados de cidadãos (protegidos por LGPD) + O.S. avulsas por região e setor
   const territorialPoints = useMemo<TerritorialPoint[]>(() => {
     const citizenReports = (Array.isArray(reports) ? reports : [])
-      .filter((r) => !r.is_work_order)
+      .filter((report) =>
+        !report.is_work_order && rowBelongsToCity(report, user?.city_id, "araucaria-pr"),
+      )
       .map((r) => maskCitizenData(r, "diretor"));
 
     const usedWoIds = new Set<string>();
@@ -238,8 +248,8 @@ export const DirectorExecutiveMapView: React.FC<DirectorExecutiveMapViewProps> =
         sourceType: "report",
         title: rep.title,
         description: rep.description || "",
-        address: rep.address || linkedWo?.address || `${city?.name || "Araucária"} - ${city?.state || "PR"}`,
-        neighborhood: extractNeighborhoodFromAddress(rep.address || linkedWo?.address),
+        address: rep.address || linkedWo?.address || "Endereço não informado",
+        neighborhood: extractNeighborhoodFromAddress(rep.address || linkedWo?.address, city?.name),
         sector,
         stage,
         priority,
@@ -277,8 +287,8 @@ export const DirectorExecutiveMapView: React.FC<DirectorExecutiveMapViewProps> =
         sourceType: "standalone_wo",
         title: wo.title,
         description: wo.description || wo.technical_instructions || "",
-        address: wo.address || `${city?.name || "Araucária"} - ${city?.state || "PR"}`,
-        neighborhood: extractNeighborhoodFromAddress(wo.address),
+        address: wo.address || "Endereço não informado",
+        neighborhood: extractNeighborhoodFromAddress(wo.address, city?.name),
         sector,
         stage,
         priority: normalizePriority(wo.priority),
@@ -294,7 +304,7 @@ export const DirectorExecutiveMapView: React.FC<DirectorExecutiveMapViewProps> =
     });
 
     return points;
-  }, [reports, workOrders]);
+  }, [reports, workOrders, city?.name, city?.state, user?.city_id]);
 
   // Diagnóstico de Concentração Territorial por Região (respeita filtros de secretaria, status e prioridade)
   const regionConcentration = useMemo(() => {
@@ -445,7 +455,7 @@ export const DirectorExecutiveMapView: React.FC<DirectorExecutiveMapViewProps> =
       const lngSum = mappedPoints.reduce((acc, p) => acc + p.longitude, 0);
       return [latSum / mappedPoints.length, lngSum / mappedPoints.length];
     }
-    return [city?.center_lat || -25.633835, city?.center_lng || -49.461966];
+    return [city?.center_lat ?? 0, city?.center_lng ?? 0];
   }, [mappedPoints.length, city?.center_lat, city?.center_lng]);
 
   const createExecutiveMarkerIcon = (pt: TerritorialPoint, isSelected: boolean) => {
@@ -486,6 +496,17 @@ export const DirectorExecutiveMapView: React.FC<DirectorExecutiveMapViewProps> =
     priorityFilter !== "all" ||
     selectedNeighborhood !== "all" ||
     searchQuery.trim() !== "";
+
+  if (!hasValidTenantCity) {
+    return (
+      <div className={`min-h-full w-full flex items-center justify-center p-6 ${isDark ? "bg-[#5A635C] text-white" : "bg-white text-[#183a2b]"}`}>
+        <div className={`max-w-lg rounded-3xl border p-8 text-center shadow-lg ${isDark ? "bg-white/5 border-white/10" : "bg-black/5 border-black/10"}`}>
+          <h2 className="text-2xl font-serif font-bold">Município não informado</h2>
+          <p className="mt-3 text-sm opacity-75">O mapa executivo exige um município ativo vinculado à sua conta.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

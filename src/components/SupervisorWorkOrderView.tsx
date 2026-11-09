@@ -27,11 +27,13 @@ import {
 import { useTheme } from "../ThemeContext";
 import { CATEGORIES_CONFIG, ReportCategory, ReportItem, UserProfile, WorkOrderItem, WorkOrderHistoryItem } from "../types";
 import { SafeLogoImage } from "./SafeLogoImage";
-import { supabase, isUUID, generateUUID } from "../lib/supabase";
+import { getSupabaseClientForCity } from "../lib/supabase";
 import { createWorkOrderClean, updateWorkOrderStatusUnified, getWorkOrderHistory } from "../lib/workOrderService";
+import { rowBelongsToCity } from "../domain/cityScopedRows";
 
 interface SupervisorWorkOrderViewProps {
   category?: string;
+  municipalityName?: string;
   user?: UserProfile;
   reports?: ReportItem[];
   onRefresh?: () => Promise<void>;
@@ -44,6 +46,7 @@ interface SupervisorWorkOrderViewProps {
 
 export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = ({
   category = "Pavimentação",
+  municipalityName = "município",
   user,
   reports = [],
   onRefresh,
@@ -73,14 +76,17 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
   useEffect(() => {
     if (selectedOrderDetail) {
       setLoadingHistory(true);
-      getWorkOrderHistory(selectedOrderDetail.id)
+      getWorkOrderHistory(
+        selectedOrderDetail.id,
+        selectedOrderDetail.city_id || user?.city_id || "",
+      )
         .then((h) => setOrderHistory(h))
         .catch((err) => console.warn("Erro ao buscar histórico da O.S.:", err))
         .finally(() => setLoadingHistory(false));
     } else {
       setOrderHistory([]);
     }
-  }, [selectedOrderDetail?.id]);
+  }, [selectedOrderDetail?.id, selectedOrderDetail?.city_id, user?.city_id]);
 
   // Form State
   const [orderTitle, setOrderTitle] = useState("");
@@ -150,29 +156,44 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
   const loadWorkOrders = async () => {
     try {
       setIsRefreshing(true);
+      const cityId = user?.city_id?.trim() || "";
+      if (!cityId) {
+        setWorkOrders([]);
+        setInternalReports([]);
+        setAvailableEmployees([]);
+        return;
+      }
+
       let dbOrders: WorkOrderItem[] = [];
       let dbReports: ReportItem[] = [];
+      const citySupabase = getSupabaseClientForCity(cityId);
 
-      if (supabase) {
+      if (citySupabase) {
         try {
-          const { data, error } = await supabase
+          const { data, error } = await citySupabase
             .from("work_orders")
             .select("*")
+            .eq("city_id", cityId)
             .order("created_at", { ascending: false });
           if (!error && data) {
-            dbOrders = data;
+            dbOrders = data.filter((order: WorkOrderItem) =>
+              rowBelongsToCity(order, cityId, "araucaria-pr"),
+            );
           }
         } catch (dbErr) {
           console.warn("Tabela work_orders no Supabase:", dbErr);
         }
 
         try {
-          const { data: repData, error: repErr } = await supabase
+          const { data: repData, error: repErr } = await citySupabase
             .from("reports")
             .select("*")
+            .eq("city_id", cityId)
             .order("created_at", { ascending: false });
           if (!repErr && repData) {
-            dbReports = repData.map((r: any) => ({
+            dbReports = repData.filter((report: any) =>
+              rowBelongsToCity(report, cityId, "araucaria-pr"),
+            ).map((r: any) => ({
               ...r,
               category:
                 r.category ||
@@ -187,23 +208,28 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         }
       }
 
-      // Work Orders merge
+      // Work orders and citizen reports stay inside the supervisor's assigned municipality.
       const stored = localStorage.getItem("commuaria_work_orders");
-      let localList: WorkOrderItem[] = stored ? JSON.parse(stored) : [];
+      const localOrdersValue = stored ? JSON.parse(stored) : [];
+      const localList: WorkOrderItem[] = Array.isArray(localOrdersValue) ? localOrdersValue : [];
       const merged = [...dbOrders];
-      localList.forEach((lo) => {
-        if (!merged.some((m) => m.id === lo.id || m.order_number === lo.order_number)) {
-          merged.push(lo);
+      localList.forEach((order) => {
+        if (!rowBelongsToCity(order, cityId, "araucaria-pr")) return;
+        if (!merged.some((existing) => existing.id === order.id || existing.order_number === order.order_number)) {
+          merged.push(order);
         }
       });
 
-      // Reports merge
       const storedReports = localStorage.getItem("commuaria_reports");
-      let localReportsList: ReportItem[] = storedReports ? JSON.parse(storedReports) : [];
-      const mergedReports = [...dbReports];
-      localReportsList.forEach((lr) => {
-        if (!mergedReports.some((mr) => mr.id === lr.id)) {
-          mergedReports.push(lr);
+      const localReportsValue = storedReports ? JSON.parse(storedReports) : [];
+      const localReportsList: ReportItem[] = Array.isArray(localReportsValue) ? localReportsValue : [];
+      const mergedReports = dbReports.filter((report) =>
+        rowBelongsToCity(report, cityId, "araucaria-pr"),
+      );
+      localReportsList.forEach((report) => {
+        if (!rowBelongsToCity(report, cityId, "araucaria-pr")) return;
+        if (!mergedReports.some((existing) => existing.id === report.id)) {
+          mergedReports.push(report);
         }
       });
       setInternalReports(mergedReports);
@@ -217,21 +243,25 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
 
       // Load available technicians (Funcionários)
       try {
-        const localProfiles: UserProfile[] = JSON.parse(
-          localStorage.getItem("commuaria_profiles") || "[]"
-        );
+        const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+        const localProfiles: UserProfile[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
         let employees = localProfiles.filter(
-          (p) => p.role === "funcionario" && (!p.assigned_category || matchesCurrentSector(p.assigned_category))
+          (profile) =>
+            profile.role === "funcionario" &&
+            profile.city_id === cityId &&
+            (!profile.assigned_category || matchesCurrentSector(profile.assigned_category)),
         );
 
-        if (supabase) {
-          const { data: supaEmps } = await supabase
+        if (citySupabase) {
+          const { data: supaEmps } = await citySupabase
             .from("profiles")
             .select("*")
-            .eq("role", "funcionario");
+            .eq("role", "funcionario")
+            .eq("city_id", cityId);
           if (supaEmps) {
             supaEmps.forEach((sp: any) => {
               if (
+                sp.city_id === cityId &&
                 (!sp.assigned_category || matchesCurrentSector(sp.assigned_category)) &&
                 !employees.some((e) => e.id === sp.id || (e.email && e.email === sp.email))
               ) {
@@ -257,7 +287,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
 
   useEffect(() => {
     loadWorkOrders();
-  }, [assignedCategory]);
+  }, [assignedCategory, user?.city_id]);
 
   // Set default deadline (e.g. 48h from now)
   useEffect(() => {
@@ -284,6 +314,10 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
       setErrorMessage("Por favor, informe a localização/endereço da manutenção.");
       return;
     }
+    if (!user?.city_id) {
+      setErrorMessage("Não foi possível identificar o município da sua conta.");
+      return;
+    }
 
     setIsSubmitting(true);
     setErrorMessage(null);
@@ -300,6 +334,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
         title: orderTitle.trim(),
         category: assignedCategory,
         address: orderAddress.trim(),
+        city_id: user.city_id,
         priority: orderPriority,
         deadline: orderDeadline,
         assigned_team: orderTeam.trim() || (assignedEmp ? `Técnico ${assignedEmp.name || assignedEmp.email}` : "Equipe Operacional de Plantão"),
@@ -319,12 +354,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
       const matchedLinkedReport = reports.find((r) => r.id === linkedReportId);
       await createWorkOrderClean({
         order: newOrder,
-        creator: user || {
-          id: "supervisor_1",
-          name: "Supervisor do Setor",
-          email: "supervisor@commuaria.pr.gov.br",
-          role: "supervisor",
-        },
+        creator: user,
         linkedReport: matchedLinkedReport || null,
       });
 
@@ -364,6 +394,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
     newStatus: "open" | "dispatched" | "in_progress" | "completed" | "cancelled" | "impossible",
     notes?: string
   ) => {
+    if (!user?.city_id) return;
     try {
       const targetOrder = workOrders.find((o) => o.id === orderId);
       if (!targetOrder) return;
@@ -371,19 +402,17 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
       const updated = await updateWorkOrderStatusUnified({
         workOrder: targetOrder,
         newStatus,
-        agentUser: user || {
-          id: "supervisor_1",
-          name: "Supervisor do Setor",
-          email: "supervisor@commuaria.pr.gov.br",
-          role: "supervisor",
-        },
+        agentUser: user,
         message: notes || `Situação atualizada pelo supervisor para "${newStatus}".`,
       });
 
       await loadWorkOrders();
       if (selectedOrderDetail && selectedOrderDetail.id === orderId) {
         setSelectedOrderDetail(updated);
-        const updatedHistory = await getWorkOrderHistory(orderId);
+        const updatedHistory = await getWorkOrderHistory(
+          updated.id,
+          updated.city_id || targetOrder.city_id || user?.city_id || "",
+        );
         setOrderHistory(updatedHistory);
       }
       if (onRefresh) await onRefresh();
@@ -729,7 +758,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
                     isDark ? "text-white/60" : "text-[#2d4a3b]/70"
                   }`}
                 >
-                  Reclamações e solicitações enviadas pelos cidadãos de Araucária para o setor de {assignedCategory}.
+                  Reclamações e solicitações enviadas pelos cidadãos de {municipalityName} para o setor de {assignedCategory}.
                 </p>
               </div>
 
@@ -829,7 +858,7 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
 
                         <div className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
                           <MapPin size={13} className="text-red-500 shrink-0" />
-                          <span className="truncate">{report.address || "Araucária"}</span>
+                            <span className="truncate">{report.address || "Endereço não informado"}</span>
                         </div>
 
                         {report.status_notes && (
@@ -985,12 +1014,12 @@ export const SupervisorWorkOrderView: React.FC<SupervisorWorkOrderViewProps> = (
                 }`}
               >
                 <MapPin size={14} className="text-emerald-500" />
-                Localização / Endereço Completo em Araucária *
+                Localização / Endereço Completo em {municipalityName} *
               </label>
               <input
                 type="text"
                 required
-                placeholder="Ex: Rua Presidente Carlos Cavalcanti, nº 450 - Centro (próximo à praça)"
+                placeholder="Ex.: Rua Exemplo, nº 100 - Centro"
                 value={orderAddress}
                 onChange={(e) => setOrderAddress(e.target.value)}
                 className={`w-full px-4 py-2.5 rounded-2xl text-xs sm:text-sm border focus:outline-none focus:ring-2 focus:ring-emerald-500/40 ${

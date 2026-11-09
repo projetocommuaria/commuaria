@@ -239,7 +239,7 @@ export const EmployeeFieldLogView: React.FC<EmployeeFieldLogViewProps> = ({
   const loadWorkOrders = async () => {
     setLoading(true);
     try {
-      const list = await fetchSystemWorkOrders(user.city_id || "araucaria-pr");
+      const list = await fetchSystemWorkOrders(user.city_id);
       setWorkOrders(list);
     } finally {
       setLoading(false);
@@ -256,8 +256,16 @@ export const EmployeeFieldLogView: React.FC<EmployeeFieldLogViewProps> = ({
       await loadWorkOrders();
       if (onRefresh) await onRefresh();
       if (activeWoId) {
-        const hist = await getWorkOrderHistory(activeWoId);
-        setHistoryItems(hist);
+        const selectedOrder = workOrders.find(
+          (order) => order.id === activeWoId || order.order_number === activeWoId,
+        );
+        if (selectedOrder) {
+          const hist = await getWorkOrderHistory(
+            selectedOrder.id,
+            selectedOrder.city_id || user.city_id || "",
+          );
+          setHistoryItems(hist);
+        }
       }
     } finally {
       setTimeout(() => setIsRefreshing(false), 350);
@@ -433,11 +441,14 @@ export const EmployeeFieldLogView: React.FC<EmployeeFieldLogViewProps> = ({
       return;
     }
     setLoadingHistory(true);
-    getWorkOrderHistory(activeScheduledItem.wo.id)
+    getWorkOrderHistory(
+      activeScheduledItem.wo.id,
+      activeScheduledItem.wo.city_id || user.city_id || "",
+    )
       .then((hist) => setHistoryItems(hist))
       .catch(() => setHistoryItems([]))
       .finally(() => setLoadingHistory(false));
-  }, [activeScheduledItem?.wo.id]);
+  }, [activeScheduledItem?.wo.id, activeScheduledItem?.wo.city_id, user.city_id]);
 
   // Chamado cidadão vinculado (com proteção LGPD para Funcionário)
   const linkedReport = useMemo(() => {

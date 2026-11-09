@@ -61,7 +61,12 @@ import {
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
-import { supabase, isRealSupabase, generateUUID, isUUID } from "./lib/supabase";
+import {
+  getSupabaseClientForCity,
+  isRealSupabaseForCity,
+  generateUUID,
+  isUUID,
+} from "./lib/supabase";
 import {
   AppNavTab,
   CATEGORIES_CONFIG,
@@ -76,7 +81,22 @@ import { SupervisorManagerModal } from "./components/SupervisorManagerModal";
 import { DatabaseManagerModal } from "./components/DatabaseManagerModal";
 import { AdminAccountsView } from "./components/AdminAccountsView";
 import { AdminCitiesModal } from "./components/AdminCitiesModal";
-import { cityFeature, fetchCities, sanitizePublicLocation, sanitizePublicText } from "./lib/cityService";
+import {
+  cityFeature,
+  fetchCities,
+  fetchPublicCityReports,
+  sanitizePublicLocation,
+  sanitizePublicText,
+} from "./lib/cityService";
+import { replaceCityRows, rowBelongsToCity, rowsForCity } from "./domain/cityScopedRows";
+import { addReportDeletionMarker, isReportDeletedInCity } from "./domain/reportDeletion";
+import { findUnambiguousProfileByIdentity } from "./domain/profileIdentity";
+import {
+  isLegacyGlobalTenantAdmin,
+  resolveActiveCityId,
+  resolveLegacyTenantPrincipal,
+  type TenantPrincipal,
+} from "./domain/tenantAccess";
 import { DEFAULT_SEEDED_CITIES } from "./data/rmcIbgeCities";
 import { BlockedAccountModal } from "./components/BlockedAccountModal";
 import { checkAccountBlockStatus, BlockStatusResult } from "./utils/blockUtils";
@@ -307,10 +327,12 @@ const SignupView = ({
   onBack,
   onSignup,
   cities,
+  onCityChange,
 }: {
   onBack: () => void;
   onSignup: (data: { id?: string; name: string; email: string; password: string; city_id: string }) => void;
   cities: CityItem[];
+  onCityChange: (cityId: string) => void;
 }) => {
   const { isDark } = useTheme();
   const [name, setName] = useState("");
@@ -331,13 +353,18 @@ const SignupView = ({
       setError("Selecione uma cidade atendida pelo Commuária.");
       return;
     }
+    const citySupabase = getSupabaseClientForCity(selectedCity.id);
+    if (!citySupabase) {
+      setError(`O projeto Supabase de ${selectedCity.name} não está configurado; o cadastro não foi enviado a outro município.`);
+      return;
+    }
     setError("");
 
     let registeredUserId: string | undefined = undefined;
 
-    if (supabase) {
+    if (citySupabase) {
       try {
-        const { data, error: supaError } = await supabase.auth.signUp({
+        const { data, error: supaError } = await citySupabase.auth.signUp({
           email: email.trim().toLowerCase(),
           password: password.trim(),
           options: {
@@ -365,7 +392,7 @@ const SignupView = ({
         if (data?.user) {
           registeredUserId = data.user.id;
           try {
-            await supabase.from("profiles").upsert({
+            await citySupabase.from("profiles").upsert({
               id: data.user.id,
               name: name.trim(),
               email: email.trim().toLowerCase(),
@@ -471,7 +498,11 @@ const SignupView = ({
               <select
                 required
                 value={cityId}
-                onChange={(event) => { setCityId(event.target.value); setError(""); }}
+                onChange={(event) => {
+                  setCityId(event.target.value);
+                  onCityChange(event.target.value);
+                  setError("");
+                }}
                 className={`mt-1.5 w-full backdrop-blur-[6px] border rounded-full px-8 py-3.5 transition-all shadow-inner focus:outline-none ${
                   isDark
                     ? "bg-[#34433f] border-white/15 text-white focus:ring-1 focus:ring-white/20"
@@ -546,13 +577,20 @@ const ForgotPasswordView = ({
   onBack,
   initialStep = "email",
   onChangeStep,
+  cities,
+  initialCityId,
+  onCityChange,
 }: {
   onBack: () => void;
   initialStep?: "email" | "code" | "reset";
   onChangeStep?: (step: "email" | "code" | "reset") => void;
+  cities: CityItem[];
+  initialCityId: string;
+  onCityChange: (cityId: string) => void;
 }) => {
   const { isDark } = useTheme();
   const [step, setStep] = useState<"email" | "code" | "reset">(initialStep);
+  const [cityId, setCityId] = useState(initialCityId);
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -563,6 +601,10 @@ const ForgotPasswordView = ({
   useEffect(() => {
     setStep(initialStep);
   }, [initialStep]);
+
+  useEffect(() => {
+    setCityId(initialCityId);
+  }, [initialCityId]);
 
   const handleStepChange = (newStep: "email" | "code" | "reset") => {
     setStep(newStep);
@@ -580,8 +622,13 @@ const ForgotPasswordView = ({
     setError("");
     setIsSubmitting(true);
     try {
-      if (supabase) {
-        const { error: supaError } = await supabase.auth.resetPasswordForEmail(
+      const citySupabase = getSupabaseClientForCity(cityId);
+      if (!citySupabase) {
+        setError("O projeto Supabase do município selecionado não está configurado.");
+        return;
+      }
+      if (citySupabase) {
+        const { error: supaError } = await citySupabase.auth.resetPasswordForEmail(
           email.trim(),
           {
             redirectTo: window.location.origin,
@@ -615,9 +662,14 @@ const ForgotPasswordView = ({
     setError("");
     setIsSubmitting(true);
     try {
-      if (supabase) {
+      const citySupabase = getSupabaseClientForCity(cityId);
+      if (!citySupabase) {
+        setError("O projeto Supabase do município selecionado não está configurado.");
+        return;
+      }
+      if (citySupabase) {
         // Primeiro tenta verificar o código real via Supabase OTP
-        const { error: supaError } = await supabase.auth.verifyOtp({
+        const { error: supaError } = await citySupabase.auth.verifyOtp({
           email: email.trim(),
           token: code.trim(),
           type: "recovery",
@@ -662,8 +714,13 @@ const ForgotPasswordView = ({
     setError("");
     setIsSubmitting(true);
     try {
-      if (supabase) {
-        const { error: supaError } = await supabase.auth.updateUser({
+      const citySupabase = getSupabaseClientForCity(cityId);
+      if (!citySupabase) {
+        setError("O projeto Supabase do município selecionado não está configurado.");
+        return;
+      }
+      if (citySupabase) {
+        const { error: supaError } = await citySupabase.auth.updateUser({
           password: newPassword,
         });
         if (supaError) {
@@ -795,6 +852,30 @@ const ForgotPasswordView = ({
           {/* Dynamic Inputs Based on Step */}
           <div className="space-y-4 mb-2">
             {step === "email" && (
+              <label className={`block text-left text-xs font-semibold ${isDark ? "text-white/85" : "text-[#183a2b]"}`}>
+                Município da conta
+                <select
+                  required
+                  value={cityId}
+                  onChange={(event) => {
+                    setCityId(event.target.value);
+                    onCityChange(event.target.value);
+                    setError("");
+                  }}
+                  className={`mt-1.5 w-full backdrop-blur-[6px] border rounded-full px-7 py-3.5 transition-all shadow-inner focus:outline-none ${
+                    isDark
+                      ? "bg-[#34433f] border-white/15 text-white"
+                      : "bg-white/90 border-black/15 text-[#183a2b]"
+                  }`}
+                >
+                  <option value="">Selecione seu município</option>
+                  {cities.filter((city) => city.is_active).map((city) => (
+                    <option key={city.id} value={city.id}>{city.name} · {city.state}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {step === "email" && (
               <input
                 type="email"
                 placeholder="E-mail cadastrado"
@@ -872,27 +953,56 @@ const LoginView = ({
   onBlocked,
   onGoToSignup,
   onForgotPassword,
+  cities,
+  initialCityId,
+  onCityChange,
 }: {
   onBack: () => void;
   onLogin: (
     role?: UserRole,
     assignedCategory?: string | null,
-    data?: { id?: string; name?: string; email: string; password: string; city_id?: string },
+    data?: {
+      id?: string;
+      name?: string;
+      email: string;
+      password: string;
+      city_id?: string | null;
+      auth_city_id?: string;
+    },
   ) => void;
   onBlocked?: (blockInfo: BlockStatusResult, email: string) => void;
   onGoToSignup: () => void;
-  onForgotPassword: () => void;
+  onForgotPassword: (cityId: string) => void;
+  cities: CityItem[];
+  initialCityId: string;
+  onCityChange: (cityId: string) => void;
 }) => {
   const { isDark } = useTheme();
+  const [selectedCityId, setSelectedCityId] = useState(initialCityId);
   const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const availableCities = cities.filter((city) => city.is_active);
+
+  useEffect(() => {
+    setSelectedCityId(initialCityId);
+  }, [initialCityId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!loginId.trim() || !password.trim()) {
       setError("Por favor, preencha todos os campos obrigatórios.");
+      return;
+    }
+    if (!availableCities.some((city) => city.id === selectedCityId)) {
+      setError("Selecione o município da conta antes de entrar.");
+      return;
+    }
+    const citySupabase = getSupabaseClientForCity(selectedCityId);
+    const cityIsRealSupabase = isRealSupabaseForCity(selectedCityId);
+    if (!citySupabase) {
+      setError("O projeto Supabase deste município não está configurado; o login não foi enviado a outro município.");
       return;
     }
     setError("");
@@ -907,15 +1017,19 @@ const LoginView = ({
         if (targetEmail === "admin") {
           targetEmail = "admin@commuaria.com";
         } else {
-          // Check local profiles for email corresponding to name
-          const localProfiles: UserProfile[] = JSON.parse(
-            localStorage.getItem("commuaria_profiles") || "[]",
+          // Name-only login is allowed only when it resolves to one unique cached account.
+          const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+          const localProfiles: UserProfile[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+          const nameMatches = localProfiles.filter(
+            (profile) =>
+              (profile.name || "").trim().toLowerCase() === cleanId &&
+              profile.email?.trim() &&
+              (profile.city_id?.trim() === selectedCityId ||
+                (selectedCityId === "araucaria-pr" && isLegacyGlobalTenantAdmin(profile))),
           );
-          const foundProf = localProfiles.find(
-            (p) => (p.name || "").toLowerCase() === cleanId
-          );
-          if (foundProf?.email) {
-            targetEmail = foundProf.email.toLowerCase();
+          const uniqueEmails = new Set(nameMatches.map((profile) => profile.email.trim().toLowerCase()));
+          if (uniqueEmails.size === 1) {
+            targetEmail = Array.from(uniqueEmails)[0];
           } else {
             setError("Por favor, informe seu e-mail completo de cadastro.");
             setIsSubmitting(false);
@@ -924,15 +1038,10 @@ const LoginView = ({
         }
       }
 
-      const isMasterAdminEmail =
-        targetEmail === "admin@commuaria.com" ||
-        targetEmail === "admin" ||
-        targetEmail === "projetocomnuaria@gmail.com";
-
-      // 1. Authenticate with Supabase Auth
-      if (supabase) {
+      // 1. Authenticate against the selected municipality's Supabase Auth.
+      if (citySupabase) {
         try {
-          const { data, error: supaError } = await supabase.auth.signInWithPassword({
+          const { data, error: supaError } = await citySupabase.auth.signInWithPassword({
             email: targetEmail,
             password: password.trim(),
           });
@@ -941,7 +1050,7 @@ const LoginView = ({
             // Fetch real role and assigned_category from profiles table in Supabase
             let resolvedProfile: any = null;
             try {
-              const { data: profile } = await supabase
+              const { data: profile } = await citySupabase
                 .from("profiles")
                 .select("*")
                 .eq("id", data.user.id)
@@ -951,9 +1060,9 @@ const LoginView = ({
               console.warn("Erro ao buscar profile:", e);
             }
 
-            if (!resolvedProfile?.role || resolvedProfile.role === "user") {
+            if (!resolvedProfile) {
               try {
-                const { data: profileByEmail } = await supabase
+                const { data: profileByEmail } = await citySupabase
                   .from("profiles")
                   .select("*")
                   .eq("email", targetEmail)
@@ -966,56 +1075,60 @@ const LoginView = ({
               }
             }
 
-            const localProfiles: UserProfile[] = JSON.parse(
-              localStorage.getItem("commuaria_profiles") || "[]",
+            const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+            const localProfiles: UserProfile[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+            const tenantLocalProfiles = localProfiles.filter(
+              (profile) =>
+                profile.city_id?.trim() === selectedCityId ||
+                (selectedCityId === "araucaria-pr" && isLegacyGlobalTenantAdmin(profile)),
             );
-            const matchedLocalProfile = localProfiles.find(
-              (p) => (p.email || "").toLowerCase().trim() === targetEmail
+            const matchedLocalProfile = findUnambiguousProfileByIdentity(
+              tenantLocalProfiles,
+              data.user.id,
+              targetEmail,
             );
 
-            // Determine role hierarchy:
-            // 1. Admin: is_admin === true OR role === 'admin' OR master admin email
-            // 2. Diretor: role === 'diretor'
-            // 3. Supervisor: role === 'supervisor'
-            // 4. Funcionário: role === 'funcionario'
-            // 5. Citizen (user)
-            let finalRole: UserRole = "user";
-            const isAdminAccount =
-              resolvedProfile?.is_admin === true ||
-              resolvedProfile?.role === "admin" ||
-              matchedLocalProfile?.is_admin === true ||
-              matchedLocalProfile?.role === "admin" ||
-              isMasterAdminEmail;
-
-            if (isAdminAccount) {
-              finalRole = "admin";
-            } else if (
-              resolvedProfile?.role === "diretor" ||
-              matchedLocalProfile?.role === "diretor"
+            // A database profile is authoritative when present; cached roles are fallback-only.
+            const roleFromProfile = (profile: any): UserRole => {
+              if (isLegacyGlobalTenantAdmin(profile)) return "admin";
+              if (profile?.role === "diretor" || profile?.role === "supervisor" || profile?.role === "funcionario") {
+                return profile.role;
+              }
+              return "user";
+            };
+            const finalRole: UserRole = resolvedProfile
+              ? roleFromProfile(resolvedProfile)
+              : roleFromProfile(matchedLocalProfile);
+            const authenticatedProfileCityId =
+              resolvedProfile?.city_id?.trim() || matchedLocalProfile?.city_id?.trim() || "";
+            if (
+              cityIsRealSupabase &&
+              finalRole !== "admin" &&
+              authenticatedProfileCityId !== selectedCityId
             ) {
-              finalRole = "diretor";
-            } else if (
-              resolvedProfile?.role === "supervisor" ||
-              matchedLocalProfile?.role === "supervisor"
-            ) {
-              finalRole = "supervisor";
-            } else if (
-              resolvedProfile?.role === "funcionario" ||
-              matchedLocalProfile?.role === "funcionario"
-            ) {
-              finalRole = "funcionario";
-            } else {
-              finalRole = "user";
+              await citySupabase.auth.signOut();
+              setError("A conta não tem vínculo validado com o município selecionado.");
+              setIsSubmitting(false);
+              return;
             }
 
+            const localProfileMatchesDatabaseTenant = Boolean(
+              resolvedProfile &&
+              matchedLocalProfile &&
+              matchedLocalProfile.id === resolvedProfile.id &&
+              matchedLocalProfile.city_id?.trim() === resolvedProfile.city_id?.trim(),
+            );
+            const localFallbackProfile = resolvedProfile
+              ? localProfileMatchesDatabaseTenant ? matchedLocalProfile : null
+              : matchedLocalProfile;
             const finalCategory =
               resolvedProfile?.assigned_category ||
-              matchedLocalProfile?.assigned_category ||
+              localFallbackProfile?.assigned_category ||
               (finalRole === "supervisor" || finalRole === "funcionario" ? "Pavimentação" : null);
 
             const finalName =
               resolvedProfile?.name ||
-              matchedLocalProfile?.name ||
+              localFallbackProfile?.name ||
               data.user.user_metadata?.name ||
               targetEmail.split("@")[0];
 
@@ -1038,14 +1151,17 @@ const LoginView = ({
               name: finalName,
               email: targetEmail,
               password,
-              city_id: resolvedProfile?.city_id || matchedLocalProfile?.city_id || "araucaria-pr",
+              city_id: resolvedProfile
+                ? resolvedProfile.city_id?.trim() || null
+                : matchedLocalProfile?.city_id?.trim(),
+              auth_city_id: selectedCityId,
             });
             return;
           }
 
           // If Supabase returned an authentication error:
           if (supaError) {
-            if (isRealSupabase) {
+            if (cityIsRealSupabase) {
               const errStr = (supaError.message || "").toLowerCase();
               let msg = "E-mail ou senha incorretos. Verifique suas credenciais ou crie uma conta caso ainda não seja cadastrado.";
               if (
@@ -1068,7 +1184,7 @@ const LoginView = ({
           }
         } catch (err: any) {
           console.warn("Supabase auth error:", err);
-          if (isRealSupabase) {
+          if (cityIsRealSupabase) {
             setError("Erro ao autenticar no Supabase: " + (err.message || "Tente novamente"));
             setIsSubmitting(false);
             return;
@@ -1084,17 +1200,24 @@ const LoginView = ({
         localStorage.getItem("commuaria_users") || "[]",
       );
 
-      const matchedLocalProfile = localProfiles.find((p) => {
-        const pEmail = (p.email || "").toLowerCase();
-        const pName = (p.name || "").toLowerCase();
-        return targetEmail === pEmail || cleanId === pName;
-      });
-
-      const matchedLocalUser = localUsers.find((u: any) => {
-        const uEmail = (u.email || "").toLowerCase();
-        const uName = (u.name || "").toLowerCase();
-        return targetEmail === uEmail || cleanId === uName;
-      });
+      const tenantLocalIdentities = [...localProfiles, ...localUsers].filter(
+        (profile: any) =>
+          profile.city_id?.trim() === selectedCityId ||
+          (selectedCityId === "araucaria-pr" && isLegacyGlobalTenantAdmin(profile)),
+      );
+      const localIdentity = findUnambiguousProfileByIdentity(
+        tenantLocalIdentities,
+        null,
+        targetEmail,
+      );
+      const matchesLocalIdentity = (candidate: any) => Boolean(
+        localIdentity &&
+        candidate.id === localIdentity.id &&
+        (candidate.email || "").trim().toLowerCase() === (localIdentity.email || "").trim().toLowerCase() &&
+        (candidate.city_id || "").trim() === (localIdentity.city_id || "").trim(),
+      );
+      const matchedLocalProfile = localIdentity ? localProfiles.find(matchesLocalIdentity) : undefined;
+      const matchedLocalUser = localIdentity ? localUsers.find(matchesLocalIdentity) : undefined;
 
       if (matchedLocalProfile || matchedLocalUser) {
         const storedPassword = matchedLocalUser?.password || matchedLocalProfile?.password;
@@ -1106,11 +1229,8 @@ const LoginView = ({
 
         let userRole: UserRole = "user";
         const isAdminAccount =
-          matchedLocalProfile?.is_admin === true ||
-          matchedLocalProfile?.role === "admin" ||
-          matchedLocalUser?.is_admin === true ||
-          matchedLocalUser?.role === "admin" ||
-          isMasterAdminEmail;
+          isLegacyGlobalTenantAdmin(matchedLocalProfile) ||
+          isLegacyGlobalTenantAdmin(matchedLocalUser);
 
         if (isAdminAccount) {
           userRole = "admin";
@@ -1159,7 +1279,8 @@ const LoginView = ({
           name: matchedLocalProfile?.name || matchedLocalUser?.name || targetEmail.split("@")[0],
           email: targetEmail,
           password,
-          city_id: matchedLocalProfile?.city_id || matchedLocalUser?.city_id || "araucaria-pr",
+          city_id: matchedLocalProfile?.city_id || matchedLocalUser?.city_id,
+          auth_city_id: selectedCityId,
         });
         return;
       }
@@ -1245,6 +1366,28 @@ const LoginView = ({
 
           {/* Input Fields */}
           <div className="space-y-3 mb-2">
+            <label className={`block text-left text-xs font-semibold ${isDark ? "text-white/85" : "text-[#183a2b]"}`}>
+              Município da conta
+              <select
+                required
+                value={selectedCityId}
+                onChange={(event) => {
+                  setSelectedCityId(event.target.value);
+                  onCityChange(event.target.value);
+                  setError("");
+                }}
+                className={`mt-1.5 w-full backdrop-blur-[6px] border rounded-full px-7 py-3.5 transition-all shadow-inner focus:outline-none ${
+                  isDark
+                    ? "bg-[#34433f] border-white/15 text-white"
+                    : "bg-white/90 border-black/15 text-[#183a2b]"
+                }`}
+              >
+                <option value="">Selecione seu município</option>
+                {availableCities.map((city) => (
+                  <option key={city.id} value={city.id}>{city.name} · {city.state}</option>
+                ))}
+              </select>
+            </label>
             <input
               type="text"
               placeholder="Nome ou E-mail"
@@ -1269,7 +1412,7 @@ const LoginView = ({
             />
             <button
               type="button"
-              onClick={onForgotPassword}
+              onClick={() => onForgotPassword(selectedCityId)}
               className={`font-serif italic text-xs hover:underline transition-all block w-full text-center mt-1 ${
                 isDark ? "text-white/80 hover:text-white" : "text-[#183a2b]/80 hover:text-[#183a2b]"
               }`}
@@ -1351,7 +1494,7 @@ const LandingView = ({
   const cityState = currentCity?.state || "";
   const selectedCityId = currentCity?.id || "";
   const displayReports = Array.isArray(reports)
-    ? reports.filter((report: any) => (report.city_id || "araucaria-pr") === selectedCityId)
+    ? reports.filter((report: any) => rowBelongsToCity(report, selectedCityId, "araucaria-pr"))
     : [];
   const customLandingMarkerIcon = (status: string) =>
     L.divIcon({
@@ -2035,7 +2178,7 @@ const SettingsView = ({
   setAnonymous: (v: boolean) => void;
   onBack: () => void;
   onLogout: () => void;
-  onDeleteAccount?: () => void;
+  onDeleteAccount?: () => Promise<void> | void;
   onOpenDbManager?: () => void;
 }) => {
   const [notifications, setNotifications] = useState(() => {
@@ -2071,10 +2214,13 @@ const SettingsView = ({
       )
     ) {
       setIsDeleting(true);
-      if (onDeleteAccount) {
-        await onDeleteAccount();
+      try {
+        if (onDeleteAccount) await onDeleteAccount();
+      } catch (error: any) {
+        window.alert("Não foi possível excluir a conta: " + (error?.message || "tente novamente."));
+      } finally {
+        setIsDeleting(false);
       }
-      setIsDeleting(false);
     }
   };
 
@@ -2294,7 +2440,7 @@ const ProfileView = ({
     city_id?: string;
   };
   cityName: string;
-  onSave: (data: any) => void;
+  onSave: (data: any) => Promise<void> | void;
   onBack: () => void;
 }) => {
   const [name, setName] = useState(user.name);
@@ -2302,8 +2448,13 @@ const ProfileView = ({
   const [password, setPassword] = useState(user.password || "");
   const { isDark } = useTheme();
 
-  const handleSave = () => {
-    onSave({ name, email, password });
+  const handleSave = async () => {
+    try {
+      await onSave({ name, email, password });
+      window.alert("Perfil atualizado com sucesso.");
+    } catch (error: any) {
+      window.alert("Não foi possível atualizar o perfil: " + (error?.message || "tente novamente."));
+    }
   };
 
   return (
@@ -3107,7 +3258,7 @@ const AdminMapView = ({
 }) => {
   const { isDark } = useTheme();
   const [selectedReport, setSelectedReport] = useState<any | null>(null);
-  const mapCenter: [number, number] = [city?.center_lat || -25.633835, city?.center_lng || -49.461966];
+  const mapCenter: [number, number] = [city?.center_lat ?? 0, city?.center_lng ?? 0];
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "resolved">("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
@@ -3193,6 +3344,17 @@ const AdminMapView = ({
       iconSize: [32, 32],
       iconAnchor: [16, 32],
     });
+
+  if (!city) {
+    return (
+      <div className={`min-h-full w-full flex items-center justify-center p-6 ${isDark ? "bg-[#5A635C] text-white" : "bg-white text-[#183a2b]"}`}>
+        <div className={`max-w-lg rounded-3xl border p-8 text-center shadow-lg ${isDark ? "bg-white/5 border-white/10" : "bg-black/5 border-black/10"}`}>
+          <h2 className="text-2xl font-serif font-bold">Selecione um município</h2>
+          <p className="mt-3 text-sm opacity-75">Escolha um município válido para carregar o painel de ocorrências.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -3612,7 +3774,7 @@ const AdminMapView = ({
                       >
                         {selectedReport.anonimo
                           ? "Morador Anônimo"
-                          : "Morador de Araucária"}
+                          : "Morador do município"}
                       </strong>
                     </span>
                   </div>
@@ -3783,7 +3945,7 @@ const AdminTasksView = ({
               isDark ? "text-white/90" : "text-[#2d4a3b]"
             }`}
           >
-            Zeladoria colaborativa de Araucária.
+            Zeladoria colaborativa municipal.
           </p>
         </div>
       </div>
@@ -4077,10 +4239,13 @@ const ReportView = ({
   const [category, setCategory] = useState<ReportCategory>("Pavimentação");
   const [locationQuery, setLocationQuery] = useState("");
   const [mapCenter, setMapCenter] = useState<[number, number]>([
-    city?.center_lat || -25.633835,
-    city?.center_lng || -49.461966,
+    city?.center_lat ?? 0,
+    city?.center_lng ?? 0,
   ]);
   const [isLoadingAddress, setIsLoadingAddress] = useState(false);
+  const hasValidTenantCity = Boolean(
+    city?.is_active && city.id === currentUser?.city_id?.trim(),
+  );
   const [isSending, setIsSending] = useState(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -4115,15 +4280,26 @@ const ReportView = ({
   };
 
   useEffect(() => {
-    const center: [number, number] = [city?.center_lat || -25.633835, city?.center_lng || -49.461966];
-    handleMapMove(center[0], center[1]);
-  }, [city?.id]);
+    if (!city || !hasValidTenantCity) {
+      setLocationQuery("");
+      return;
+    }
+    const center: [number, number] = [city.center_lat, city.center_lng];
+    setMapCenter(center);
+    void handleMapMove(center[0], center[1]);
+  }, [city?.id, city?.center_lat, city?.center_lng, hasValidTenantCity]);
 
   const handleSendReport = async () => {
     if (!title.trim()) {
       alert("Por favor, descreva o problema.");
       return;
     }
+    const reportCityId = currentUser?.city_id?.trim();
+    if (!reportCityId || !city || city.id !== reportCityId || !city.is_active) {
+      alert("Não foi possível confirmar um município ativo vinculado à sua conta.");
+      return;
+    }
+    const citySupabase = getSupabaseClientForCity(reportCityId);
 
     setIsSending(true);
     try {
@@ -4131,9 +4307,9 @@ const ReportView = ({
       let activeUserEmail = currentUser?.email || "";
       const activeUserName = currentUser?.name || "Cidadão";
 
-      if (supabase) {
+      if (citySupabase) {
         try {
-          const { data: sessionData } = await supabase.auth.getSession();
+          const { data: sessionData } = await citySupabase.auth.getSession();
           if (sessionData?.session?.user?.id) {
             activeUserId = sessionData.session.user.id;
             if (sessionData.session.user.email) {
@@ -4194,16 +4370,15 @@ const ReportView = ({
       }
 
       const reportId = generateUUID();
-      const reportCityId = currentUser?.city_id || city?.id || "araucaria-pr";
       const newReportData: ReportItem = {
         id: reportId,
         city_id: reportCityId,
         title: title.trim(),
         description: title.trim(),
         category: category,
-        address: locationQuery || "Endereço não informado",
-        latitude: mapCenter[0] || city?.center_lat || -25.633835,
-        longitude: mapCenter[1] || city?.center_lng || -49.461966,
+        address: locationQuery || `Localização aproximada em ${city.name}`,
+        latitude: Number.isFinite(mapCenter[0]) ? mapCenter[0] : city.center_lat,
+        longitude: Number.isFinite(mapCenter[1]) ? mapCenter[1] : city.center_lng,
         image_url: imageUrl,
         anonymous: anonymous,
         user_id: activeUserId,
@@ -4215,18 +4390,19 @@ const ReportView = ({
       };
 
       // 1. Always save to LocalStorage first to guarantee immediate persistence
-      const localReports = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+      const localReportsValue = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+      const localReports = Array.isArray(localReportsValue) ? localReportsValue : [];
       localReports.unshift(newReportData);
       localStorage.setItem("commuaria_reports", JSON.stringify(localReports));
 
       // 2. Persist to Supabase
-      if (supabase) {
+      if (citySupabase) {
         try {
           const validUserId = isUUID(activeUserId) ? activeUserId : null;
           const formattedDesc = `[Categoria: ${category}]\n${title.trim()}`;
-          const safeAddress = locationQuery?.trim() || `${city?.name || "Araucária"} - ${city?.state || "PR"}`;
-          const safeLat = typeof mapCenter[0] === "number" && !isNaN(mapCenter[0]) ? mapCenter[0] : (city?.center_lat || -25.633835);
-          const safeLng = typeof mapCenter[1] === "number" && !isNaN(mapCenter[1]) ? mapCenter[1] : (city?.center_lng || -49.461966);
+          const safeAddress = locationQuery?.trim() || `${city.name} - ${city.state}`;
+          const safeLat = Number.isFinite(mapCenter[0]) ? mapCenter[0] : city.center_lat;
+          const safeLng = Number.isFinite(mapCenter[1]) ? mapCenter[1] : city.center_lng;
 
           const basePayload: any = {
             id: reportId,
@@ -4247,20 +4423,20 @@ const ReportView = ({
           };
 
           // Try 1: with category and user_id
-          let insertResult = await supabase.from("reports").insert([{ ...basePayload, category }]);
+          let insertResult = await citySupabase.from("reports").insert([{ ...basePayload, category }]);
 
           // If category column does not exist in schema (PGRST204)
           if (insertResult.error && insertResult.error.code === "PGRST204") {
-            insertResult = await supabase.from("reports").insert([basePayload]);
+            insertResult = await citySupabase.from("reports").insert([basePayload]);
           }
 
           // If foreign key constraint on user_id fails (23503), retry with user_id: null
           if (insertResult.error && insertResult.error.code === "23503") {
             const noFkPayload = { ...basePayload, user_id: null };
-            insertResult = await supabase.from("reports").insert([noFkPayload]);
+            insertResult = await citySupabase.from("reports").insert([noFkPayload]);
             if (insertResult.error && insertResult.error.code === "PGRST204") {
               delete noFkPayload.category;
-              insertResult = await supabase.from("reports").insert([noFkPayload]);
+              insertResult = await citySupabase.from("reports").insert([noFkPayload]);
             }
           }
 
@@ -4318,10 +4494,11 @@ const ReportView = ({
   const handleLocationSearch = async (
     e: React.KeyboardEvent<HTMLInputElement>,
   ) => {
-    if (e.key === "Enter" && locationQuery) {
+    if (e.key === "Enter" && locationQuery && city && hasValidTenantCity) {
       try {
+        const municipality = [city.name, city.state].filter(Boolean).join(", ");
         const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(`${locationQuery}, ${city?.name || "Araucária"}, ${city?.state || "PR"}`)}&format=json&limit=1`,
+          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(`${locationQuery}, ${municipality}`)}&format=json&limit=1`,
         );
         if (res.ok) {
           const data = await res.json();
@@ -4334,6 +4511,26 @@ const ReportView = ({
       }
     }
   };
+
+  if (!hasValidTenantCity) {
+    return (
+      <div className={`min-h-full w-full flex items-center justify-center p-6 ${isDark ? "bg-[#5A635C] text-white" : "bg-white text-[#183a2b]"}`}>
+        <div className={`max-w-lg rounded-3xl border p-8 text-center shadow-lg ${isDark ? "bg-white/5 border-white/10" : "bg-black/5 border-black/10"}`}>
+          <h2 className="text-2xl font-serif font-bold">Município não informado</h2>
+          <p className="mt-3 text-sm opacity-75">
+            Sua conta não está vinculada a um município ativo. Entre em contato com a administração municipal antes de registrar uma ocorrência.
+          </p>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="mt-6 rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800"
+          >
+            Sair da conta
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -6076,16 +6273,23 @@ const ReportDetailsModal = ({
     }
 
     const fetchAuthor = async () => {
+      const reportCityId = typeof report.city_id === "string" ? report.city_id.trim() : "";
+      if (!reportCityId) {
+        setAuthorName("Cidadão");
+        return;
+      }
       try {
-        if (!supabase) {
-          setAuthorName("Usuário de Araucária");
+        const citySupabase = getSupabaseClientForCity(reportCityId);
+        if (!citySupabase) {
+          setAuthorName("Usuário");
           return;
         }
-        const { data: profile } = await supabase
+        const { data: profile } = await citySupabase
           .from("profiles")
           .select("name")
           .eq("id", report.user_id)
-          .single();
+          .eq("city_id", reportCityId)
+          .maybeSingle();
         if (profile?.name) {
           setAuthorName(profile.name);
         } else {
@@ -6093,17 +6297,18 @@ const ReportDetailsModal = ({
             localStorage.getItem("commuaria_profiles") || "[]",
           );
           const matched = localProfiles.find(
-            (p: any) => p.id === report.user_id,
+            (p: any) =>
+              p.id === report.user_id && rowBelongsToCity(p, reportCityId, "araucaria-pr"),
           );
-          setAuthorName(matched?.name || "Cidadão de Araucária");
+          setAuthorName(matched?.name || "Cidadão");
         }
       } catch (err) {
-        setAuthorName("Cidadão de Araucária");
+        setAuthorName("Cidadão");
       }
     };
 
     fetchAuthor();
-  }, [report]);
+  }, [report, userRole]);
 
   const customMarkerIcon = (status: string) =>
     L.divIcon({
@@ -6467,7 +6672,7 @@ const ReportDetailsModal = ({
                   : "bg-black/5 border-black/10 text-[#183a2b]"
               }`}
             >
-              {report.address || "Araucária, PR"}
+              {report.address || "Localização não informada"}
             </p>
 
             {report.latitude && report.longitude && (
@@ -6568,7 +6773,26 @@ export function AppContent() {
   const [showAdminCitiesModal, setShowAdminCitiesModal] = useState(false);
   const [cities, setCities] = useState<CityItem[]>(DEFAULT_SEEDED_CITIES);
   const [activeCityId, setActiveCityId] = useState("araucaria-pr");
-  const activeCity = cities.find((city) => city.id === activeCityId) || cities.find((city) => city.id === "araucaria-pr") || null;
+  const [authCityId, setAuthCityId] = useState(() => {
+    try {
+      const storedSession = JSON.parse(localStorage.getItem("commuaria_active_session") || "null");
+      return (
+        storedSession?.city_id?.trim() ||
+        localStorage.getItem("commuaria_auth_city_id") ||
+        "araucaria-pr"
+      );
+    } catch {
+      return "araucaria-pr";
+    }
+  });
+  const changeAuthCity = (cityId: string) => {
+    setAuthCityId(cityId);
+    setActiveCityId(cityId);
+    try {
+      localStorage.setItem("commuaria_auth_city_id", cityId);
+    } catch (_) {}
+  };
+  const activeCity = cities.find((city) => city.id === activeCityId) || null;
   const [blockedModalInfo, setBlockedModalInfo] = useState<{
     blockInfo: BlockStatusResult;
     email: string;
@@ -6599,10 +6823,31 @@ export function AppContent() {
     resolved: 0,
     anonymous: false,
     role: "user",
-    city_id: "araucaria-pr",
     assigned_category: null,
   });
   const linkedCity = cities.find((city) => city.id === currentUser.city_id) || null;
+  const tenantPrincipal = resolveLegacyTenantPrincipal({
+    id: currentUser.id || "",
+    role: userRole,
+    is_admin: isAdmin,
+    city_id: currentUser.city_id,
+  });
+  const isGlobalTenantAdmin = tenantPrincipal.scope === "global";
+  const resolveTenantCity = (
+    principal: TenantPrincipal,
+    requestedCityId: string | null | undefined,
+  ): string | null => {
+    const selectableCityIds = new Set<string>(
+      cities
+        .filter((city) => principal.scope === "global" || city.is_active)
+        .map((city) => city.id),
+    );
+    return resolveActiveCityId(principal, requestedCityId, selectableCityIds);
+  };
+  const activeTenantCityId = resolveTenantCity(
+    tenantPrincipal,
+    isGlobalTenantAdmin ? activeCityId : currentUser.city_id,
+  );
   const [userReports, setUserReports] = useState<any[]>([]);
   const [forgotPasswordStep, setForgotPasswordStep] = useState<"email" | "code" | "reset">("email");
 
@@ -6616,27 +6861,44 @@ export function AppContent() {
   const [newsDbError, setNewsDbError] = useState<string | null>(null);
   const [showDbModal, setShowDbModal] = useState(false);
 
-  const fetchNewsList = async (cityOverride?: string) => {
-    const storedNews = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
-    const cityId = cityOverride || (isAdmin || userRole === "admin" ? activeCityId : currentUser.city_id || "araucaria-pr");
-    const local = (Array.isArray(storedNews) ? storedNews : []).filter((item: any) => (item.city_id || "araucaria-pr") === cityId);
+  const loadPublicMapReports = async (cityId: string) => {
+    const scopedCityId = cityId.trim();
+    if (!scopedCityId) {
+      setPublicMapReports([]);
+      return;
+    }
+    const reports = await fetchPublicCityReports(scopedCityId);
+    setPublicMapReports(reports);
+  };
 
-    if (!supabase) {
+  const fetchNewsList = async (cityId: string) => {
+    const scopedCityId = cityId.trim();
+    const citySupabase = getSupabaseClientForCity(scopedCityId);
+    const cityIsRealSupabase = isRealSupabaseForCity(scopedCityId);
+    if (!scopedCityId) {
+      setNewsList([]);
+      return;
+    }
+    const storedNewsValue = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+    const storedNews = Array.isArray(storedNewsValue) ? storedNewsValue : [];
+    const local = rowsForCity(storedNews, scopedCityId, "araucaria-pr");
+
+    if (!citySupabase || !cityIsRealSupabase) {
       setNewsList(local);
       return;
     }
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session } } = await citySupabase.auth.getSession();
       if (!session?.user) {
         // Anonymous landing pages must not read city-scoped news tables or local caches.
         setNewsList([]);
         return;
       }
-      const { data, error } = await supabase
+      const { data, error } = await citySupabase
         .from("news")
         .select("*")
-        .eq("city_id", cityId)
+        .eq("city_id", scopedCityId)
         .order("created_at", { ascending: false });
       
       if (error) throw error;
@@ -6644,7 +6906,9 @@ export function AppContent() {
       if (data) {
         setNewsDbError(null);
         // Combinar os itens do banco com os do localStorage para não perder nada de teste local
-        const merged = [...data];
+        const merged = data.filter((item: any) =>
+          rowBelongsToCity(item, scopedCityId, "araucaria-pr"),
+        );
         
         local.forEach((localItem: any) => {
           const exists = merged.some(
@@ -6665,7 +6929,10 @@ export function AppContent() {
         });
 
         // Salvar cópia mesclada atualizada no cache local do navegador
-        localStorage.setItem("commuaria_news", JSON.stringify(merged));
+        localStorage.setItem(
+          "commuaria_news",
+          JSON.stringify(replaceCityRows(storedNews, merged, scopedCityId, "araucaria-pr")),
+        );
         setNewsList(merged);
       } else {
         setNewsList(local);
@@ -6673,7 +6940,7 @@ export function AppContent() {
     } catch (err: any) {
       console.warn("Erro ao carregar notícias do Supabase, usando local:", err);
       if (err && (err.code === "42P01" || (err.message && err.message.includes("relation \"news\" does not exist")))) {
-        setNewsDbError("A tabela 'news' não existe no banco de dados do Supabase. Use o script SQL fornecido para criá-la.");
+        setNewsDbError("A tabela 'news' não foi encontrada. Verifique o esquema e o histórico de migrações no Dashboard; não execute um script consolidado.");
       } else {
         setNewsDbError("Não foi possível conectar ao banco de dados para sincronizar as notícias. Carregando dados do navegador.");
       }
@@ -6682,7 +6949,13 @@ export function AppContent() {
   };
 
   const handleAddNews = async (title: string, description: string, category: string) => {
-    const cityId = isAdmin || userRole === "admin" ? activeCityId : currentUser.city_id || "araucaria-pr";
+    const cityId = activeTenantCityId;
+    const citySupabase = getSupabaseClientForCity(cityId);
+    const cityIsRealSupabase = isRealSupabaseForCity(cityId);
+    if (!cityId) {
+      setNewsDbError("Não foi possível confirmar o município para publicar este comunicado.");
+      return;
+    }
     const newRecord = {
       id: "news_" + Math.random().toString(36).substring(2, 9),
       title,
@@ -6693,125 +6966,175 @@ export function AppContent() {
     };
 
     // 1. Sempre salvar no LocalStorage primeiro para garantir persistência imediata e robusta à falhas
-    const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+    const localValue = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+    const local = Array.isArray(localValue) ? localValue : [];
     local.unshift(newRecord);
     localStorage.setItem("commuaria_news", JSON.stringify(local));
-    setNewsList(local);
+    setNewsList(rowsForCity(local, cityId, "araucaria-pr"));
 
-    if (!supabase) return;
+    if (!citySupabase || !cityIsRealSupabase) return;
 
     try {
       // 2. Tentar enviar para a tabela oficial do Supabase
-      const { error } = await supabase
+      const { error } = await citySupabase
         .from("news")
         .insert({ title, description, category, city_id: cityId });
 
       if (error) throw error;
       
       // Se foi inserido com sucesso, recarrega do banco para sincronizar ids oficiais
-      await fetchNewsList();
+      await fetchNewsList(cityId);
     } catch (err) {
       console.error("Erro ao sincronizar notícia no Supabase (salvo no cache do navegador):", err);
     }
   };
 
   const handleDeleteNews = async (newsId: string) => {
-    // 1. Remover do cache local do navegador imediatamente
-    const local = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
-    const filtered = local.filter((n: any) => n.id !== newsId);
+    const cityId = activeTenantCityId;
+    const citySupabase = getSupabaseClientForCity(cityId);
+    const cityIsRealSupabase = isRealSupabaseForCity(cityId);
+    if (!cityId) return;
+    // 1. Remover apenas a notícia deste município do cache local.
+    const localValue = JSON.parse(localStorage.getItem("commuaria_news") || "[]");
+    const local = Array.isArray(localValue) ? localValue : [];
+    const filtered = local.filter(
+      (news: any) => !(news.id === newsId && rowBelongsToCity(news, cityId, "araucaria-pr")),
+    );
     localStorage.setItem("commuaria_news", JSON.stringify(filtered));
-    setNewsList(filtered);
+    setNewsList(rowsForCity(filtered, cityId, "araucaria-pr"));
 
-    if (!supabase) return;
+    if (!citySupabase || !cityIsRealSupabase) return;
 
     try {
-      // 2. Apagar no Supabase
-      const { error } = await supabase
+      // 2. Escopo explícito por município, além do RLS do banco.
+      const { error } = await citySupabase
         .from("news")
         .delete()
-        .eq("id", newsId);
+        .eq("id", newsId)
+        .eq("city_id", cityId);
 
       if (error) {
-        const itemToDelete = local.find((n: any) => n.id === newsId);
+        const itemToDelete = local.find(
+          (news: any) => news.id === newsId && rowBelongsToCity(news, cityId, "araucaria-pr"),
+        );
         if (itemToDelete) {
-          await supabase
+          const { error: fallbackError } = await citySupabase
             .from("news")
             .delete()
             .eq("title", itemToDelete.title)
-            .eq("description", itemToDelete.description);
+            .eq("description", itemToDelete.description)
+            .eq("city_id", cityId);
+          if (fallbackError) throw fallbackError;
         }
       }
-      
-      await fetchNewsList();
+
+      await fetchNewsList(cityId);
     } catch (err) {
       console.error("Erro ao apagar notícia no Supabase:", err);
     }
   };
 
-  const fetchSystemStatistics = async (cityOverride?: string) => {
-    const cityId = cityOverride || (isAdmin || userRole === "admin" ? activeCityId : currentUser.city_id || "araucaria-pr");
-    let reportsData: any[] = [];
+  const fetchSystemStatistics = async (
+    cityOverride?: string,
+    principalOverride?: TenantPrincipal,
+  ) => {
+    const principal = principalOverride || tenantPrincipal;
+    const requestedTenantCityId =
+      cityOverride !== undefined
+        ? cityOverride
+        : principal.scope === "global"
+        ? activeCityId
+        : principal.defaultCityId;
+    const cityId = resolveTenantCity(principal, requestedTenantCityId);
+    const citySupabase = getSupabaseClientForCity(cityId);
+    const cityIsRealSupabase = isRealSupabaseForCity(cityId);
+    const publicCityId = cityId;
+
     let publicReportsData: any[] = [];
-    let authenticated = false;
+    if (publicCityId) {
+      publicReportsData = await fetchPublicCityReports(publicCityId);
+    }
+    setPublicMapReports(publicReportsData);
+
+    if (!cityId) {
+      setNewsList([]);
+      setSystemPendingCount(0);
+      setSystemResolvedCount(0);
+      setSystemPendingReports([]);
+      setAllSystemReports([]);
+      return;
+    }
+
+    let reportsData: any[] = [];
+    const localUserBelongsToCity =
+      principal.scope === "global" || principal.cityIds?.includes(cityId) === true;
+    const localAuthenticated =
+      !cityIsRealSupabase &&
+      localUserBelongsToCity &&
+      Boolean(principal.userId || currentUser?.id || currentUser?.email);
+    let authenticated = localAuthenticated;
+    await fetchNewsList(cityId);
     try {
-      await fetchNewsList(cityId);
-      if (supabase) {
-        const { data: { session } } = await supabase.auth.getSession();
-        authenticated = Boolean(session?.user) || (!isRealSupabase && Boolean(currentUser?.id || currentUser?.email));
+      if (citySupabase) {
+        const { data: { session } } = await citySupabase.auth.getSession();
+        authenticated = Boolean(session?.user) || localAuthenticated;
         if (session?.user) {
           // Private dashboard data stays city-scoped by RLS and the explicit selector filter.
-          const { data, error } = await supabase
+          const { data, error } = await citySupabase
             .from("reports")
             .select("*")
             .eq("city_id", cityId)
             .order("created_at", { ascending: false });
           if (error) throw error;
-          reportsData = (data || []).map((r: any) => ({
-            ...r,
-            category: r.category || r.maintenance_type || (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) || "Outros",
-          }));
-        }
-        if (isRealSupabase) {
-          // The homepage map always uses the public-safe projection, including for signed-in sessions.
-          const { data, error } = await supabase.rpc("get_public_city_reports", { p_city_id: cityId });
-          if (error) throw error;
-          publicReportsData = (data || []).map((r: any) => ({
-            id: r.id,
-            city_id: r.city_id,
-            title: r.title,
-            description: r.short_description,
-            category: r.category || "Outros",
-            address: r.public_location,
-            latitude: r.latitude,
-            longitude: r.longitude,
-            status: r.status,
-            created_at: r.created_at,
-          }));
-          if (!session?.user) reportsData = publicReportsData;
+          reportsData = (data || [])
+            .filter((report: any) => rowBelongsToCity(report, cityId, "araucaria-pr"))
+            .map((r: any) => ({
+              ...r,
+              category: r.category || r.maintenance_type || (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) || "Outros",
+            }));
+        } else {
+          // Anonymous users only receive the sanitized public projection for their resolved municipality.
+          reportsData = publicReportsData;
         }
       }
     } catch (e) {
       console.warn("Erro ao carregar dados do município:", e);
     }
 
-    setPublicMapReports(publicReportsData.filter((report: any) => report.city_id === cityId));
-
     // Local cache is considered only for an authenticated session and only for the same city.
-    const localReports = authenticated
-      ? JSON.parse(localStorage.getItem("commuaria_reports") || "[]")
-      : [];
-    const combined = [...reportsData];
-    (Array.isArray(localReports) ? localReports : []).forEach((lr: any) => {
-      if ((lr.city_id || "araucaria-pr") !== cityId) return;
-      if (!combined.some((cr: any) => cr.id === lr.id || (cr.title === lr.title && cr.address === lr.address))) {
-        combined.push(lr);
+    let localReports: any[] = [];
+    if (authenticated) {
+      try {
+        const localValue = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+        localReports = Array.isArray(localValue) ? localValue : [];
+      } catch {
+        localReports = [];
+      }
+    }
+    const combined = reportsData.filter((report) =>
+      rowBelongsToCity(report, cityId, "araucaria-pr"),
+    );
+    localReports.forEach((localReport: any) => {
+      if (!rowBelongsToCity(localReport, cityId, "araucaria-pr")) return;
+      if (!combined.some((report: any) => report.id === localReport.id || (report.title === localReport.title && report.address === localReport.address))) {
+        combined.push(localReport);
       }
     });
 
-    const localDeleted = JSON.parse(localStorage.getItem("commuaria_deleted_reports") || "[]");
-    const filteredData = combined.filter((r: any) => !localDeleted.includes(r.id) && (r.city_id || cityId) === cityId);
-    const pending = filteredData.filter((r: any) => r.status !== "resolved");
-    const resolved = filteredData.filter((r: any) => r.status === "resolved");
+    let localDeleted: any[] = [];
+    try {
+      const deletedValue = JSON.parse(localStorage.getItem("commuaria_deleted_reports") || "[]");
+      localDeleted = Array.isArray(deletedValue) ? deletedValue : [];
+    } catch {
+      localDeleted = [];
+    }
+    const filteredData = combined.filter(
+      (report: any) =>
+        !isReportDeletedInCity(localDeleted, report.id, cityId, "araucaria-pr") &&
+        rowBelongsToCity(report, cityId, "araucaria-pr"),
+    );
+    const pending = filteredData.filter((report: any) => report.status !== "resolved");
+    const resolved = filteredData.filter((report: any) => report.status === "resolved");
     setSystemPendingCount(pending.length);
     setSystemResolvedCount(resolved.length);
     setSystemPendingReports(pending);
@@ -6823,12 +7146,16 @@ export function AppContent() {
     newStatus: string,
     notes?: string,
   ) => {
-    // 1. Atualizar no LocalStorage imediatamente
-    const localReports = JSON.parse(
+    const cityId = activeTenantCityId;
+    const citySupabase = getSupabaseClientForCity(cityId);
+    if (!cityId) return;
+    // 1. Atualizar apenas o cache do município atualmente selecionado.
+    const localReportsValue = JSON.parse(
       localStorage.getItem("commuaria_reports") || "[]",
     );
+    const localReports = Array.isArray(localReportsValue) ? localReportsValue : [];
     const updatedLocal = localReports.map((r: any) => {
-      if (r.id === reportId) {
+      if (r.id === reportId && rowBelongsToCity(r, cityId, "araucaria-pr")) {
         return {
           ...r,
           status: newStatus,
@@ -6842,7 +7169,7 @@ export function AppContent() {
     // 2. Atualizar estados locais do React de forma otimista
     setAllSystemReports((prev) =>
       prev.map((r) =>
-        r.id === reportId
+        r.id === reportId && rowBelongsToCity(r, cityId, "araucaria-pr")
           ? {
               ...r,
               status: newStatus,
@@ -6853,10 +7180,12 @@ export function AppContent() {
     );
     setSystemPendingReports((prev) => {
       if (newStatus === "resolved") {
-        return prev.filter((r) => r.id !== reportId);
+        return prev.filter(
+          (r) => !(r.id === reportId && rowBelongsToCity(r, cityId, "araucaria-pr")),
+        );
       }
       return prev.map((r) =>
-        r.id === reportId
+        r.id === reportId && rowBelongsToCity(r, cityId, "araucaria-pr")
           ? {
               ...r,
               status: newStatus,
@@ -6867,7 +7196,7 @@ export function AppContent() {
     });
     setUserReports((prev) =>
       prev.map((r) =>
-        r.id === reportId
+        r.id === reportId && rowBelongsToCity(r, cityId, "araucaria-pr")
           ? {
               ...r,
               status: newStatus,
@@ -6878,14 +7207,15 @@ export function AppContent() {
     );
 
     // 3. Atualizar no Supabase se conectado
-    if (supabase && isUUID(reportId)) {
+    if (citySupabase && isUUID(reportId)) {
       try {
-        await supabase
+        await citySupabase
           .from("reports")
           .update({
             status: newStatus,
           })
-          .eq("id", reportId);
+          .eq("id", reportId)
+          .eq("city_id", cityId);
       } catch (err) {
         console.warn("Supabase update error (salvo localmente):", err);
       }
@@ -6894,17 +7224,23 @@ export function AppContent() {
     // 4. Disparar notificações externas do ciclo de vida da ocorrência (Push + E-mail)
     try {
       const existingReport =
-        allSystemReports.find((r) => r.id === reportId) ||
-        localReports.find((r: any) => r.id === reportId);
+        allSystemReports.find(
+          (r) => r.id === reportId && rowBelongsToCity(r, cityId, "araucaria-pr"),
+        ) ||
+        localReports.find(
+          (r: any) => r.id === reportId && rowBelongsToCity(r, cityId, "araucaria-pr"),
+        );
 
+      const reportCity = cities.find((city) => city.id === cityId);
       const targetReport: ReportItem = {
         id: reportId,
+        city_id: existingReport?.city_id || cityId,
         title: existingReport?.title || "Ocorrência",
         description: existingReport?.description || existingReport?.title || "",
         category: existingReport?.category || "Geral",
-        address: existingReport?.address || "Araucária, PR",
-        latitude: existingReport?.latitude || -25.5929,
-        longitude: existingReport?.longitude || -49.4891,
+        address: existingReport?.address || [reportCity?.name, reportCity?.state].filter(Boolean).join(", "),
+        latitude: existingReport?.latitude ?? reportCity?.center_lat ?? 0,
+        longitude: existingReport?.longitude ?? reportCity?.center_lng ?? 0,
         status: newStatus as any,
         status_notes: notes !== undefined ? notes : existingReport?.status_notes,
         created_at: existingReport?.created_at || new Date().toISOString(),
@@ -6918,7 +7254,11 @@ export function AppContent() {
       if (!targetEmail && targetReport.user_id) {
         try {
           const profiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
-          const found = profiles.find((p: any) => p.id === targetReport.user_id);
+          const found = profiles.find(
+            (profile: any) =>
+              profile.id === targetReport.user_id &&
+              rowBelongsToCity(profile, cityId, "araucaria-pr"),
+          );
           if (found) {
             targetEmail = found.email || "";
             targetName = found.name || targetName;
@@ -6984,100 +7324,144 @@ export function AppContent() {
   };
 
   const handleDeleteReport = async (reportId: string) => {
-    if (!supabase) return;
+    const cityId = activeTenantCityId;
+    if (!cityId) return;
+    const citySupabase = getSupabaseClientForCity(cityId);
     try {
-      // 1. Immediately record in localStorage so that this report never comes back in this browser session
-      const localDeleted = JSON.parse(localStorage.getItem("commuaria_deleted_reports") || "[]");
-      if (!localDeleted.includes(reportId)) {
-        localDeleted.push(reportId);
-        localStorage.setItem("commuaria_deleted_reports", JSON.stringify(localDeleted));
+      // 1. Keep legacy string tombstones compatible with Araucária and scope new ones by city.
+      const deletedValue = JSON.parse(localStorage.getItem("commuaria_deleted_reports") || "[]");
+      const deletedMarkers = Array.isArray(deletedValue) ? deletedValue : [];
+      localStorage.setItem(
+        "commuaria_deleted_reports",
+        JSON.stringify(addReportDeletionMarker(deletedMarkers, reportId, cityId, "araucaria-pr")),
+      );
+
+      // 2. Optimistically remove only this municipality's copy from in-memory state.
+      const belongsToCurrentCity = (report: any) =>
+        report.id === reportId && rowBelongsToCity(report, cityId, "araucaria-pr");
+      setAllSystemReports((prev) => prev.filter((report) => !belongsToCurrentCity(report)));
+      setSystemPendingReports((prev) => prev.filter((report) => !belongsToCurrentCity(report)));
+      setUserReports((prev) => prev.filter((report) => !belongsToCurrentCity(report)));
+
+      // 3. Keep the selected tenant explicit alongside the database RLS check.
+      if (citySupabase && isRealSupabaseForCity(cityId) && isUUID(reportId)) {
+        const { error } = await citySupabase
+          .from("reports")
+          .delete()
+          .eq("id", reportId)
+          .eq("city_id", cityId);
+        if (error) console.warn("Silent delete error or RLS constraint on Supabase", error);
       }
 
-      // 2. Optimistically/Immediately remove from local React states so the UI is super snappy
-      setAllSystemReports((prev) => prev.filter((r) => r.id !== reportId));
-      setSystemPendingReports((prev) => prev.filter((r) => r.id !== reportId));
-      setUserReports((prev) => prev.filter((r) => r.id !== reportId));
-
-      // 3. Request deletion in Supabase database
-      const { error } = await supabase
-        .from("reports")
-        .delete()
-        .eq("id", reportId);
-
-      if (error) {
-        console.warn("Silent delete error or RLS constraint on Supabase", error);
-      }
-
-      // Refresh statistics & user lists to stay completely in-sync
+      // Refresh statistics & user lists to stay completely in-sync.
       await fetchSystemStatistics();
       const {
         data: { session },
-      } = await supabase.auth.getSession();
+      } = citySupabase
+        ? await citySupabase.auth.getSession()
+        : { data: { session: null } };
       if (session?.user) {
-        await fetchUserData(session.user.id);
+        await fetchUserData(session.user.id, session.user.email, cityId);
       }
     } catch (e) {
       console.error("Erro ao apagar chamado", e);
     }
   };
 
-  const fetchUserData = async (userId: string, userEmail?: string) => {
+  const fetchUserData = async (userId: string, userEmail?: string, cityIdOverride?: string) => {
     let dbReports: any[] = [];
     let dbProfile: any = null;
+    const normalizedUserId = userId?.trim() || "";
+    const normalizedUserEmail = userEmail?.trim().toLowerCase() || "";
+    const currentUserMatchesRequest = Boolean(
+      (normalizedUserId && currentUser.id === normalizedUserId) ||
+      (normalizedUserEmail && currentUser.email?.trim().toLowerCase() === normalizedUserEmail),
+    );
+    const requestedEmail = normalizedUserEmail ||
+      (currentUserMatchesRequest ? currentUser.email?.trim().toLowerCase() || "" : "");
+    const lookupCityId =
+      cityIdOverride?.trim() ||
+      (currentUserMatchesRequest ? currentUser.city_id?.trim() : "") ||
+      authCityId;
+    const citySupabase = getSupabaseClientForCity(lookupCityId);
 
-    if (supabase) {
+    if (citySupabase) {
       try {
         if (isUUID(userId)) {
-          const { data: profile } = await supabase
+          const { data: profile } = await citySupabase
             .from("profiles")
             .select("*")
             .eq("id", userId)
             .maybeSingle();
-          dbProfile = profile;
+          dbProfile = profile && (
+            profile.city_id?.trim() === lookupCityId ||
+            (lookupCityId === "araucaria-pr" && isLegacyGlobalTenantAdmin(profile))
+          ) ? profile : null;
+          const reportsCityId = dbProfile?.city_id?.trim() ||
+            (currentUserMatchesRequest && currentUser.city_id?.trim() === lookupCityId
+              ? lookupCityId
+              : undefined);
 
-          const { data: reports } = await supabase
-            .from("reports")
-            .select("*")
-            .eq("user_id", userId)
-            .order("created_at", { ascending: false });
-          if (reports && reports.length > 0) {
-            dbReports = reports.map((r: any) => ({
-              ...r,
-              category:
-                r.category ||
-                r.maintenance_type ||
-                (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) ||
-                "Pavimentação",
-            }));
+          if (reportsCityId) {
+            const { data: reports } = await citySupabase
+              .from("reports")
+              .select("*")
+              .eq("user_id", userId)
+              .eq("city_id", reportsCityId)
+              .order("created_at", { ascending: false });
+            if (reports && reports.length > 0) {
+              dbReports = reports
+                .filter((report: any) => rowBelongsToCity(report, reportsCityId, "araucaria-pr"))
+                .map((r: any) => ({
+                  ...r,
+                  category:
+                    r.category ||
+                    r.maintenance_type ||
+                    (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) ||
+                    "Pavimentação",
+                }));
+            }
           }
         }
         
-        if (!dbProfile && userEmail) {
-          const { data: profileByEmail } = await supabase
+        if (!dbProfile && requestedEmail) {
+          const { data: profileByEmail } = await citySupabase
             .from("profiles")
             .select("*")
-            .ilike("email", userEmail.toLowerCase())
+            .ilike("email", requestedEmail)
             .maybeSingle();
-          if (profileByEmail) {
+          if (
+            profileByEmail && (
+              profileByEmail.city_id?.trim() === lookupCityId ||
+              (lookupCityId === "araucaria-pr" && isLegacyGlobalTenantAdmin(profileByEmail))
+            )
+          ) {
             dbProfile = profileByEmail;
           }
         }
 
-        if (userEmail && dbReports.length === 0) {
-          const { data: reports } = await supabase
+        const reportsCityId = dbProfile?.city_id?.trim() ||
+          (currentUserMatchesRequest && currentUser.city_id?.trim() === lookupCityId
+            ? lookupCityId
+            : undefined);
+        if (requestedEmail && dbReports.length === 0 && reportsCityId) {
+          const { data: reports } = await citySupabase
             .from("reports")
             .select("*")
-            .eq("user_email", userEmail.toLowerCase())
+            .eq("user_email", requestedEmail)
+            .eq("city_id", reportsCityId)
             .order("created_at", { ascending: false });
           if (reports && reports.length > 0) {
-            dbReports = reports.map((r: any) => ({
-              ...r,
-              category:
-                r.category ||
-                r.maintenance_type ||
-                (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) ||
-                "Pavimentação",
-            }));
+            dbReports = reports
+              .filter((report: any) => rowBelongsToCity(report, reportsCityId, "araucaria-pr"))
+              .map((r: any) => ({
+                ...r,
+                category:
+                  r.category ||
+                  r.maintenance_type ||
+                  (r.description?.match(/\[Categoria:\s*([^\]]+)\]/i)?.[1]) ||
+                  "Pavimentação",
+              }));
           }
         }
       } catch (err) {
@@ -7085,87 +7469,89 @@ export function AppContent() {
       }
     }
 
-    // 2. Local profile resolution
-    const localProfiles: UserProfile[] = JSON.parse(
-      localStorage.getItem("commuaria_profiles") || "[]",
+    // 2. Resolve only one unambiguous local identity; never infer a missing city from an unrelated session.
+    const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+    const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+    const localProfiles: UserProfile[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+    const localUsers: any[] = Array.isArray(localUsersValue) ? localUsersValue : [];
+    const targetEmail = normalizedUserEmail || dbProfile?.email?.trim().toLowerCase() || requestedEmail;
+    const tenantLocalProfiles = [...localProfiles, ...localUsers].filter((profile) =>
+      profile.city_id?.trim() === lookupCityId ||
+      (lookupCityId === "araucaria-pr" && isLegacyGlobalTenantAdmin(profile)),
     );
-    const localUsers: any[] = JSON.parse(
-      localStorage.getItem("commuaria_users") || "[]",
+    const localMatched = findUnambiguousProfileByIdentity(
+      tenantLocalProfiles,
+      userId,
+      targetEmail,
     );
-    const targetEmail = (userEmail || dbProfile?.email || currentUser.email || "").toLowerCase();
-    const localMatched =
-      localProfiles.find((p) => (userId && p.id === userId) || (targetEmail && (p.email || "").toLowerCase().trim() === targetEmail)) ||
-      localUsers.find((u) => (userId && u.id === userId) || (targetEmail && (u.email || "").toLowerCase().trim() === targetEmail));
+    const localMatchesDatabaseTenant = Boolean(
+      !dbProfile || (
+        localMatched &&
+        (localMatched.email || "").trim().toLowerCase() === (dbProfile.email || "").trim().toLowerCase() &&
+        (localMatched.city_id || "").trim() === (dbProfile.city_id || "").trim()
+      ),
+    );
+    const localFallbackProfile = localMatchesDatabaseTenant ? localMatched : null;
 
-    const isMasterAdminEmail =
-      targetEmail === "admin@commuaria.com" ||
-      targetEmail === "admin" ||
-      targetEmail === "projetocomnuaria@gmail.com";
-
-    // Determine role hierarchy:
-    // 1. Admin: is_admin === true OR role === 'admin' OR master admin email
-    // 2. Diretor: role === 'diretor'
-    // 3. Supervisor: role === 'supervisor'
-    // 4. Funcionário: role === 'funcionario'
-    // 5. Citizen (user)
-    let resolvedRole: UserRole = "user";
-    const isAdminAccount =
-      dbProfile?.is_admin === true ||
-      dbProfile?.role === "admin" ||
-      localMatched?.is_admin === true ||
-      localMatched?.role === "admin" ||
-      isMasterAdminEmail;
-
-    if (isAdminAccount) {
-      resolvedRole = "admin";
-    } else if (
-      dbProfile?.role === "diretor" ||
-      localMatched?.role === "diretor"
-    ) {
-      resolvedRole = "diretor";
-    } else if (
-      dbProfile?.role === "supervisor" ||
-      localMatched?.role === "supervisor"
-    ) {
-      resolvedRole = "supervisor";
-    } else if (
-      dbProfile?.role === "funcionario" ||
-      localMatched?.role === "funcionario"
-    ) {
-      resolvedRole = "funcionario";
-    } else {
-      resolvedRole = "user";
-    }
+    const isAdminAccount = dbProfile
+      ? isLegacyGlobalTenantAdmin(dbProfile)
+      : Boolean(localMatched && isLegacyGlobalTenantAdmin(localMatched));
+    const roleProfile = dbProfile || localFallbackProfile;
+    const resolvedRole: UserRole = isAdminAccount
+      ? "admin"
+      : roleProfile?.role === "diretor" || roleProfile?.role === "supervisor" || roleProfile?.role === "funcionario"
+      ? roleProfile.role
+      : "user";
 
     const resolvedCat =
       dbProfile?.assigned_category ||
-      localMatched?.assigned_category ||
-      currentUser.assigned_category ||
+      localFallbackProfile?.assigned_category ||
+      (!dbProfile && currentUserMatchesRequest ? currentUser.assigned_category : null) ||
       (resolvedRole === "supervisor" || resolvedRole === "funcionario" ? "Pavimentação" : null);
     const resolvedName =
-      dbProfile?.name || localMatched?.name || currentUser.name || (targetEmail ? targetEmail.split("@")[0] : "Usuário");
+      dbProfile?.name ||
+      localFallbackProfile?.name ||
+      (currentUserMatchesRequest ? currentUser.name : "") ||
+      (targetEmail ? targetEmail.split("@")[0] : "Usuário");
     const resolvedEmail =
-      dbProfile?.email || localMatched?.email || targetEmail || currentUser.email || "";
-    const resolvedCityId = dbProfile?.city_id || localMatched?.city_id || currentUser.city_id || "araucaria-pr";
+      dbProfile?.email ||
+      localFallbackProfile?.email ||
+      targetEmail ||
+      (currentUserMatchesRequest ? currentUser.email : "");
+    const resolvedCityId = dbProfile
+      ? dbProfile.city_id?.trim() || undefined
+      : localFallbackProfile?.city_id?.trim() ||
+        (currentUserMatchesRequest ? currentUser.city_id?.trim() : undefined);
 
     // 3. Local reports resolution
-    const localReports: any[] = JSON.parse(
-      localStorage.getItem("commuaria_reports") || "[]",
-    );
-    const localDeleted: string[] = JSON.parse(
+    const localReportsValue = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+    const localReports: any[] = Array.isArray(localReportsValue) ? localReportsValue : [];
+    const localDeletedValue = JSON.parse(
       localStorage.getItem("commuaria_deleted_reports") || "[]",
     );
+    const localDeleted = Array.isArray(localDeletedValue) ? localDeletedValue : [];
 
-    // Filter reports belonging to this user (by ID or Email or local_user)
+    // Filter reports belonging to this user and this municipality (by ID or Email or local_user).
     const userMatchedLocalReports = localReports.filter((r: any) => {
-      if (localDeleted.includes(r.id) || (r.city_id || "araucaria-pr") !== resolvedCityId) return false;
-      const matchId = r.user_id && (r.user_id === userId || r.user_id === localMatched?.id || r.user_id === currentUser.id);
+      if (
+        isReportDeletedInCity(localDeleted, r.id, resolvedCityId, "araucaria-pr") ||
+        !rowBelongsToCity(r, resolvedCityId, "araucaria-pr")
+      ) return false;
+      const matchId = r.user_id && (
+        r.user_id === userId ||
+        r.user_id === localMatched?.id ||
+        (currentUserMatchesRequest && r.user_id === currentUser.id)
+      );
       const matchEmail = resolvedEmail && r.user_email && r.user_email.toLowerCase() === resolvedEmail.toLowerCase();
       const matchLocalUser = (!r.user_id || r.user_id === "local_user") && (resolvedRole === "user");
       return matchId || matchEmail || matchLocalUser;
     });
 
-    const combinedReports = [...dbReports.filter((r: any) => !localDeleted.includes(r.id))];
+    const combinedReports = dbReports.filter(
+      (report: any) =>
+        rowBelongsToCity(report, resolvedCityId, "araucaria-pr") &&
+        !isReportDeletedInCity(localDeleted, report.id, resolvedCityId, "araucaria-pr"),
+    );
     userMatchedLocalReports.forEach((lr: any) => {
       if (!combinedReports.some((cr: any) => cr.id === lr.id)) {
         combinedReports.push(lr);
@@ -7185,14 +7571,15 @@ export function AppContent() {
       email: resolvedEmail,
       role: resolvedRole,
       city_id: resolvedCityId,
+      is_admin: isAdminAccount,
       assigned_category: resolvedCat,
       open: openCount,
       resolved: resolvedCount,
-      anonymous: currentUser.anonymous || false,
-      is_blocked: dbProfile?.is_blocked || localMatched?.is_blocked || false,
-      blocked_until: dbProfile?.blocked_until || localMatched?.blocked_until || null,
-      block_reason: dbProfile?.block_reason || localMatched?.block_reason || null,
-      blocked_at: dbProfile?.blocked_at || localMatched?.blocked_at || null,
+      anonymous: currentUserMatchesRequest && currentUser.anonymous ? currentUser.anonymous : false,
+      is_blocked: dbProfile?.is_blocked || localFallbackProfile?.is_blocked || false,
+      blocked_until: dbProfile?.blocked_until || localFallbackProfile?.blocked_until || null,
+      block_reason: dbProfile?.block_reason || localFallbackProfile?.block_reason || null,
+      blocked_at: dbProfile?.blocked_at || localFallbackProfile?.blocked_at || null,
     };
 
     // Check if account has been blocked by an administrator
@@ -7200,9 +7587,9 @@ export function AppContent() {
       const blockStatus = checkAccountBlockStatus(resolvedUser);
       if (blockStatus.isBlocked) {
         localStorage.removeItem("commuaria_active_session");
-        if (supabase) {
+        if (citySupabase) {
           try {
-            await supabase.auth.signOut();
+            await citySupabase.auth.signOut();
           } catch (_) {}
         }
         setCurrentUser({
@@ -7231,13 +7618,17 @@ export function AppContent() {
     setIsAdmin(resolvedRole === "admin");
     setUserRole(resolvedRole);
     setAssignedCategory(resolvedCat);
-    if (resolvedRole !== "admin") setActiveCityId(resolvedCityId);
+    if (resolvedRole !== "admin") setActiveCityId(resolvedCityId || "");
     setUserReports(combinedReports);
 
     // Store active session in localStorage with its municipality association
     localStorage.setItem("commuaria_active_session", JSON.stringify(resolvedUser));
 
-    await fetchSystemStatistics(resolvedRole === "admin" ? activeCityId : resolvedCityId);
+    const resolvedPrincipal = resolveLegacyTenantPrincipal(resolvedUser);
+    await fetchSystemStatistics(
+      resolvedPrincipal.scope === "global" ? activeCityId : resolvedCityId,
+      resolvedPrincipal,
+    );
   };
 
   useEffect(() => {
@@ -7245,13 +7636,16 @@ export function AppContent() {
     fetchCities().then((items) => {
       if (!mounted || !items.length) return;
       setCities(items);
-      setActiveCityId((current) => items.some((city) => city.id === current) ? current : (items.find((city) => city.is_active)?.id || "araucaria-pr"));
+      setActiveCityId((current) =>
+        items.some((city) => city.id === current)
+          ? current
+          : items.find((city) => city.is_active)?.id || "",
+      );
     }).catch((error) => console.warn("Falha ao carregar municípios:", error));
 
-    // 0. Register Cross-Platform Notification Service Worker
     registerCommuariaServiceWorker();
 
-    // 1. Purge ONLY specific legacy test accounts from localStorage
+    // Preserve the existing cleanup of only known legacy test fixtures.
     try {
       const isLegacy = (p: any) => {
         const id = p?.id || "";
@@ -7279,103 +7673,88 @@ export function AppContent() {
       if (cleanUsers.length !== users.length) {
         localStorage.setItem("commuaria_users", JSON.stringify(cleanUsers));
       }
-    } catch (e) {
-      console.warn("Erro ao limpar dados locais legados:", e);
+    } catch (error) {
+      console.warn("Erro ao limpar dados locais legados:", error);
     }
 
-    // 2. Restore active session safely
-    if (isRealSupabase && supabase) {
-      // In real Supabase mode, verify session asynchronously via supabase.auth.getSession()
-      supabase.auth.getSession().then(async ({ data: { session }, error }) => {
-        if (error || !session?.user) {
-          localStorage.removeItem("commuaria_active_session");
-          setCurrentUser({
-            id: "",
-            name: "Usuário",
-            email: "",
-            open: 0,
-            resolved: 0,
-            anonymous: false,
-            role: "user",
-            assigned_category: null,
-          });
-          setIsAdmin(false);
-          setUserRole("user");
-          setAssignedCategory(null);
+    const initialTenantClient = getSupabaseClientForCity(authCityId);
+    if (initialTenantClient && isRealSupabaseForCity(authCityId)) {
+      initialTenantClient.auth.getSession().then(async ({ data: { session }, error }) => {
+        if (!mounted) return;
+        if (error) {
+          console.warn("Sessão inicial Supabase:", error);
           return;
         }
-        if (session.user) {
-          await fetchUserData(session.user.id, session.user.email);
-          setScreen("feed");
+        if (session?.user) {
+          await fetchUserData(session.user.id, session.user.email, authCityId);
+          if (mounted) setScreen("feed");
+        } else {
+          localStorage.removeItem("commuaria_active_session");
         }
-      }).catch((err) => {
-        console.warn("Erro ao buscar sessão inicial:", err);
-      });
-    } else {
-      // In mock/local storage mode, restore active session if previously authenticated
+      }).catch((error) => console.warn("Erro ao buscar sessão inicial:", error));
+    } else if (!isRealSupabaseForCity(authCityId)) {
+      // Local-only restoration is accepted only when the session already has a tenant,
+      // or it is one of the explicitly preserved global administrators.
       try {
         const storedSession = localStorage.getItem("commuaria_active_session");
         if (storedSession) {
           const sessionUser = JSON.parse(storedSession);
           if (sessionUser && (sessionUser.email || sessionUser.id)) {
-            setCurrentUser(sessionUser);
-            setIsAdmin(sessionUser.role === "admin");
-            setUserRole(sessionUser.role || "user");
-            setAssignedCategory(sessionUser.assigned_category || null);
-            setScreen("feed");
-            fetchUserData(sessionUser.id || sessionUser.email, sessionUser.email);
+            const isGlobalAdmin = isLegacyGlobalTenantAdmin(sessionUser);
+            const restoredCityId = sessionUser.city_id?.trim() || (isGlobalAdmin ? authCityId : "");
+            if (!restoredCityId || restoredCityId !== authCityId) {
+              localStorage.removeItem("commuaria_active_session");
+            } else {
+              const restoredRole: UserRole = isGlobalAdmin ? "admin" : sessionUser.role || "user";
+              const restoredUser = { ...sessionUser, role: restoredRole };
+              setCurrentUser(restoredUser);
+              setIsAdmin(isGlobalAdmin);
+              setUserRole(restoredRole);
+              setAssignedCategory(sessionUser.assigned_category || null);
+              setScreen("feed");
+              fetchUserData(sessionUser.id || sessionUser.email, sessionUser.email, restoredCityId);
+            }
           }
         }
-      } catch (e) {
-        console.warn("Erro ao restaurar sessão ativa:", e);
+      } catch (error) {
+        console.warn("Erro ao restaurar sessão ativa:", error);
       }
     }
 
     fetchSystemStatistics();
 
-    if (!supabase) return;
+    const hash = window.location.hash || "";
+    const search = window.location.search || "";
+    if (
+      hash.includes("type=recovery") ||
+      hash.includes("recovery") ||
+      search.includes("type=recovery") ||
+      search.includes("recovery")
+    ) {
+      setForgotPasswordStep("reset");
+      setScreen("forgot-password");
+      try {
+        window.history.replaceState(null, "", window.location.pathname);
+      } catch (_) {}
+    }
 
-    // Check for password recovery parameters in the URL hash or search parameters on startup
-    const checkRecoveryFlow = () => {
-      const hash = window.location.hash || "";
-      const search = window.location.search || "";
-      if (
-        hash.includes("type=recovery") ||
-        hash.includes("recovery") ||
-        search.includes("type=recovery") ||
-        search.includes("recovery")
-      ) {
-        console.log("Fluxo de recuperação de senha detectado na URL inicial!");
-        setForgotPasswordStep("reset");
-        setScreen("forgot-password");
-        try {
-          window.history.replaceState(null, "", window.location.pathname);
-        } catch (_) {}
-      }
+    return () => {
+      mounted = false;
     };
-    checkRecoveryFlow();
+  }, []);
 
-    supabase.auth.getSession().then(async ({ data: { session }, error }) => {
-      if (error) {
-        console.warn("Sessão inicial Supabase:", error);
-        return;
-      }
-      if (session?.user) {
-        await fetchUserData(session.user.id, session.user.email);
-      }
-    }).catch(async (err) => {
-      console.warn("Erro ao buscar sessão inicial:", err);
-    });
+  useEffect(() => {
+    const tenantClient = getSupabaseClientForCity(authCityId);
+    if (!tenantClient || !isRealSupabaseForCity(authCityId)) return;
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      fetchSystemStatistics();
+    } = tenantClient.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY") {
         setForgotPasswordStep("reset");
         setScreen("forgot-password");
       } else if (session?.user) {
-        fetchUserData(session.user.id, session.user.email);
+        fetchUserData(session.user.id, session.user.email, authCityId);
       } else if (event === "SIGNED_OUT") {
         setIsAdmin(false);
         setUserRole("user");
@@ -7395,11 +7774,8 @@ export function AppContent() {
       }
     });
 
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
-  }, []);
+    return () => subscription.unsubscribe();
+  }, [authCityId]);
 
   const handleTabChange = (tab: AppNavTab) => {
     if (tab === "home") {
@@ -7486,7 +7862,7 @@ export function AppContent() {
                   cities={cities}
                   onCityChange={(cityId) => {
                     setActiveCityId(cityId);
-                    void fetchSystemStatistics(cityId);
+                    void loadPublicMapReports(cityId);
                   }}
                 />
               </motion.div>
@@ -7504,6 +7880,9 @@ export function AppContent() {
               >
                 <LoginView
                   onBack={() => setScreen("landing")}
+                  cities={cities}
+                  initialCityId={authCityId}
+                  onCityChange={changeAuthCity}
                   onBlocked={(blockInfo, email) => {
                     setBlockedModalInfo({ blockInfo, email });
                   }}
@@ -7513,17 +7892,20 @@ export function AppContent() {
                     setIsAdmin(isAdm);
                     setUserRole(determinedRole);
                     setAssignedCategory(assignedCat || null);
+                    const selectedAuthCityId =
+                      data?.auth_city_id || data?.city_id?.trim() || authCityId;
+                    changeAuthCity(selectedAuthCityId);
 
                     const cleanEmail = (data?.email || "").trim().toLowerCase();
-                    const localProfiles: UserProfile[] = JSON.parse(
-                      localStorage.getItem("commuaria_profiles") || "[]",
+                    const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+                    const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+                    const localProfiles: UserProfile[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+                    const localUsers: any[] = Array.isArray(localUsersValue) ? localUsersValue : [];
+                    const found = findUnambiguousProfileByIdentity(
+                      [...localProfiles, ...localUsers],
+                      data?.id,
+                      cleanEmail,
                     );
-                    const localUsers: any[] = JSON.parse(
-                      localStorage.getItem("commuaria_users") || "[]",
-                    );
-                    const found =
-                      localProfiles.find((p) => (p.email || "").toLowerCase() === cleanEmail) ||
-                      localUsers.find((u) => (u.email || "").toLowerCase() === cleanEmail);
 
                     const resolvedId =
                       data?.id ||
@@ -7540,7 +7922,10 @@ export function AppContent() {
                       email: cleanEmail,
                       password: data?.password || found?.password,
                       role: determinedRole,
-                      city_id: data?.city_id || found?.city_id || "araucaria-pr",
+                      city_id:
+                        data?.city_id !== undefined
+                          ? data.city_id?.trim() || undefined
+                          : found?.city_id?.trim(),
                       assigned_category: assignedCat || null,
                       open: 0,
                       resolved: 0,
@@ -7548,13 +7933,14 @@ export function AppContent() {
                     };
 
                     setCurrentUser(loggedUser);
-                    if (determinedRole !== "admin") setActiveCityId(loggedUser.city_id || "araucaria-pr");
+                    if (determinedRole !== "admin") setActiveCityId(loggedUser.city_id || "");
                     localStorage.setItem("commuaria_active_session", JSON.stringify(loggedUser));
-                    fetchUserData(resolvedId, cleanEmail);
+                    fetchUserData(resolvedId, cleanEmail, selectedAuthCityId);
                     setScreen("feed");
                   }}
                   onGoToSignup={() => setScreen("signup")}
-                  onForgotPassword={() => {
+                  onForgotPassword={(cityId) => {
+                    changeAuthCity(cityId);
                     setForgotPasswordStep("email");
                     setScreen("forgot-password");
                   }}
@@ -7579,6 +7965,9 @@ export function AppContent() {
                   }}
                   initialStep={forgotPasswordStep}
                   onChangeStep={(s) => setForgotPasswordStep(s)}
+                  cities={cities}
+                  initialCityId={authCityId}
+                  onCityChange={changeAuthCity}
                 />
               </motion.div>
             )}
@@ -7596,6 +7985,7 @@ export function AppContent() {
                 <SignupView
                   onBack={() => setScreen("landing")}
                   cities={cities}
+                  onCityChange={changeAuthCity}
                   onSignup={(data) => {
                     setIsAdmin(false);
                     setUserRole("user");
@@ -7620,12 +8010,16 @@ export function AppContent() {
 
                     try {
                       const profiles = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
-                      if (!profiles.some((p: any) => (p.email || "").toLowerCase() === cleanEmail)) {
+                      if (!profiles.some((p: any) =>
+                        (p.email || "").toLowerCase() === cleanEmail && p.city_id === data.city_id,
+                      )) {
                         profiles.push(newProfile);
                         localStorage.setItem("commuaria_profiles", JSON.stringify(profiles));
                       }
                       const users = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
-                      if (!users.some((u: any) => (u.email || "").toLowerCase() === cleanEmail)) {
+                      if (!users.some((u: any) =>
+                        (u.email || "").toLowerCase() === cleanEmail && u.city_id === data.city_id,
+                      )) {
                         users.push(newProfile);
                         localStorage.setItem("commuaria_users", JSON.stringify(users));
                       }
@@ -7634,9 +8028,9 @@ export function AppContent() {
                     }
 
                     setCurrentUser(newProfile);
-                    setActiveCityId(data.city_id);
+                    changeAuthCity(data.city_id);
                     localStorage.setItem("commuaria_active_session", JSON.stringify(newProfile));
-                    fetchUserData(newUserId, cleanEmail);
+                    fetchUserData(newUserId, cleanEmail, data.city_id);
                     setScreen("feed");
                   }}
                 />
@@ -7657,9 +8051,9 @@ export function AppContent() {
                   onGoToSettings={() => setScreen("settings")}
                   onGoToProfile={() => setScreen("profile")}
                   onTabChange={handleTabChange}
-                  isAdmin={isAdmin}
-                  cityName={activeCity?.name || "Araucária"}
-                  cityState={activeCity?.state || "PR"}
+                  isAdmin={isGlobalTenantAdmin}
+                  cityName={activeCity?.name || "Município não informado"}
+                  cityState={activeCity?.state || ""}
                   cities={cities}
                   activeCityId={activeCityId}
                   onCityChange={(cityId) => { setActiveCityId(cityId); void fetchSystemStatistics(cityId); }}
@@ -7689,7 +8083,7 @@ export function AppContent() {
                 transition={pageTransition}
                 className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
               >
-                {isAdmin || userRole === "admin" ? (
+                {isGlobalTenantAdmin ? (
                   <AdminMapView
                     reports={allSystemReports}
                     city={activeCity}
@@ -7747,6 +8141,7 @@ export function AppContent() {
                 ) : userRole === "supervisor" ? (
                   <SupervisorWorkOrderView
                     category={assignedCategory || "Pavimentação"}
+                    municipalityName={linkedCity?.name || "município"}
                     user={currentUser}
                     reports={allSystemReports}
                     onUpdateReportStatus={handleUpdateReportStatus}
@@ -7798,26 +8193,37 @@ export function AppContent() {
                   user={currentUser}
                   cityName={linkedCity ? `${linkedCity.name} - ${linkedCity.state}` : "Município não informado"}
                   onSave={async (data) => {
-                    setCurrentUser((prev) => ({ ...prev, ...data }));
-                    if (supabase) {
-                      const {
-                        data: { user },
-                      } = await supabase.auth.getUser();
-                      if (user) {
-                        // Update Profile Table
-                        await supabase
-                          .from("profiles")
-                          .update({ name: data.name })
-                          .eq("id", user.id);
-
-                        // Update Auth
-                        await supabase.auth.updateUser({
-                          email: data.email,
-                          password: data.password || undefined,
-                          data: { name: data.name },
-                        });
-                      }
+                    const accountCityId = currentUser.city_id?.trim() || authCityId;
+                    const authSupabase = getSupabaseClientForCity(accountCityId);
+                    if (!authSupabase) {
+                      throw new Error("O projeto Supabase vinculado à conta não está configurado.");
                     }
+                    const {
+                      data: { user },
+                      error: userError,
+                    } = await authSupabase.auth.getUser();
+                    if (userError) throw userError;
+                    if (!user) throw new Error("A sessão desta conta não está ativa no município selecionado.");
+
+                    let profileUpdate = authSupabase
+                      .from("profiles")
+                      .update({ name: data.name })
+                      .eq("id", user.id);
+                    if (currentUser.city_id?.trim()) {
+                      profileUpdate = profileUpdate.eq("city_id", currentUser.city_id.trim());
+                    } else if (!isLegacyGlobalTenantAdmin(currentUser)) {
+                      throw new Error("Não é possível atualizar um perfil sem município validado.");
+                    }
+                    const { error: profileError } = await profileUpdate;
+                    if (profileError) throw profileError;
+
+                    const { error: authError } = await authSupabase.auth.updateUser({
+                      email: data.email,
+                      password: data.password || undefined,
+                      data: { name: data.name },
+                    });
+                    if (authError) throw authError;
+                    setCurrentUser((prev) => ({ ...prev, ...data }));
                   }}
                   onBack={() => setScreen("feed")}
                 />
@@ -7844,19 +8250,53 @@ export function AppContent() {
                     setIsAdmin(false);
                     setUserRole("user");
                     setAssignedCategory(null);
-                    if (supabase) {
-                      await supabase.auth.signOut();
-                    }
+                    const authSupabase = getSupabaseClientForCity(currentUser.city_id || authCityId);
+                    if (authSupabase) await authSupabase.auth.signOut();
+                    localStorage.removeItem("commuaria_active_session");
                     setScreen("landing");
                   }}
                   onDeleteAccount={async () => {
-                    if (supabase) {
-                      await supabase.rpc("delete_user");
-                      await supabase.auth.signOut();
+                    if (isLegacyGlobalTenantAdmin(currentUser)) {
+                      throw new Error("As contas ADM Global estão protegidas e não podem ser excluídas por esta tela.");
                     }
+                    const accountCityId = currentUser.city_id?.trim();
+                    if (!accountCityId) {
+                      throw new Error("Não é possível excluir uma conta sem município validado.");
+                    }
+                    const authSupabase = getSupabaseClientForCity(accountCityId);
+                    if (!authSupabase) {
+                      throw new Error("O projeto Supabase vinculado à conta não está configurado; nada foi excluído.");
+                    }
+                    const { error: deleteError } = await authSupabase.rpc("delete_user");
+                    if (deleteError) throw deleteError;
+                    await authSupabase.auth.signOut();
+
+                    const cleanEmail = currentUser.email.trim().toLowerCase();
+                    const sameAccountAndCity = (profile: any) =>
+                      profile.city_id?.trim() === accountCityId &&
+                      (profile.id === currentUser.id ||
+                        (profile.email || "").trim().toLowerCase() === cleanEmail);
+                    for (const storageKey of ["commuaria_profiles", "commuaria_users"]) {
+                      const value = JSON.parse(localStorage.getItem(storageKey) || "[]");
+                      if (Array.isArray(value)) {
+                        localStorage.setItem(storageKey, JSON.stringify(value.filter((profile: any) => !sameAccountAndCity(profile))));
+                      }
+                    }
+                    localStorage.removeItem("commuaria_active_session");
+                    setCurrentUser({
+                      id: "",
+                      name: "Usuário",
+                      email: "",
+                      open: 0,
+                      resolved: 0,
+                      anonymous: false,
+                      role: "user",
+                      assigned_category: null,
+                    });
                     setIsAdmin(false);
                     setUserRole("user");
                     setAssignedCategory(null);
+                    setUserReports([]);
                     setScreen("landing");
                   }}
                   onOpenDbManager={() => setShowDbModal(true)}
@@ -7874,7 +8314,7 @@ export function AppContent() {
                 transition={pageTransition}
                 className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
               >
-                {isAdmin || userRole === "admin" ? (
+                {isGlobalTenantAdmin ? (
                   <AdminTasksView
                     reports={allSystemReports}
                     onResolveReport={handleResolveReport}
@@ -7952,7 +8392,7 @@ export function AppContent() {
               </motion.div>
             )}
 
-            {screen === "accounts" && (isAdmin || userRole === "admin") && (
+            {screen === "accounts" && isGlobalTenantAdmin && (
               <motion.div
                 key="accounts"
                 variants={screenVariants}
@@ -7963,6 +8403,7 @@ export function AppContent() {
                 className="h-full w-full overflow-y-auto overflow-x-hidden scroll-smooth"
               >
                 <AdminAccountsView
+                  activeCityId={activeTenantCityId || ""}
                   currentAdminId={currentUser?.id}
                   currentAdminEmail={currentUser?.email}
                   onRefreshStats={fetchSystemStatistics}
@@ -8078,7 +8519,7 @@ export function AppContent() {
                           : "home"
               }
               onTabChange={handleTabChange}
-              isAdmin={isAdmin}
+              isAdmin={isGlobalTenantAdmin}
               userRole={userRole}
             />
           )}
@@ -8103,7 +8544,7 @@ export function AppContent() {
               <ReportDetailsModal
                 report={activeReport}
                 currentUserId={currentUser?.id}
-                isAdmin={isAdmin}
+                isAdmin={isGlobalTenantAdmin}
                 userRole={userRole}
                 assignedCategory={assignedCategory}
                 onClose={() => setActiveReport(null)}
@@ -8114,6 +8555,7 @@ export function AppContent() {
             )}
             {showSupervisorManager && (
               <SupervisorManagerModal
+                cityId={activeTenantCityId || ""}
                 onClose={() => setShowSupervisorManager(false)}
                 reports={allSystemReports}
                 onRefresh={fetchSystemStatistics}
@@ -8124,12 +8566,14 @@ export function AppContent() {
             )}
             {showDbModal && (
               <DatabaseManagerModal
+                cityId={activeTenantCityId || ""}
+                cityName={activeCity?.name}
                 onClose={() => setShowDbModal(false)}
                 newsDbError={newsDbError}
                 onRefresh={fetchSystemStatistics}
               />
             )}
-            {showAdminCitiesModal && isAdmin && (
+            {showAdminCitiesModal && isGlobalTenantAdmin && (
               <AdminCitiesModal
                 cities={cities}
                 onClose={() => setShowAdminCitiesModal(false)}
