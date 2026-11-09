@@ -32,6 +32,7 @@ import {
   isUUID,
   generateUUID,
 } from "../lib/supabase";
+import { ARAUCARIA_CITY_ID, CURITIBA_CITY_ID } from "../lib/supabaseTenants";
 import { checkAccountBlockStatus } from "../utils/blockUtils";
 import { isLegacyGlobalTenantAdmin, type MunicipalRole } from "../domain/tenantAccess";
 import { rowBelongsToCity } from "../domain/cityScopedRows";
@@ -43,6 +44,57 @@ interface AdminAccountsViewProps {
   onRefreshStats?: () => Promise<void>;
   onViewDetails?: (user: UserProfile) => void;
   onRoleChanged?: (userIdOrEmail: string, newRole: UserRole, newCategory: string | null) => void;
+}
+
+async function updateCuritibaProfileRoleThroughServer(input: {
+  profileId?: string;
+  email?: string;
+  role: MunicipalRole;
+  assignedCategory: string | null;
+}): Promise<UserProfile> {
+  const authClient = getSupabaseClientForCity(ARAUCARIA_CITY_ID);
+  if (!authClient || !isRealSupabaseForCity(ARAUCARIA_CITY_ID)) {
+    throw new Error("Não foi possível acessar a sessão ADM Global de Araucária.");
+  }
+
+  const { data: sessionData, error: sessionError } = await authClient.auth.getSession();
+  const accessToken = sessionData?.session?.access_token;
+  if (sessionError || !accessToken) {
+    throw new Error("Sua sessão ADM Global em Araucária expirou. Entre novamente e tente outra vez.");
+  }
+
+  let response: Response;
+  try {
+    response = await fetch("/api/admin/curitiba/profile-role", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        cityId: CURITIBA_CITY_ID,
+        profileId: input.profileId,
+        email: input.email,
+        role: input.role,
+        assignedCategory: input.assignedCategory,
+      }),
+    });
+  } catch {
+    throw new Error("Não foi possível conectar ao servidor para alterar o cargo em Curitiba.");
+  }
+
+  let responseBody: any = null;
+  try {
+    responseBody = await response.json();
+  } catch (_) {}
+  if (!response.ok) {
+    throw new Error(responseBody?.error || "O servidor recusou a alteração de cargo em Curitiba.");
+  }
+  if (!responseBody?.profile?.id || responseBody.profile.city_id !== CURITIBA_CITY_ID) {
+    throw new Error("O servidor não confirmou o perfil atualizado em Curitiba.");
+  }
+
+  return responseBody.profile as UserProfile;
 }
 
 export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
@@ -511,7 +563,15 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
         is_admin: false,
       };
       let databaseProfileId: string | null = null;
-      if (targetSupabase) {
+      if (targetCityId === CURITIBA_CITY_ID && isRealSupabaseForCity(targetCityId)) {
+        const updatedProfile = await updateCuritibaProfileRoleThroughServer({
+          profileId: isUUID(targetUserId) ? targetUserId : undefined,
+          email: cleanEmail || undefined,
+          role: newRole,
+          assignedCategory: targetCategory,
+        });
+        databaseProfileId = updatedProfile.id;
+      } else if (targetSupabase) {
         let profileById: any = null;
         if (isUUID(targetUserId)) {
           const { data, error } = await targetSupabase

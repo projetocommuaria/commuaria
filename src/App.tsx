@@ -90,14 +90,18 @@ import {
 } from "./lib/cityService";
 import { replaceCityRows, rowBelongsToCity, rowsForCity } from "./domain/cityScopedRows";
 import { addReportDeletionMarker, isReportDeletedInCity } from "./domain/reportDeletion";
+import { getPointInGeoJson, isPointInGeoJson } from "./domain/cityGeometry";
 import { findUnambiguousProfileByIdentity } from "./domain/profileIdentity";
+import { resolveTenantAuthCandidates } from "./domain/authTenantResolution";
 import {
   isLegacyGlobalTenantAdmin,
   resolveActiveCityId,
   resolveLegacyTenantPrincipal,
+  resolveWritableTenantCityId,
   type TenantPrincipal,
 } from "./domain/tenantAccess";
 import { DEFAULT_SEEDED_CITIES } from "./data/rmcIbgeCities";
+import { ARAUCARIA_CITY_ID } from "./lib/supabaseTenants";
 import { BlockedAccountModal } from "./components/BlockedAccountModal";
 import { checkAccountBlockStatus, BlockStatusResult } from "./utils/blockUtils";
 import { CategorySelector } from "./components/CategorySelector";
@@ -947,6 +951,44 @@ const ForgotPasswordView = ({
   );
 };
 
+/** Avoid restoring an arbitrary tenant if the browser reloads mid-probe. */
+const LOGIN_PROBE_SESSION_KEY = "commuaria_login_probe_tenants";
+
+const markLoginProbe = (cityIds: string[]) => {
+  try {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(LOGIN_PROBE_SESSION_KEY, JSON.stringify(cityIds));
+    }
+  } catch (_) {}
+};
+
+const clearLoginProbe = () => {
+  try {
+    if (typeof window !== "undefined") window.sessionStorage.removeItem(LOGIN_PROBE_SESSION_KEY);
+  } catch (_) {}
+};
+
+type LoginCandidateData = {
+  id?: string;
+  name?: string;
+  email: string;
+  password: string;
+  city_id?: string | null;
+  auth_city_id: string;
+};
+
+type LoginTenantCandidate = {
+  cityId: string;
+  cityName: string;
+  client: any;
+  role: UserRole;
+  assignedCategory: string | null;
+  data: LoginCandidateData;
+  requiresReauthentication: boolean;
+  authUserId?: string;
+  blockStatus?: BlockStatusResult;
+};
+
 const LoginView = ({
   onBack,
   onLogin,
@@ -954,40 +996,113 @@ const LoginView = ({
   onGoToSignup,
   onForgotPassword,
   cities,
-  initialCityId,
-  onCityChange,
 }: {
   onBack: () => void;
   onLogin: (
     role?: UserRole,
     assignedCategory?: string | null,
-    data?: {
-      id?: string;
-      name?: string;
-      email: string;
-      password: string;
-      city_id?: string | null;
-      auth_city_id?: string;
-    },
+    data?: LoginCandidateData,
   ) => void;
   onBlocked?: (blockInfo: BlockStatusResult, email: string) => void;
   onGoToSignup: () => void;
-  onForgotPassword: (cityId: string) => void;
+  onForgotPassword: () => void;
   cities: CityItem[];
-  initialCityId: string;
-  onCityChange: (cityId: string) => void;
 }) => {
   const { isDark } = useTheme();
-  const [selectedCityId, setSelectedCityId] = useState(initialCityId);
   const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [tenantChoices, setTenantChoices] = useState<LoginTenantCandidate[]>([]);
   const availableCities = cities.filter((city) => city.is_active);
 
-  useEffect(() => {
-    setSelectedCityId(initialCityId);
-  }, [initialCityId]);
+  const signOutTenantLocally = async (client: any): Promise<boolean> => {
+    try {
+      if (!client?.auth?.signOut) return true;
+      const { error: signOutError } = await client.auth.signOut({ scope: "local" });
+      if (signOutError) {
+        console.warn("Não foi possível limpar a sessão municipal local:", signOutError);
+        return false;
+      }
+      return true;
+    } catch (signOutError) {
+      console.warn("Não foi possível limpar a sessão municipal local:", signOutError);
+      return false;
+    }
+  };
+
+  const finishLogin = async (candidate: LoginTenantCandidate) => {
+    if (candidate.blockStatus?.isBlocked) {
+      const sessionCleared = await signOutTenantLocally(candidate.client);
+      if (sessionCleared) clearLoginProbe();
+      if (!sessionCleared) {
+        setError("A conta está suspensa, mas não foi possível encerrar a sessão local. Feche e reabra o aplicativo antes de tentar novamente.");
+      }
+      if (onBlocked) {
+        onBlocked(candidate.blockStatus, candidate.data.email);
+      } else {
+        setError(`Conta suspensa: ${candidate.blockStatus.reason || "Acesso bloqueado pela administração."}`);
+      }
+      return;
+    }
+    clearLoginProbe();
+    onLogin(candidate.role, candidate.assignedCategory, candidate.data);
+  };
+
+  const handleBack = async () => {
+    if (tenantChoices.length > 0) {
+      await Promise.all(tenantChoices.map((candidate) => signOutTenantLocally(candidate.client)));
+      setTenantChoices([]);
+    }
+    onBack();
+  };
+
+  const cancelTenantChoice = async () => {
+    await Promise.all(tenantChoices.map((candidate) => signOutTenantLocally(candidate.client)));
+    setTenantChoices([]);
+    setError("");
+  };
+
+  const chooseTenant = async (candidate: LoginTenantCandidate) => {
+    setIsSubmitting(true);
+    setError("");
+    try {
+      const signOutResults = await Promise.all(
+        tenantChoices
+          .filter((otherCandidate) => otherCandidate.cityId !== candidate.cityId)
+          .map((otherCandidate) => signOutTenantLocally(otherCandidate.client)),
+      );
+      if (signOutResults.some((wasCleared) => !wasCleared)) {
+        setError("Não foi possível limpar as sessões dos outros municípios. Tente novamente.");
+        return;
+      }
+
+      if (candidate.requiresReauthentication) {
+        const { data, error: authError } = await candidate.client.auth.signInWithPassword({
+          email: candidate.data.email,
+          password: candidate.data.password.trim(),
+        });
+        if (
+          authError ||
+          !data?.user ||
+          (candidate.authUserId && data.user.id !== candidate.authUserId)
+        ) {
+          if (data?.user) await signOutTenantLocally(candidate.client);
+          setError(
+            authError?.message || "Não foi possível confirmar o acesso ao município escolhido. Tente novamente.",
+          );
+          return;
+        }
+      }
+
+      setTenantChoices([]);
+      await finishLogin(candidate);
+    } catch (authError: any) {
+      setError(authError?.message || "Não foi possível confirmar o acesso ao município escolhido.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -995,298 +1110,440 @@ const LoginView = ({
       setError("Por favor, preencha todos os campos obrigatórios.");
       return;
     }
-    if (!availableCities.some((city) => city.id === selectedCityId)) {
-      setError("Selecione o município da conta antes de entrar.");
+    if (availableCities.length === 0) {
+      setError("Nenhum município atendido está disponível para login no momento.");
       return;
     }
-    const citySupabase = getSupabaseClientForCity(selectedCityId);
-    const cityIsRealSupabase = isRealSupabaseForCity(selectedCityId);
-    if (!citySupabase) {
-      setError("O projeto Supabase deste município não está configurado; o login não foi enviado a outro município.");
-      return;
-    }
+
     setError("");
     setIsSubmitting(true);
 
     try {
       const cleanId = loginId.trim().toLowerCase();
-
-      // Check if user entered a username instead of an email
+      const seenCityIds = new Set<string>();
+      const uniqueAvailableCities = availableCities.filter((city) => {
+        if (seenCityIds.has(city.id)) return false;
+        seenCityIds.add(city.id);
+        return true;
+      });
+      const targetEmailsByCity = new globalThis.Map<string, string>();
       let targetEmail = cleanId;
       if (!targetEmail.includes("@")) {
         if (targetEmail === "admin") {
           targetEmail = "admin@commuaria.com";
         } else {
-          // Name-only login is allowed only when it resolves to one unique cached account.
           const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
-          const localProfiles: UserProfile[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
-          const nameMatches = localProfiles.filter(
-            (profile) =>
+          const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+          const localProfiles: any[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+          const localUsers: any[] = Array.isArray(localUsersValue) ? localUsersValue : [];
+          let hasAmbiguousNameInCity = false;
+
+          for (const city of uniqueAvailableCities) {
+            const nameMatches = [...localProfiles, ...localUsers].filter((profile: any) =>
               (profile.name || "").trim().toLowerCase() === cleanId &&
               profile.email?.trim() &&
-              (profile.city_id?.trim() === selectedCityId ||
-                (selectedCityId === "araucaria-pr" && isLegacyGlobalTenantAdmin(profile))),
-          );
-          const uniqueEmails = new Set(nameMatches.map((profile) => profile.email.trim().toLowerCase()));
-          if (uniqueEmails.size === 1) {
-            targetEmail = Array.from(uniqueEmails)[0];
-          } else {
+              (profile.city_id?.trim() === city.id ||
+                (city.id === ARAUCARIA_CITY_ID && isLegacyGlobalTenantAdmin(profile))),
+            );
+            const uniqueEmails = new Set(
+              nameMatches.map((profile: any) => profile.email.trim().toLowerCase()),
+            );
+            if (uniqueEmails.size > 1) hasAmbiguousNameInCity = true;
+            if (uniqueEmails.size === 1) {
+              targetEmailsByCity.set(city.id, Array.from(uniqueEmails)[0] as string);
+            }
+          }
+
+          if (hasAmbiguousNameInCity || targetEmailsByCity.size === 0) {
             setError("Por favor, informe seu e-mail completo de cadastro.");
-            setIsSubmitting(false);
             return;
           }
+          targetEmail = Array.from(targetEmailsByCity.values())[0];
         }
       }
+      const tenantTargets = uniqueAvailableCities.map((city) => {
+        const isReal = isRealSupabaseForCity(city.id);
+        return {
+          city,
+          isReal,
+          client: getSupabaseClientForCity(city.id),
+        };
+      });
 
-      // 1. Authenticate against the selected municipality's Supabase Auth.
-      if (citySupabase) {
+      type TenantAttempt =
+        | { kind: "candidate"; candidate: LoginTenantCandidate }
+        | { kind: "rejected"; message?: string }
+        | { kind: "unavailable"; message: string; sessionCleanupFailed?: boolean }
+        | { kind: "unlinked" }
+        | { kind: "no-match" };
+
+      const classifyAuthError = (authError: any): TenantAttempt => {
+        const message = typeof authError?.message === "string" ? authError.message : "";
+        const normalizedMessage = message.toLowerCase();
+        if (normalizedMessage.includes("rate limit") || normalizedMessage.includes("rate_limit")) {
+          return {
+            kind: "unavailable",
+            message: "Muitas tentativas de login. Aguarde alguns instantes e tente novamente.",
+          };
+        }
+        if (normalizedMessage.includes("email not confirmed")) {
+          return {
+            kind: "rejected",
+            message: "E-mail ainda não confirmado. Confirme seu cadastro antes de entrar.",
+          };
+        }
+        if (
+          normalizedMessage.includes("invalid login credentials") ||
+          normalizedMessage.includes("invalid_grant") ||
+          normalizedMessage.includes("user not found") ||
+          normalizedMessage.includes("e-mail ou senha incorretos")
+        ) {
+          return { kind: "rejected" };
+        }
+        return {
+          kind: "unavailable",
+          message: message || "Não foi possível conectar ao projeto municipal.",
+        };
+      };
+
+      const createAuthenticatedCandidate = async (
+        city: CityItem,
+        client: any,
+        isReal: boolean,
+        authUser: any,
+        tenantEmail: string,
+      ): Promise<TenantAttempt> => {
+        let resolvedProfile: any = null;
         try {
-          const { data, error: supaError } = await citySupabase.auth.signInWithPassword({
-            email: targetEmail,
-            password: password.trim(),
-          });
+          const { data: profile, error: profileError } = await client
+            .from("profiles")
+            .select("*")
+            .eq("id", authUser.id)
+            .maybeSingle();
+          if (!profileError) resolvedProfile = profile;
+        } catch (profileError) {
+          console.warn("Erro ao buscar profile:", profileError);
+        }
 
-          if (!supaError && data?.user) {
-            // Fetch real role and assigned_category from profiles table in Supabase
-            let resolvedProfile: any = null;
-            try {
-              const { data: profile } = await citySupabase
-                .from("profiles")
-                .select("*")
-                .eq("id", data.user.id)
-                .maybeSingle();
-              resolvedProfile = profile;
-            } catch (e) {
-              console.warn("Erro ao buscar profile:", e);
-            }
+        if (!resolvedProfile) {
+          try {
+            const { data: profileByEmail, error: profileError } = await client
+              .from("profiles")
+              .select("*")
+              .eq("email", tenantEmail)
+              .maybeSingle();
+            if (!profileError && profileByEmail) resolvedProfile = profileByEmail;
+          } catch (profileError) {
+            console.warn("Erro ao buscar profile por email:", profileError);
+          }
+        }
 
-            if (!resolvedProfile) {
-              try {
-                const { data: profileByEmail } = await citySupabase
-                  .from("profiles")
-                  .select("*")
-                  .eq("email", targetEmail)
-                  .maybeSingle();
-                if (profileByEmail) {
-                  resolvedProfile = profileByEmail;
-                }
-              } catch (e) {
-                console.warn("Erro ao buscar profile por email:", e);
-              }
-            }
+        const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+        const localProfiles: UserProfile[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+        const tenantLocalProfiles = localProfiles.filter(
+          (profile) =>
+            profile.city_id?.trim() === city.id ||
+            (city.id === ARAUCARIA_CITY_ID && isLegacyGlobalTenantAdmin(profile)),
+        );
+        const matchedLocalProfile = findUnambiguousProfileByIdentity(
+          tenantLocalProfiles,
+          authUser.id,
+          tenantEmail,
+        );
 
-            const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
-            const localProfiles: UserProfile[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
-            const tenantLocalProfiles = localProfiles.filter(
-              (profile) =>
-                profile.city_id?.trim() === selectedCityId ||
-                (selectedCityId === "araucaria-pr" && isLegacyGlobalTenantAdmin(profile)),
-            );
-            const matchedLocalProfile = findUnambiguousProfileByIdentity(
-              tenantLocalProfiles,
-              data.user.id,
-              targetEmail,
-            );
+        const roleFromProfile = (profile: any): UserRole => {
+          if (city.id === ARAUCARIA_CITY_ID && isLegacyGlobalTenantAdmin(profile)) return "admin";
+          if (profile?.role === "diretor" || profile?.role === "supervisor" || profile?.role === "funcionario") {
+            return profile.role;
+          }
+          return "user";
+        };
+        const finalRole: UserRole = resolvedProfile
+          ? roleFromProfile(resolvedProfile)
+          : roleFromProfile(matchedLocalProfile);
+        const isGlobalAdmin =
+          city.id === ARAUCARIA_CITY_ID &&
+          (isLegacyGlobalTenantAdmin(resolvedProfile) || isLegacyGlobalTenantAdmin(matchedLocalProfile));
+        const authenticatedProfileCityId =
+          resolvedProfile?.city_id?.trim() || matchedLocalProfile?.city_id?.trim() || "";
 
-            // A database profile is authoritative when present; cached roles are fallback-only.
-            const roleFromProfile = (profile: any): UserRole => {
-              if (isLegacyGlobalTenantAdmin(profile)) return "admin";
-              if (profile?.role === "diretor" || profile?.role === "supervisor" || profile?.role === "funcionario") {
-                return profile.role;
-              }
-              return "user";
-            };
-            const finalRole: UserRole = resolvedProfile
-              ? roleFromProfile(resolvedProfile)
-              : roleFromProfile(matchedLocalProfile);
-            const authenticatedProfileCityId =
-              resolvedProfile?.city_id?.trim() || matchedLocalProfile?.city_id?.trim() || "";
-            if (
-              cityIsRealSupabase &&
-              finalRole !== "admin" &&
-              authenticatedProfileCityId !== selectedCityId
-            ) {
-              await citySupabase.auth.signOut();
-              setError("A conta não tem vínculo validado com o município selecionado.");
-              setIsSubmitting(false);
-              return;
-            }
+        if (isReal && !isGlobalAdmin && authenticatedProfileCityId !== city.id) {
+          const sessionCleared = await signOutTenantLocally(client);
+          return sessionCleared
+            ? { kind: "unlinked" }
+            : {
+                kind: "unavailable",
+                message: "Não foi possível encerrar a sessão da conta sem vínculo municipal.",
+                sessionCleanupFailed: true,
+              };
+        }
 
-            const localProfileMatchesDatabaseTenant = Boolean(
-              resolvedProfile &&
-              matchedLocalProfile &&
-              matchedLocalProfile.id === resolvedProfile.id &&
-              matchedLocalProfile.city_id?.trim() === resolvedProfile.city_id?.trim(),
-            );
-            const localFallbackProfile = resolvedProfile
-              ? localProfileMatchesDatabaseTenant ? matchedLocalProfile : null
-              : matchedLocalProfile;
-            const finalCategory =
-              resolvedProfile?.assigned_category ||
-              localFallbackProfile?.assigned_category ||
-              (finalRole === "supervisor" || finalRole === "funcionario" ? "Pavimentação" : null);
+        const localProfileMatchesDatabaseTenant = Boolean(
+          resolvedProfile &&
+          matchedLocalProfile &&
+          matchedLocalProfile.id === resolvedProfile.id &&
+          matchedLocalProfile.city_id?.trim() === resolvedProfile.city_id?.trim(),
+        );
+        const localFallbackProfile = resolvedProfile
+          ? localProfileMatchesDatabaseTenant ? matchedLocalProfile : null
+          : matchedLocalProfile;
+        const assignedCategory =
+          resolvedProfile?.assigned_category ||
+          localFallbackProfile?.assigned_category ||
+          (finalRole === "supervisor" || finalRole === "funcionario" ? "Pavimentação" : null);
+        const resolvedName =
+          resolvedProfile?.name ||
+          localFallbackProfile?.name ||
+          authUser.user_metadata?.name ||
+          tenantEmail.split("@")[0];
+        const candidateProfile = resolvedProfile || matchedLocalProfile;
+        const blockStatus =
+          finalRole !== "admin" && candidateProfile
+            ? checkAccountBlockStatus(candidateProfile)
+            : undefined;
 
-            const finalName =
-              resolvedProfile?.name ||
-              localFallbackProfile?.name ||
-              data.user.user_metadata?.name ||
-              targetEmail.split("@")[0];
-
-            const candidateProfile = resolvedProfile || matchedLocalProfile;
-            if (finalRole !== "admin" && candidateProfile) {
-              const blockStatus = checkAccountBlockStatus(candidateProfile);
-              if (blockStatus.isBlocked) {
-                if (onBlocked) {
-                  onBlocked(blockStatus, targetEmail);
-                } else {
-                  setError(`Conta suspensa: ${blockStatus.reason || "Acesso bloqueado pela administração."}`);
-                }
-                setIsSubmitting(false);
-                return;
-              }
-            }
-
-            onLogin(finalRole, finalCategory, {
-              id: resolvedProfile?.id || data.user.id,
-              name: finalName,
-              email: targetEmail,
+        return {
+          kind: "candidate",
+          candidate: {
+            cityId: city.id,
+            cityName: city.name,
+            client,
+            role: finalRole,
+            requiresReauthentication: true,
+            authUserId: authUser.id,
+            assignedCategory,
+            data: {
+              id: resolvedProfile?.id || authUser.id,
+              name: resolvedName,
+              email: tenantEmail,
               password,
               city_id: resolvedProfile
                 ? resolvedProfile.city_id?.trim() || null
-                : matchedLocalProfile?.city_id?.trim(),
-              auth_city_id: selectedCityId,
-            });
-            return;
-          }
+                : localFallbackProfile?.city_id?.trim(),
+              auth_city_id: city.id,
+            },
+            blockStatus,
+          },
+        };
+      };
 
-          // If Supabase returned an authentication error:
-          if (supaError) {
-            if (cityIsRealSupabase) {
-              const errStr = (supaError.message || "").toLowerCase();
-              let msg = "E-mail ou senha incorretos. Verifique suas credenciais ou crie uma conta caso ainda não seja cadastrado.";
-              if (
-                errStr.includes("invalid login credentials") ||
-                errStr.includes("invalid_grant") ||
-                errStr.includes("user not found")
-              ) {
-                msg = "Conta não encontrada ou senha incorreta no Supabase. Verifique seus dados ou cadastre-se.";
-              } else if (errStr.includes("email not confirmed")) {
-                msg = "E-mail ainda não confirmado. Por favor, confirme seu cadastro no e-mail recebido ou desative a confirmação no Supabase.";
-              } else if (errStr.includes("rate limit") || errStr.includes("rate_limit")) {
-                msg = "Muitas tentativas de login. Aguarde alguns instantes e tente novamente.";
-              } else if (supaError.message) {
-                msg = supaError.message;
-              }
-              setError(msg);
-              setIsSubmitting(false);
-              return;
-            }
-          }
-        } catch (err: any) {
-          console.warn("Supabase auth error:", err);
-          if (cityIsRealSupabase) {
-            setError("Erro ao autenticar no Supabase: " + (err.message || "Tente novamente"));
-            setIsSubmitting(false);
-            return;
-          }
-        }
-      }
+      const authenticateLocalAccount = (
+        city: CityItem,
+        client: any,
+        tenantEmail: string,
+      ): TenantAttempt => {
+        const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+        const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+        const localProfiles: any[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+        const localUsers: any[] = Array.isArray(localUsersValue) ? localUsersValue : [];
+        const tenantLocalIdentities = [...localProfiles, ...localUsers].filter(
+          (profile: any) =>
+            profile.city_id?.trim() === city.id ||
+            (city.id === ARAUCARIA_CITY_ID && isLegacyGlobalTenantAdmin(profile)),
+        );
+        const localIdentity = findUnambiguousProfileByIdentity(
+          tenantLocalIdentities,
+          null,
+          tenantEmail,
+        );
+        const matchesLocalIdentity = (candidate: any) => Boolean(
+          localIdentity &&
+          candidate.id === localIdentity.id &&
+          (candidate.email || "").trim().toLowerCase() === (localIdentity.email || "").trim().toLowerCase() &&
+          (candidate.city_id || "").trim() === (localIdentity.city_id || "").trim(),
+        );
+        const matchedLocalProfile = localIdentity
+          ? localProfiles.find(matchesLocalIdentity)
+          : undefined;
+        const matchedLocalUser = localIdentity
+          ? localUsers.find(matchesLocalIdentity)
+          : undefined;
 
-      // 2. Fallback only for Local Storage / Mock Mode (when Supabase credentials are not connected)
-      const localProfiles: UserProfile[] = JSON.parse(
-        localStorage.getItem("commuaria_profiles") || "[]",
-      );
-      const localUsers: any[] = JSON.parse(
-        localStorage.getItem("commuaria_users") || "[]",
-      );
+        if (!matchedLocalProfile && !matchedLocalUser) return { kind: "no-match" };
 
-      const tenantLocalIdentities = [...localProfiles, ...localUsers].filter(
-        (profile: any) =>
-          profile.city_id?.trim() === selectedCityId ||
-          (selectedCityId === "araucaria-pr" && isLegacyGlobalTenantAdmin(profile)),
-      );
-      const localIdentity = findUnambiguousProfileByIdentity(
-        tenantLocalIdentities,
-        null,
-        targetEmail,
-      );
-      const matchesLocalIdentity = (candidate: any) => Boolean(
-        localIdentity &&
-        candidate.id === localIdentity.id &&
-        (candidate.email || "").trim().toLowerCase() === (localIdentity.email || "").trim().toLowerCase() &&
-        (candidate.city_id || "").trim() === (localIdentity.city_id || "").trim(),
-      );
-      const matchedLocalProfile = localIdentity ? localProfiles.find(matchesLocalIdentity) : undefined;
-      const matchedLocalUser = localIdentity ? localUsers.find(matchesLocalIdentity) : undefined;
-
-      if (matchedLocalProfile || matchedLocalUser) {
         const storedPassword = matchedLocalUser?.password || matchedLocalProfile?.password;
         if (storedPassword && storedPassword !== password.trim()) {
-          setError("Senha incorreta. Verifique os dados digitados.");
-          setIsSubmitting(false);
-          return;
+          return { kind: "rejected", message: "Senha incorreta. Verifique os dados digitados." };
         }
 
-        let userRole: UserRole = "user";
-        const isAdminAccount =
-          isLegacyGlobalTenantAdmin(matchedLocalProfile) ||
-          isLegacyGlobalTenantAdmin(matchedLocalUser);
-
-        if (isAdminAccount) {
-          userRole = "admin";
-        } else if (
-          matchedLocalProfile?.role === "diretor" ||
-          matchedLocalUser?.role === "diretor"
-        ) {
-          userRole = "diretor";
-        } else if (
-          matchedLocalProfile?.role === "supervisor" ||
-          matchedLocalUser?.role === "supervisor"
-        ) {
-          userRole = "supervisor";
-        } else if (
-          matchedLocalProfile?.role === "funcionario" ||
-          matchedLocalUser?.role === "funcionario"
-        ) {
-          userRole = "funcionario";
-        } else {
-          userRole = "user";
+        const isGlobalAdmin =
+          city.id === ARAUCARIA_CITY_ID &&
+          (isLegacyGlobalTenantAdmin(matchedLocalProfile) || isLegacyGlobalTenantAdmin(matchedLocalUser));
+        let role: UserRole = "user";
+        if (isGlobalAdmin) {
+          role = "admin";
+        } else if (matchedLocalProfile?.role === "diretor" || matchedLocalUser?.role === "diretor") {
+          role = "diretor";
+        } else if (matchedLocalProfile?.role === "supervisor" || matchedLocalUser?.role === "supervisor") {
+          role = "supervisor";
+        } else if (matchedLocalProfile?.role === "funcionario" || matchedLocalUser?.role === "funcionario") {
+          role = "funcionario";
         }
-
-        const category =
+        const assignedCategory =
           matchedLocalProfile?.assigned_category ||
           matchedLocalUser?.assigned_category ||
-          (userRole === "supervisor" || userRole === "funcionario" ? "Pavimentação" : null);
+          (role === "supervisor" || role === "funcionario" ? "Pavimentação" : null);
+        const candidateProfile = matchedLocalProfile || matchedLocalUser;
+        const blockStatus =
+          role !== "admin" && candidateProfile
+            ? checkAccountBlockStatus(candidateProfile)
+            : undefined;
 
-        const resolvedId = matchedLocalProfile?.id || matchedLocalUser?.id || "u_" + targetEmail.replace(/[^a-zA-Z0-9]/g, "_");
+        return {
+          kind: "candidate",
+          candidate: {
+            cityId: city.id,
+            cityName: city.name,
+            client,
+            role,
+            assignedCategory,
+            requiresReauthentication: false,
+            data: {
+              id: matchedLocalProfile?.id || matchedLocalUser?.id || `u_${tenantEmail.replace(/[^a-zA-Z0-9]/g, "_")}`,
+              name: matchedLocalProfile?.name || matchedLocalUser?.name || tenantEmail.split("@")[0],
+              email: tenantEmail,
+              password,
+              city_id: matchedLocalProfile?.city_id || matchedLocalUser?.city_id,
+              auth_city_id: city.id,
+            },
+            blockStatus,
+          },
+        };
+      };
 
-        const candidateLocal = matchedLocalProfile || matchedLocalUser;
-        if (userRole !== "admin" && candidateLocal) {
-          const blockStatus = checkAccountBlockStatus(candidateLocal);
-          if (blockStatus.isBlocked) {
-            if (onBlocked) {
-              onBlocked(blockStatus, targetEmail);
-            } else {
-              setError(`Conta suspensa: ${blockStatus.reason || "Acesso bloqueado pela administração."}`);
+      const attemptTenant = async (tenant: {
+        city: CityItem;
+        client: any;
+        isReal: boolean;
+      }): Promise<TenantAttempt> => {
+        const isNameLogin = !cleanId.includes("@") && cleanId !== "admin";
+        const tenantEmail =
+          targetEmailsByCity.get(tenant.city.id) || (isNameLogin ? "" : targetEmail);
+        if (!tenantEmail) return { kind: "no-match" };
+
+        let authenticated = false;
+        try {
+          const { data, error: authError } = await tenant.client.auth.signInWithPassword({
+            email: tenantEmail,
+            password: password.trim(),
+          });
+          if (authError || !data?.user) {
+            if (data?.user) {
+              const sessionCleared = await signOutTenantLocally(tenant.client);
+              if (!sessionCleared) {
+                return {
+                  kind: "unavailable",
+                  message: "Não foi possível encerrar a sessão municipal temporária.",
+                  sessionCleanupFailed: true,
+                };
+              }
             }
-            setIsSubmitting(false);
-            return;
+            if (tenant.isReal) {
+              return classifyAuthError(authError || { message: "Conta não encontrada neste município." });
+            }
+            return authenticateLocalAccount(tenant.city, tenant.client, tenantEmail);
           }
+          authenticated = true;
+          return await createAuthenticatedCandidate(
+            tenant.city,
+            tenant.client,
+            tenant.isReal,
+            data.user,
+            tenantEmail,
+          );
+        } catch (authError: any) {
+          if (authenticated) {
+            const sessionCleared = await signOutTenantLocally(tenant.client);
+            if (!sessionCleared) {
+              return {
+                kind: "unavailable",
+                message: "Não foi possível encerrar a sessão municipal temporária.",
+                sessionCleanupFailed: true,
+              };
+            }
+          }
+          if (!tenant.isReal) {
+            try {
+              return authenticateLocalAccount(tenant.city, tenant.client, tenantEmail);
+            } catch (localError: any) {
+              return { kind: "unavailable", message: localError?.message || "Falha ao consultar contas locais." };
+            }
+          }
+          return {
+            kind: "unavailable",
+            message: authError?.message || "Não foi possível conectar ao projeto municipal.",
+          };
         }
+      };
 
-        onLogin(userRole, category, {
-          id: resolvedId,
-          name: matchedLocalProfile?.name || matchedLocalUser?.name || targetEmail.split("@")[0],
-          email: targetEmail,
-          password,
-          city_id: matchedLocalProfile?.city_id || matchedLocalUser?.city_id,
-          auth_city_id: selectedCityId,
-        });
+      const tenantInitializationFailures = tenantTargets
+        .filter((tenant) => tenant.isReal && !tenant.client)
+        .map((tenant) => `Não foi possível inicializar o projeto de ${tenant.city.name}.`);
+      const configuredTenants = tenantTargets.filter(
+        (tenant) => tenant.client && (tenant.isReal || tenant.city.id === ARAUCARIA_CITY_ID),
+      );
+      if (configuredTenants.length > 0) {
+        markLoginProbe(configuredTenants.map((tenant) => tenant.city.id));
+      }
+      const attempts = await Promise.all(configuredTenants.map(attemptTenant));
+      const authenticatedCandidates = attempts.flatMap((attempt) =>
+        attempt.kind === "candidate" ? [attempt.candidate] : [],
+      );
+      const unavailableMessages = [
+        ...tenantInitializationFailures,
+        ...attempts.flatMap((attempt) => attempt.kind === "unavailable" ? [attempt.message] : []),
+      ];
+
+      if (unavailableMessages.length > 0) {
+        const clearedSessions = await Promise.all(
+          authenticatedCandidates.map((candidate) => signOutTenantLocally(candidate.client)),
+        );
+        const cleanupFailed = attempts.some(
+          (attempt) => attempt.kind === "unavailable" && attempt.sessionCleanupFailed,
+        );
+        if (clearedSessions.every(Boolean) && !cleanupFailed) clearLoginProbe();
+        setTenantChoices([]);
+        setError(
+          `Não foi possível verificar todos os municípios com projeto configurado. Tente novamente. ${unavailableMessages[0]}`,
+        );
         return;
       }
 
-      // 3. Reject unauthenticated accounts
-      setError("Nenhuma conta encontrada com este e-mail. Por favor, crie uma conta antes de acessar.");
+      const resolution = resolveTenantAuthCandidates(
+        authenticatedCandidates.map((candidate) => ({ cityId: candidate.cityId, value: candidate })),
+      );
+      if (resolution.kind === "unique") {
+        await finishLogin(resolution.candidate.value);
+        return;
+      }
+      if (resolution.kind === "ambiguous") {
+        const choices = resolution.candidates.map((candidate) => candidate.value);
+        const clearedSessions = await Promise.all(
+          choices.map((candidate) => signOutTenantLocally(candidate.client)),
+        );
+        if (clearedSessions.some((wasCleared) => !wasCleared)) {
+          setError("Não foi possível preparar a escolha de município com segurança. Tente novamente.");
+          return;
+        }
+        clearLoginProbe();
+        setTenantChoices(choices);
+        return;
+      }
+
+      clearLoginProbe();
+      const hasUnlinkedAccount = attempts.some((attempt) => attempt.kind === "unlinked");
+      const rejectionMessage = attempts.find(
+        (attempt) => attempt.kind === "rejected" && attempt.message,
+      );
+      if (hasUnlinkedAccount) {
+        setError("A conta não tem vínculo validado com nenhum município configurado.");
+      } else if (rejectionMessage?.kind === "rejected") {
+        setError(rejectionMessage.message || "E-mail ou senha incorretos. Verifique suas credenciais.");
+      } else if (configuredTenants.length === 0) {
+        setError("Nenhum projeto de autenticação municipal está disponível para login.");
+      } else {
+        setError("Nenhuma conta encontrada com estas credenciais nos municípios configurados.");
+      }
     } catch (err: any) {
       setError("Erro ao autenticar: " + (err.message || "Tente novamente"));
     } finally {
@@ -1326,7 +1583,8 @@ const LoginView = ({
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
         type="button"
-        onClick={onBack}
+        disabled={isSubmitting}
+        onClick={() => void handleBack()}
         className={`absolute top-8 left-8 z-30 w-14 h-14 rounded-full backdrop-blur-[6px] border flex items-center justify-center transition-all shadow-lg ${
           isDark
             ? "bg-[#d2d2d2]/10 border-white/20 text-white hover:bg-white/20"
@@ -1364,88 +1622,108 @@ const LoginView = ({
             </motion.div>
           )}
 
-          {/* Input Fields */}
-          <div className="space-y-3 mb-2">
-            <label className={`block text-left text-xs font-semibold ${isDark ? "text-white/85" : "text-[#183a2b]"}`}>
-              Município da conta
-              <select
-                required
-                value={selectedCityId}
-                onChange={(event) => {
-                  setSelectedCityId(event.target.value);
-                  onCityChange(event.target.value);
-                  setError("");
-                }}
-                className={`mt-1.5 w-full backdrop-blur-[6px] border rounded-full px-7 py-3.5 transition-all shadow-inner focus:outline-none ${
-                  isDark
-                    ? "bg-[#34433f] border-white/15 text-white"
-                    : "bg-white/90 border-black/15 text-[#183a2b]"
-                }`}
-              >
-                <option value="">Selecione seu município</option>
-                {availableCities.map((city) => (
-                  <option key={city.id} value={city.id}>{city.name} · {city.state}</option>
+          {tenantChoices.length > 1 ? (
+            <div className="space-y-4 text-center">
+              <div>
+                <h2 className={`text-2xl font-serif italic font-bold ${isDark ? "text-white" : "text-[#183a2b]"}`}>
+                  Escolha o município da sua conta
+                </h2>
+                <p className={`mt-2 text-sm ${isDark ? "text-white/75" : "text-[#2d4a3b]/80"}`}>
+                  As credenciais foram aceitas em mais de um município. Selecione onde deseja entrar.
+                </p>
+              </div>
+              <div className="space-y-3">
+                {tenantChoices.map((candidate) => (
+                  <div key={candidate.cityId}>
+                    <GlassButton
+                      type="button"
+                      disabled={isSubmitting}
+                      onClick={() => void chooseTenant(candidate)}
+                      className="py-3.5 text-lg font-serif w-full"
+                    >
+                      <MapPin size={20} className="mr-2" />
+                      {candidate.cityName}
+                    </GlassButton>
+                  </div>
                 ))}
-              </select>
-            </label>
-            <input
-              type="text"
-              placeholder="Nome ou E-mail"
-              value={loginId}
-              onChange={(e) => setLoginId(e.target.value)}
-              className={`w-full backdrop-blur-[6px] border rounded-full px-7 py-3.5 transition-all font-serif italic text-base sm:text-lg shadow-inner focus:outline-none ${
-                isDark
-                  ? "bg-[#d2d2d2]/10 border-white/15 text-white placeholder:text-white/60 focus:ring-1 focus:ring-white/20"
-                  : "bg-black/5 border-black/15 text-[#183a2b] placeholder-[#2d4a3b]/60 focus:ring-1 focus:ring-[#183a2b]/30 focus:border-[#183a2b]"
-              }`}
-            />
-            <input
-              type="password"
-              placeholder="Senha"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className={`w-full backdrop-blur-[6px] border rounded-full px-7 py-3.5 transition-all font-serif italic text-base sm:text-lg shadow-inner focus:outline-none ${
-                isDark
-                  ? "bg-[#d2d2d2]/10 border-white/15 text-white placeholder:text-white/60 focus:ring-1 focus:ring-white/20"
-                  : "bg-black/5 border-black/15 text-[#183a2b] placeholder-[#2d4a3b]/60 focus:ring-1 focus:ring-[#183a2b]/30 focus:border-[#183a2b]"
-              }`}
-            />
-            <button
-              type="button"
-              onClick={() => onForgotPassword(selectedCityId)}
-              className={`font-serif italic text-xs hover:underline transition-all block w-full text-center mt-1 ${
-                isDark ? "text-white/80 hover:text-white" : "text-[#183a2b]/80 hover:text-[#183a2b]"
-              }`}
-            >
-              esqueceu a senha
-            </button>
-          </div>
-
-          {/* Action Buttons */}
-          <div className="pt-2 space-y-4">
-            <GlassButton
-              onClick={() => {}}
-              type="submit"
-              disabled={isSubmitting}
-              className="py-3.5 text-xl font-serif w-full"
-            >
-              {isSubmitting ? "Entrando..." : "Entrar"} <ArrowRight size={24} />
-            </GlassButton>
-
-            <div className="flex flex-col gap-4 text-center pt-2">
+              </div>
               <button
                 type="button"
-                onClick={onGoToSignup}
-                className={`w-fit py-2 px-6 rounded-full transition-all flex items-center justify-center gap-3 backdrop-blur-[6px] border text-[13px] font-serif italic mx-auto ${
-                  isDark
-                    ? "bg-[#d2d2d2]/10 border-white/10 text-white/80 hover:bg-white/15"
-                    : "bg-black/5 border-black/10 text-[#183a2b]/80 hover:bg-black/10"
+                disabled={isSubmitting}
+                onClick={() => void cancelTenantChoice()}
+                className={`font-serif italic text-sm hover:underline transition-all ${
+                  isDark ? "text-white/80 hover:text-white" : "text-[#183a2b]/80 hover:text-[#183a2b]"
                 }`}
               >
-                Não possui conta? <ArrowRight size={14} />
+                Voltar e revisar os dados
               </button>
             </div>
-          </div>
+          ) : (
+            <>
+              <div className="space-y-3 mb-2">
+                <input
+                  type="text"
+                  placeholder="Nome ou E-mail"
+                  disabled={isSubmitting}
+                  value={loginId}
+                  onChange={(e) => setLoginId(e.target.value)}
+                  className={`w-full backdrop-blur-[6px] border rounded-full px-7 py-3.5 transition-all font-serif italic text-base sm:text-lg shadow-inner focus:outline-none ${
+                    isDark
+                      ? "bg-[#d2d2d2]/10 border-white/15 text-white placeholder:text-white/60 focus:ring-1 focus:ring-white/20"
+                      : "bg-black/5 border-black/15 text-[#183a2b] placeholder-[#2d4a3b]/60 focus:ring-1 focus:ring-[#183a2b]/30 focus:border-[#183a2b]"
+                  }`}
+                />
+                <input
+                  type="password"
+                  placeholder="Senha"
+                  disabled={isSubmitting}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className={`w-full backdrop-blur-[6px] border rounded-full px-7 py-3.5 transition-all font-serif italic text-base sm:text-lg shadow-inner focus:outline-none ${
+                    isDark
+                      ? "bg-[#d2d2d2]/10 border-white/15 text-white placeholder:text-white/60 focus:ring-1 focus:ring-white/20"
+                      : "bg-black/5 border-black/15 text-[#183a2b] placeholder-[#2d4a3b]/60 focus:ring-1 focus:ring-[#183a2b]/30 focus:border-[#183a2b]"
+                  }`}
+                />
+                <button
+                  type="button"
+                  disabled={isSubmitting}
+                  onClick={onForgotPassword}
+                  className={`font-serif italic text-xs hover:underline transition-all block w-full text-center mt-1 ${
+                    isDark ? "text-white/80 hover:text-white" : "text-[#183a2b]/80 hover:text-[#183a2b]"
+                  }`}
+                >
+                  esqueceu a senha
+                </button>
+              </div>
+
+              <div className="pt-2 space-y-4">
+                <GlassButton
+                  onClick={() => {}}
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="py-3.5 text-xl font-serif w-full"
+                >
+                  {isSubmitting ? "Verificando municípios..." : "Entrar"} <ArrowRight size={24} />
+                </GlassButton>
+
+                <div className="flex flex-col gap-4 text-center pt-2">
+                  <button
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={onGoToSignup}
+                    className={`w-fit py-2 px-6 rounded-full transition-all flex items-center justify-center gap-3 backdrop-blur-[6px] border text-[13px] font-serif italic mx-auto ${
+                      isDark
+                        ? "bg-[#d2d2d2]/10 border-white/10 text-white/80 hover:bg-white/15"
+                        : "bg-black/5 border-black/10 text-[#183a2b]/80 hover:bg-black/10"
+                    }`}
+                  >
+                    Não possui conta? <ArrowRight size={14} />
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </motion.form>
       </div>
     </div>
@@ -3031,12 +3309,39 @@ const FloatingMenu = ({
 
 const MapWatcher = ({
   onMoveEnd,
+  isPointAllowed,
+  fallbackCenter,
+  onRejectedMove,
 }: {
   onMoveEnd: (lat: number, lng: number) => void;
+  isPointAllowed?: (lat: number, lng: number) => boolean;
+  fallbackCenter?: [number, number];
+  onRejectedMove?: () => void;
 }) => {
+  const revertingToCenterRef = React.useRef<[number, number] | null>(null);
   const map = useMapEvents({
     moveend: () => {
       const center = map.getCenter();
+      const revertingTo = revertingToCenterRef.current;
+      if (
+        revertingTo &&
+        Math.abs(center.lat - revertingTo[0]) < 1e-8 &&
+        Math.abs(center.lng - revertingTo[1]) < 1e-8
+      ) {
+        revertingToCenterRef.current = null;
+        return;
+      }
+      revertingToCenterRef.current = null;
+
+      if (isPointAllowed && !isPointAllowed(center.lat, center.lng)) {
+        onRejectedMove?.();
+        if (fallbackCenter && isPointAllowed(fallbackCenter[0], fallbackCenter[1])) {
+          revertingToCenterRef.current = fallbackCenter;
+          map.setView(fallbackCenter, map.getZoom(), { animate: false });
+        }
+        return;
+      }
+
       onMoveEnd(center.lat, center.lng);
     },
   });
@@ -4213,6 +4518,18 @@ const AdminTasksView = ({
   );
 };
 
+const getCityReportMapCenter = (city?: CityItem | null): [number, number] => {
+  const preferredCenter: [number, number] = [
+    Number.isFinite(city?.center_lat) ? city.center_lat : 0,
+    Number.isFinite(city?.center_lng) ? city.center_lng : 0,
+  ];
+  const boundary = city ? cityFeature(city) : null;
+  if (!boundary || isPointInGeoJson(boundary, preferredCenter[0], preferredCenter[1])) {
+    return preferredCenter;
+  }
+  return getPointInGeoJson(boundary) ?? preferredCenter;
+};
+
 const ReportView = ({
   currentUser,
   city,
@@ -4238,14 +4555,24 @@ const ReportView = ({
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState<ReportCategory>("Pavimentação");
   const [locationQuery, setLocationQuery] = useState("");
-  const [mapCenter, setMapCenter] = useState<[number, number]>([
-    city?.center_lat ?? 0,
-    city?.center_lng ?? 0,
-  ]);
+  const [locationError, setLocationError] = useState("");
+  const [mapCenter, setMapCenter] = useState<[number, number]>(() => getCityReportMapCenter(city));
   const [isLoadingAddress, setIsLoadingAddress] = useState(false);
-  const hasValidTenantCity = Boolean(
-    city?.is_active && city.id === currentUser?.city_id?.trim(),
+  const cityBoundary = city ? cityFeature(city) : null;
+  const cityMapCenter = getCityReportMapCenter(city);
+  const cityHasUsableBoundary = Boolean(
+    cityBoundary && isPointInGeoJson(cityBoundary, cityMapCenter[0], cityMapCenter[1]),
   );
+  const reportCityId = currentUser && city
+    ? resolveWritableTenantCityId(resolveLegacyTenantPrincipal(currentUser), city.id)
+    : null;
+  const hasValidTenantCity = Boolean(
+    city?.is_active && reportCityId === city.id && cityHasUsableBoundary,
+  );
+  const isMapPointAllowed = (latitude: number, longitude: number) =>
+    Boolean(cityBoundary && isPointInGeoJson(cityBoundary, latitude, longitude));
+  const isMapCenterInsideCity = isMapPointAllowed(mapCenter[0], mapCenter[1]);
+  const mapFallbackCenter = isMapCenterInsideCity ? mapCenter : cityMapCenter;
   const [isSending, setIsSending] = useState(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -4255,6 +4582,8 @@ const ReportView = ({
   };
 
   const handleMapMove = async (lat: number, lng: number) => {
+    if (!hasValidTenantCity || !isMapPointAllowed(lat, lng)) return;
+    setLocationError("");
     setMapCenter([lat, lng]);
     setIsLoadingAddress(true);
     try {
@@ -4282,21 +4611,28 @@ const ReportView = ({
   useEffect(() => {
     if (!city || !hasValidTenantCity) {
       setLocationQuery("");
+      setLocationError("");
       return;
     }
-    const center: [number, number] = [city.center_lat, city.center_lng];
+    const center = cityMapCenter;
     setMapCenter(center);
+    setLocationError("");
     void handleMapMove(center[0], center[1]);
-  }, [city?.id, city?.center_lat, city?.center_lng, hasValidTenantCity]);
+  }, [city?.id, city?.center_lat, city?.center_lng, city?.boundary_geojson, reportCityId, hasValidTenantCity]);
 
   const handleSendReport = async () => {
     if (!title.trim()) {
       alert("Por favor, descreva o problema.");
       return;
     }
-    const reportCityId = currentUser?.city_id?.trim();
-    if (!reportCityId || !city || city.id !== reportCityId || !city.is_active) {
-      alert("Não foi possível confirmar um município ativo vinculado à sua conta.");
+    if (!reportCityId || !city || reportCityId !== city.id || !city.is_active || !hasValidTenantCity) {
+      alert("Não foi possível confirmar um município ativo, autorizado e com limite geográfico válido para sua conta.");
+      return;
+    }
+    if (!isMapCenterInsideCity) {
+      const message = `A localização da ocorrência precisa estar dentro do limite de ${city.name}.`;
+      setLocationError(message);
+      alert(message);
       return;
     }
     const citySupabase = getSupabaseClientForCity(reportCityId);
@@ -4377,8 +4713,8 @@ const ReportView = ({
         description: title.trim(),
         category: category,
         address: locationQuery || `Localização aproximada em ${city.name}`,
-        latitude: Number.isFinite(mapCenter[0]) ? mapCenter[0] : city.center_lat,
-        longitude: Number.isFinite(mapCenter[1]) ? mapCenter[1] : city.center_lng,
+        latitude: mapCenter[0],
+        longitude: mapCenter[1],
         image_url: imageUrl,
         anonymous: anonymous,
         user_id: activeUserId,
@@ -4401,8 +4737,6 @@ const ReportView = ({
           const validUserId = isUUID(activeUserId) ? activeUserId : null;
           const formattedDesc = `[Categoria: ${category}]\n${title.trim()}`;
           const safeAddress = locationQuery?.trim() || `${city.name} - ${city.state}`;
-          const safeLat = Number.isFinite(mapCenter[0]) ? mapCenter[0] : city.center_lat;
-          const safeLng = Number.isFinite(mapCenter[1]) ? mapCenter[1] : city.center_lng;
 
           const basePayload: any = {
             id: reportId,
@@ -4411,8 +4745,8 @@ const ReportView = ({
             description: formattedDesc,
             maintenance_type: category,
             address: safeAddress,
-            latitude: safeLat,
-            longitude: safeLng,
+            latitude: mapCenter[0],
+            longitude: mapCenter[1],
             image_url: imageUrl || null,
             anonymous: !!anonymous,
             user_id: validUserId,
@@ -4503,7 +4837,14 @@ const ReportView = ({
         if (res.ok) {
           const data = await res.json();
           if (data && data.length > 0) {
-            setMapCenter([parseFloat(data[0].lat), parseFloat(data[0].lon)]);
+            const latitude = parseFloat(data[0].lat);
+            const longitude = parseFloat(data[0].lon);
+            if (!isMapPointAllowed(latitude, longitude)) {
+              setLocationError(`O endereço pesquisado não está dentro do limite de ${city.name}.`);
+              return;
+            }
+            setLocationError("");
+            setMapCenter([latitude, longitude]);
           }
         }
       } catch (e) {
@@ -4516,9 +4857,9 @@ const ReportView = ({
     return (
       <div className={`min-h-full w-full flex items-center justify-center p-6 ${isDark ? "bg-[#5A635C] text-white" : "bg-white text-[#183a2b]"}`}>
         <div className={`max-w-lg rounded-3xl border p-8 text-center shadow-lg ${isDark ? "bg-white/5 border-white/10" : "bg-black/5 border-black/10"}`}>
-          <h2 className="text-2xl font-serif font-bold">Município não informado</h2>
+          <h2 className="text-2xl font-serif font-bold">Município indisponível</h2>
           <p className="mt-3 text-sm opacity-75">
-            Sua conta não está vinculada a um município ativo. Entre em contato com a administração municipal antes de registrar uma ocorrência.
+            Sua conta precisa estar autorizada para um município ativo com limite GeoJSON válido. Entre em contato com a administração municipal antes de registrar uma ocorrência.
           </p>
           <button
             type="button"
@@ -4747,6 +5088,10 @@ const ReportView = ({
               >
                 Arraste o mapa para posicionar o pin vermelho exatamente no local do problema.
               </span>
+              <span className={`mt-1 flex items-center gap-2 text-[11px] ${isDark ? "text-emerald-200/80" : "text-emerald-800"}`}>
+                <span className="inline-block h-0.5 w-5 shrink-0 rounded bg-emerald-500" />
+                O contorno verde marca o limite de {city?.name}; o ponto deve permanecer dentro dele.
+              </span>
             </div>
 
             <div
@@ -4764,6 +5109,20 @@ const ReportView = ({
               </span>
             </div>
 
+            {locationError && (
+              <div
+                role="alert"
+                className={`flex items-start gap-2 rounded-xl border px-4 py-3 text-xs font-semibold ${
+                  isDark
+                    ? "border-amber-300/25 bg-amber-300/10 text-amber-100"
+                    : "border-amber-700/20 bg-amber-50 text-amber-900"
+                }`}
+              >
+                <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                <span>{locationError}</span>
+              </div>
+            )}
+
             <div className="w-full h-80 lg:h-[350px] rounded-[24px] overflow-hidden shadow-2xl border border-white/20 bg-white/5 relative z-10 mt-1">
               <MapContainer
                 center={mapCenter}
@@ -4778,7 +5137,28 @@ const ReportView = ({
                 }}
               >
                 <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                <MapWatcher onMoveEnd={handleMapMove} />
+                {cityBoundary && (
+                  <GeoJSON
+                    key={`report-boundary-${city?.id}`}
+                    data={cityBoundary}
+                    interactive={false}
+                    style={{
+                      color: isDark ? "#6ee7b7" : "#15803d",
+                      weight: 2.5,
+                      opacity: 0.95,
+                      fillColor: isDark ? "#34d399" : "#22c55e",
+                      fillOpacity: 0.06,
+                    }}
+                  />
+                )}
+                <MapWatcher
+                  onMoveEnd={handleMapMove}
+                  isPointAllowed={isMapPointAllowed}
+                  fallbackCenter={mapFallbackCenter}
+                  onRejectedMove={() => {
+                    setLocationError(`A localização precisa estar dentro do limite de ${city?.name || "seu município"}. O mapa voltou à última posição válida.`);
+                  }}
+                />
                 <MapRecenter center={mapCenter} />
               </MapContainer>
               
@@ -4823,7 +5203,7 @@ const ReportView = ({
         <div className="flex justify-center mt-12 mb-10">
           <button
             onClick={handleSendReport}
-            disabled={isSending}
+            disabled={isSending || !isMapCenterInsideCity}
             className={`w-full max-w-md py-4.5 rounded-[30px] font-extrabold text-lg shadow-xl hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-3 group disabled:opacity-50 ${
               isDark
                 ? "bg-white text-zinc-900 shadow-black/25"
@@ -6765,6 +7145,9 @@ export function AppContent() {
     | "field_log"
     | "sla"
   >("landing");
+  const screenRef = React.useRef(screen);
+  screenRef.current = screen;
+  const loginProbeCleanupRef = React.useRef(false);
   const [selectedEmployeeWoId, setSelectedEmployeeWoId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [userRole, setUserRole] = useState<UserRole>("user");
@@ -6850,6 +7233,7 @@ export function AppContent() {
   );
   const [userReports, setUserReports] = useState<any[]>([]);
   const [forgotPasswordStep, setForgotPasswordStep] = useState<"email" | "code" | "reset">("email");
+  const [forgotPasswordCityId, setForgotPasswordCityId] = useState("");
 
   // System statistics states
   const [systemPendingCount, setSystemPendingCount] = useState(0);
@@ -7677,8 +8061,46 @@ export function AppContent() {
       console.warn("Erro ao limpar dados locais legados:", error);
     }
 
+    let interruptedLoginProbe = false;
+    let interruptedProbeCityIds: string[] = [];
+    try {
+      const storedProbe = window.sessionStorage.getItem(LOGIN_PROBE_SESSION_KEY);
+      if (storedProbe !== null) {
+        interruptedLoginProbe = true;
+        localStorage.removeItem("commuaria_active_session");
+        const parsedProbe = JSON.parse(storedProbe);
+        if (Array.isArray(parsedProbe)) {
+          interruptedProbeCityIds = parsedProbe.filter(
+            (cityId: unknown): cityId is string => typeof cityId === "string" && Boolean(cityId.trim()),
+          );
+        }
+      }
+    } catch (error) {
+      interruptedLoginProbe = true;
+      console.warn("Sessão de tentativa de login interrompida:", error);
+    }
+
+    if (interruptedLoginProbe) {
+      loginProbeCleanupRef.current = true;
+      void Promise.all(interruptedProbeCityIds.map(async (cityId) => {
+        const probeClient = getSupabaseClientForCity(cityId);
+        if (!probeClient) return;
+        const { error: signOutError } = await probeClient.auth.signOut({ scope: "local" });
+        if (signOutError) throw signOutError;
+      }))
+        .then(() => {
+          try {
+            window.sessionStorage.removeItem(LOGIN_PROBE_SESSION_KEY);
+          } catch (_) {}
+        })
+        .catch((error) => console.warn("Falha ao limpar uma tentativa de login interrompida:", error))
+        .finally(() => {
+          loginProbeCleanupRef.current = false;
+        });
+    }
+
     const initialTenantClient = getSupabaseClientForCity(authCityId);
-    if (initialTenantClient && isRealSupabaseForCity(authCityId)) {
+    if (!interruptedLoginProbe && initialTenantClient && isRealSupabaseForCity(authCityId)) {
       initialTenantClient.auth.getSession().then(async ({ data: { session }, error }) => {
         if (!mounted) return;
         if (error) {
@@ -7692,7 +8114,7 @@ export function AppContent() {
           localStorage.removeItem("commuaria_active_session");
         }
       }).catch((error) => console.warn("Erro ao buscar sessão inicial:", error));
-    } else if (!isRealSupabaseForCity(authCityId)) {
+    } else if (!interruptedLoginProbe && !isRealSupabaseForCity(authCityId)) {
       // Local-only restoration is accepted only when the session already has a tenant,
       // or it is one of the explicitly preserved global administrators.
       try {
@@ -7732,6 +8154,7 @@ export function AppContent() {
       search.includes("recovery")
     ) {
       setForgotPasswordStep("reset");
+      setForgotPasswordCityId(authCityId);
       setScreen("forgot-password");
       try {
         window.history.replaceState(null, "", window.location.pathname);
@@ -7753,6 +8176,13 @@ export function AppContent() {
       if (event === "PASSWORD_RECOVERY") {
         setForgotPasswordStep("reset");
         setScreen("forgot-password");
+      } else if (
+        loginProbeCleanupRef.current ||
+        (screenRef.current === "login" && (session?.user || event === "SIGNED_OUT"))
+      ) {
+        // Login may probe several tenant projects before the user chooses one.
+        // Ignore those temporary auth events until the chosen city is committed.
+        return;
       } else if (session?.user) {
         fetchUserData(session.user.id, session.user.email, authCityId);
       } else if (event === "SIGNED_OUT") {
@@ -7881,8 +8311,6 @@ export function AppContent() {
                 <LoginView
                   onBack={() => setScreen("landing")}
                   cities={cities}
-                  initialCityId={authCityId}
-                  onCityChange={changeAuthCity}
                   onBlocked={(blockInfo, email) => {
                     setBlockedModalInfo({ blockInfo, email });
                   }}
@@ -7939,8 +8367,8 @@ export function AppContent() {
                     setScreen("feed");
                   }}
                   onGoToSignup={() => setScreen("signup")}
-                  onForgotPassword={(cityId) => {
-                    changeAuthCity(cityId);
+                  onForgotPassword={() => {
+                    setForgotPasswordCityId("");
                     setForgotPasswordStep("email");
                     setScreen("forgot-password");
                   }}
@@ -7960,13 +8388,14 @@ export function AppContent() {
               >
                 <ForgotPasswordView
                   onBack={() => {
+                    setForgotPasswordCityId("");
                     setForgotPasswordStep("email");
                     setScreen("login");
                   }}
                   initialStep={forgotPasswordStep}
                   onChangeStep={(s) => setForgotPasswordStep(s)}
                   cities={cities}
-                  initialCityId={authCityId}
+                  initialCityId={forgotPasswordCityId}
                   onCityChange={changeAuthCity}
                 />
               </motion.div>
