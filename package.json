@@ -9,7 +9,8 @@
     "start": "node --use-system-ca dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node --import tsx --test $(find src -type f -name '*.test.ts' -print)"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

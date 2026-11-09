@@ -4,7 +4,6 @@ import {
   Database,
   CheckCircle2,
   AlertTriangle,
-  Copy,
   RefreshCw,
   UploadCloud,
   FileCode,
@@ -13,31 +12,37 @@ import {
   ExternalLink,
   Layers,
   Wrench,
-  Check,
 } from "lucide-react";
 import { useTheme } from "../ThemeContext";
 import {
-  supabase,
-  isRealSupabase,
+  getSupabaseClientForCity,
+  isRealSupabaseForCity,
   syncAllDataToSupabase,
   setCustomSupabaseConfig,
   getSupabaseConfig,
 } from "../lib/supabase";
+import { rowsForCity } from "../domain/cityScopedRows";
 
 interface DatabaseManagerModalProps {
+  cityId: string;
+  cityName?: string;
   onClose: () => void;
   newsDbError?: string | null;
   onRefresh?: () => Promise<void>;
 }
 
 export const DatabaseManagerModal: React.FC<DatabaseManagerModalProps> = ({
+  cityId,
+  cityName,
   onClose,
   newsDbError,
   onRefresh,
 }) => {
   const { isDark } = useTheme();
+  const normalizedCityId = cityId.trim();
+  const tenantSupabase = getSupabaseClientForCity(normalizedCityId);
+  const tenantIsRealSupabase = isRealSupabaseForCity(normalizedCityId);
   const [activeTab, setActiveTab] = useState<"status" | "sync" | "sql" | "credentials">("status");
-  const [copiedSql, setCopiedSql] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{
     success: boolean;
@@ -55,169 +60,16 @@ export const DatabaseManagerModal: React.FC<DatabaseManagerModalProps> = ({
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
-    const cfg = getSupabaseConfig();
+    const cfg = getSupabaseConfig(normalizedCityId);
     setSupabaseUrlInput(cfg.url);
     setSupabaseKeyInput(cfg.key);
-  }, []);
-
-  const handleCopySql = () => {
-    const sql = `-- =========================================================
--- COMMUÁRIA - SCRIPT CONSOLIDADO DE BANCO DE DADOS (SUPABASE SQL)
--- Execute este script no SQL Editor do seu projeto Supabase:
--- =========================================================
-
--- 1. Tabela de Perfis de Usuário (profiles)
-CREATE TABLE IF NOT EXISTS public.profiles (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL,
-  role TEXT DEFAULT 'user',
-  assigned_category TEXT,
-  is_admin BOOLEAN DEFAULT FALSE,
-  is_blocked BOOLEAN DEFAULT FALSE,
-  blocked_until TIMESTAMPTZ,
-  block_reason TEXT,
-  blocked_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Migrações automáticas de colunas para perfis existentes
-ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'user';
-ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS assigned_category TEXT;
-ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS assigned_sectors TEXT[];
-ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS blocked_until TIMESTAMPTZ;
-ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS block_reason TEXT;
-ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS blocked_at TIMESTAMPTZ;
-UPDATE public.profiles SET role = 'admin' WHERE is_admin = true AND (role IS NULL OR role = 'user');
-
--- 2. Tabela de Ocorrências / Chamados de Zeladoria (reports)
-CREATE TABLE IF NOT EXISTS public.reports (
-  id TEXT PRIMARY KEY DEFAULT ('rep_' || substr(md5(random()::text), 1, 10)),
-  title TEXT NOT NULL,
-  description TEXT,
-  category TEXT DEFAULT 'Pavimentação',
-  address TEXT,
-  latitude DOUBLE PRECISION,
-  longitude DOUBLE PRECISION,
-  status TEXT DEFAULT 'unresolved',
-  status_notes TEXT,
-  image_url TEXT,
-  anonymous BOOLEAN DEFAULT FALSE,
-  user_id TEXT,
-  user_email TEXT,
-  user_name TEXT,
-  is_work_order BOOLEAN DEFAULT FALSE,
-  work_order_number TEXT,
-  assigned_team TEXT,
-  priority TEXT DEFAULT 'medium',
-  deadline TEXT,
-  maintenance_type TEXT,
-  technical_notes TEXT,
-  resolved_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Migrações retroativas garantidas para reports
-ALTER TABLE public.reports ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Pavimentação';
-ALTER TABLE public.reports ADD COLUMN IF NOT EXISTS maintenance_type TEXT;
-ALTER TABLE public.reports ALTER COLUMN latitude DROP NOT NULL;
-ALTER TABLE public.reports ALTER COLUMN longitude DROP NOT NULL;
-ALTER TABLE public.reports ALTER COLUMN address DROP NOT NULL;
-
--- 3. Tabela de Ordens de Serviço (work_orders)
-CREATE TABLE IF NOT EXISTS public.work_orders (
-  id TEXT PRIMARY KEY DEFAULT ('wo_' || substr(md5(random()::text), 1, 10)),
-  order_number TEXT NOT NULL,
-  title TEXT NOT NULL,
-  category TEXT DEFAULT 'Pavimentação',
-  address TEXT NOT NULL,
-  priority TEXT DEFAULT 'medium',
-  deadline TEXT,
-  assigned_team TEXT,
-  assigned_employee_id TEXT,
-  assigned_employee_name TEXT,
-  maintenance_type TEXT,
-  description TEXT,
-  technical_instructions TEXT,
-  status TEXT DEFAULT 'dispatched',
-  status_notes TEXT,
-  resolution_notes TEXT,
-  resolution_photo_url TEXT,
-  supervisor_name TEXT,
-  supervisor_email TEXT,
-  linked_report_id TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  completed_at TIMESTAMPTZ
-);
-
-ALTER TABLE public.work_orders ADD COLUMN IF NOT EXISTS assigned_employee_id TEXT;
-ALTER TABLE public.work_orders ADD COLUMN IF NOT EXISTS assigned_employee_name TEXT;
-ALTER TABLE public.work_orders ADD COLUMN IF NOT EXISTS resolution_notes TEXT;
-ALTER TABLE public.work_orders ADD COLUMN IF NOT EXISTS resolution_photo_url TEXT;
-
--- 4. Tabela de Notícias e Comunicados (news)
-CREATE TABLE IF NOT EXISTS public.news (
-  id TEXT PRIMARY KEY DEFAULT ('news_' || substr(md5(random()::text), 1, 8)),
-  title TEXT NOT NULL,
-  description TEXT NOT NULL,
-  category TEXT DEFAULT 'Comunidade',
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 5. Tabela de Histórico Imutável e Auditoria de O.S. (work_order_history)
-CREATE TABLE IF NOT EXISTS public.work_order_history (
-  id TEXT PRIMARY KEY DEFAULT ('woh_' || substr(md5(random()::text), 1, 10)),
-  work_order_id TEXT NOT NULL,
-  user_id TEXT,
-  user_name TEXT,
-  user_role TEXT,
-  action_type TEXT NOT NULL,
-  previous_status TEXT,
-  new_status TEXT,
-  message TEXT,
-  photo_url TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_wo_history_order_id ON public.work_order_history(work_order_id);
-
--- =========================================================
--- HIERARQUIA DE PERFIS E POLÍTICAS DE ACESSO (RLS)
--- Perfil 1: ADM - Acesso geral central e gestão de usuários
--- Perfil 2: Diretor - Auditoria e acompanhamento de múltiplos setores/O.S.
--- Perfil 3: Supervisor - Gestão do setor, triagem e despacho de O.S.
--- Perfil 4: Funcionário - Execução técnica em campo e registro de resolução/impossibilidade
--- Perfil 5: Cidadão - Abertura de chamados e consulta dos próprios relatos
--- =========================================================
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.work_orders ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.work_order_history ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.news ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Permitir tudo em profiles" ON public.profiles;
-DROP POLICY IF EXISTS "Permitir tudo em reports" ON public.reports;
-DROP POLICY IF EXISTS "Permitir tudo em work_orders" ON public.work_orders;
-DROP POLICY IF EXISTS "Permitir tudo em work_order_history" ON public.work_order_history;
-DROP POLICY IF EXISTS "Permitir tudo em news" ON public.news;
-
-CREATE POLICY "Permitir tudo em profiles" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Permitir tudo em reports" ON public.reports FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Permitir tudo em work_orders" ON public.work_orders FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Permitir tudo em work_order_history" ON public.work_order_history FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH CHECK (true);
-`;
-    navigator.clipboard.writeText(sql);
-    setCopiedSql(true);
-    setTimeout(() => setCopiedSql(false), 3000);
-  };
+  }, [normalizedCityId]);
 
   const handleSyncNow = async () => {
     setIsSyncing(true);
     setSyncResult(null);
     try {
-      const res = await syncAllDataToSupabase();
+      const res = await syncAllDataToSupabase(normalizedCityId);
       setSyncResult(res);
       if (onRefresh) {
         await onRefresh();
@@ -237,7 +89,11 @@ CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH C
   };
 
   const handleSaveCredentials = () => {
-    setCustomSupabaseConfig(supabaseUrlInput.trim(), supabaseKeyInput.trim());
+    if (!normalizedCityId) {
+      setSavedCredentialsMessage("Selecione um município antes de salvar as credenciais.");
+      return;
+    }
+    setCustomSupabaseConfig(supabaseUrlInput.trim(), supabaseKeyInput.trim(), normalizedCityId);
     setSavedCredentialsMessage("Credenciais salvas! A página será atualizada em instantes.");
     setTimeout(() => {
       window.location.reload();
@@ -248,17 +104,25 @@ CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH C
     setIsTesting(true);
     setTestResult(null);
     try {
-      if (!supabase) {
-        setTestResult({ ok: false, message: "Cliente Supabase não inicializado." });
+      if (!tenantSupabase) {
+        setTestResult({ ok: false, message: "O projeto Supabase deste município não está configurado." });
         return;
       }
-      const { error: rErr } = await supabase.from("reports").select("id").limit(1);
-      const { error: wErr } = await supabase.from("work_orders").select("id").limit(1);
+      const { error: rErr } = await tenantSupabase
+        .from("reports")
+        .select("id")
+        .eq("city_id", normalizedCityId)
+        .limit(1);
+      const { error: wErr } = await tenantSupabase
+        .from("work_orders")
+        .select("id")
+        .eq("city_id", normalizedCityId)
+        .limit(1);
       
       if (rErr || wErr) {
         setTestResult({
           ok: false,
-          message: `Conexão atingida, porém uma das tabelas retornou erro: ${rErr?.message || wErr?.message}. Verifique se executou o script SQL na aba 'Script SQL'.`,
+          message: `Conexão atingida, porém uma das tabelas retornou erro: ${rErr?.message || wErr?.message}. Confira o esquema e o histórico de migrações no Dashboard do Supabase; não execute um script consolidado.`,
         });
       } else {
         setTestResult({
@@ -275,7 +139,8 @@ CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH C
 
   const localReportsCount = (() => {
     try {
-      return JSON.parse(localStorage.getItem("commuaria_reports") || "[]").length;
+      const rows = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+      return Array.isArray(rows) ? rowsForCity(rows, normalizedCityId, "araucaria-pr").length : 0;
     } catch {
       return 0;
     }
@@ -283,7 +148,8 @@ CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH C
 
   const localWorkOrdersCount = (() => {
     try {
-      return JSON.parse(localStorage.getItem("commuaria_work_orders") || "[]").length;
+      const rows = JSON.parse(localStorage.getItem("commuaria_work_orders") || "[]");
+      return Array.isArray(rows) ? rowsForCity(rows, normalizedCityId, "araucaria-pr").length : 0;
     } catch {
       return 0;
     }
@@ -311,16 +177,16 @@ CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH C
                 <h3 className="text-lg font-serif font-bold">Gerenciador de Banco de Dados</h3>
                 <span
                   className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold uppercase ${
-                    isRealSupabase
+                    tenantIsRealSupabase
                       ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
                       : "bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30"
                   }`}
                 >
-                  {isRealSupabase ? "Supabase Ativo" : "Modo Offline"}
+                  {tenantIsRealSupabase ? "Supabase Ativo" : "Modo Offline"}
                 </span>
               </div>
               <p className={`text-xs ${isDark ? "text-white/60" : "text-[#2d4a3b]/70"}`}>
-                Sincronização de chamados, ordens de serviço e script SQL da plataforma.
+                Projeto de {cityName || normalizedCityId || "município não selecionado"}; diagnóstico e sincronização com escopo municipal.
               </p>
             </div>
           </div>
@@ -373,7 +239,7 @@ CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH C
             }`}
           >
             <FileCode size={14} />
-            <span>Script SQL (Tabelas)</span>
+            <span>Pré-requisitos de Migração</span>
           </button>
 
           <button
@@ -396,24 +262,24 @@ CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH C
             <div className="space-y-4">
               <div
                 className={`p-4 rounded-2xl border flex items-start gap-3 ${
-                  isRealSupabase
+                  tenantIsRealSupabase
                     ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-800 dark:text-emerald-200"
                     : "bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-200"
                 }`}
               >
-                {isRealSupabase ? (
+                {tenantIsRealSupabase ? (
                   <CheckCircle2 size={22} className="text-emerald-500 shrink-0 mt-0.5" />
                 ) : (
                   <AlertTriangle size={22} className="text-amber-500 shrink-0 mt-0.5" />
                 )}
                 <div>
                   <h4 className="font-bold text-sm">
-                    {isRealSupabase
+                    {tenantIsRealSupabase
                       ? "Conexão com Supabase Ativa"
                       : "Modo Local / Armazenamento Offline Ativo"}
                   </h4>
                   <p className="text-xs mt-1 leading-relaxed opacity-90">
-                    {isRealSupabase
+                    {tenantIsRealSupabase
                       ? "O aplicativo está configurado para ler e gravar dados em nuvem. Se alguma tabela ainda estiver vazia no painel, use a aba 'Sincronizar Dados' para subir os dados locais."
                       : "O aplicativo está salvando chamados e ordens de serviço localmente no navegador. Para persistir de forma definitiva no Supabase, insira sua URL e Anon Key na aba 'Configurar Chaves'."}
                   </p>
@@ -593,105 +459,33 @@ CREATE POLICY "Permitir tudo em news" ON public.news FOR ALL USING (true) WITH C
             </div>
           )}
 
-          {/* TAB 3: SQL SCRIPT */}
+          {/* TAB 3: MIGRATION SAFETY */}
           {activeTab === "sql" && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="font-bold text-sm">Script de Inicialização das Tabelas</h4>
-                  <p className="text-xs opacity-75">
-                    Execute no <strong>SQL Editor</strong> do painel do Supabase para criar as tabelas <code className="font-mono bg-black/10 px-1 py-0.5 rounded">reports</code> e <code className="font-mono bg-black/10 px-1 py-0.5 rounded">work_orders</code>.
-                  </p>
-                </div>
-
-                <button
-                  onClick={handleCopySql}
-                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-md transition-all shrink-0"
-                >
-                  {copiedSql ? (
-                    <>
-                      <Check size={14} />
-                      Copiado!
-                    </>
-                  ) : (
-                    <>
-                      <Copy size={14} />
-                      Copiar SQL
-                    </>
-                  )}
-                </button>
-              </div>
-
               <div
-                className={`p-3 rounded-2xl font-mono text-[11px] max-h-64 overflow-y-auto overflow-x-auto whitespace-pre border ${
-                  isDark ? "bg-black/50 border-white/15 text-white/90" : "bg-black/90 border-black/20 text-emerald-300"
+                role="alert"
+                className={`rounded-2xl border p-5 ${
+                  isDark
+                    ? "border-amber-400/30 bg-amber-400/10 text-amber-100"
+                    : "border-amber-700/20 bg-amber-50 text-amber-950"
                 }`}
               >
-{`CREATE TABLE IF NOT EXISTS public.profiles (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL,
-  role TEXT DEFAULT 'user',
-  assigned_category TEXT,
-  is_admin BOOLEAN DEFAULT FALSE,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS public.reports (
-  id TEXT PRIMARY KEY DEFAULT ('rep_' || substr(md5(random()::text), 1, 10)),
-  title TEXT NOT NULL,
-  description TEXT,
-  category TEXT DEFAULT 'Pavimentação',
-  address TEXT,
-  latitude DOUBLE PRECISION,
-  longitude DOUBLE PRECISION,
-  status TEXT DEFAULT 'unresolved',
-  status_notes TEXT,
-  image_url TEXT,
-  anonymous BOOLEAN DEFAULT FALSE,
-  user_id TEXT,
-  user_email TEXT,
-  user_name TEXT,
-  is_work_order BOOLEAN DEFAULT FALSE,
-  work_order_number TEXT,
-  assigned_team TEXT,
-  priority TEXT DEFAULT 'medium',
-  deadline TEXT,
-  maintenance_type TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-ALTER TABLE public.reports ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Pavimentação';
-ALTER TABLE public.reports ADD COLUMN IF NOT EXISTS maintenance_type TEXT;
-ALTER TABLE public.reports ALTER COLUMN latitude DROP NOT NULL;
-ALTER TABLE public.reports ALTER COLUMN longitude DROP NOT NULL;
-ALTER TABLE public.reports ALTER COLUMN address DROP NOT NULL;
-
-CREATE TABLE IF NOT EXISTS public.work_orders (
-  id TEXT PRIMARY KEY DEFAULT ('wo_' || substr(md5(random()::text), 1, 10)),
-  order_number TEXT NOT NULL,
-  title TEXT NOT NULL,
-  category TEXT DEFAULT 'Pavimentação',
-  address TEXT NOT NULL,
-  priority TEXT DEFAULT 'medium',
-  deadline TEXT,
-  assigned_team TEXT,
-  maintenance_type TEXT,
-  description TEXT,
-  technical_instructions TEXT,
-  status TEXT DEFAULT 'dispatched',
-  status_notes TEXT,
-  supervisor_name TEXT,
-  supervisor_email TEXT,
-  linked_report_id TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  completed_at TIMESTAMPTZ
-);
-
-ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.work_orders ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Permitir tudo em reports" ON public.reports FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Permitir tudo em work_orders" ON public.work_orders FOR ALL USING (true) WITH CHECK (true);`}
+                <h4 className="font-bold text-sm">Alterações de banco temporariamente bloqueadas</h4>
+                <p className="mt-2 text-xs leading-relaxed opacity-90">
+                  Não execute scripts consolidados ou alterações manuais neste projeto. A estrutura existente e o histórico de migrações precisam ser reconciliados antes de qualquer mudança.
+                </p>
+              </div>
+              <div className={`rounded-2xl border p-5 ${isDark ? "border-white/10 bg-white/5" : "border-black/10 bg-black/5"}`}>
+                <h4 className="font-bold text-sm">Pré-requisitos para liberar uma migração</h4>
+                <ul className="mt-3 list-disc space-y-2 pl-5 text-xs leading-relaxed opacity-80">
+                  <li>Backup integral com evidência de restauração bem-sucedida em ambiente isolado.</li>
+                  <li>Registro de data/hora, contagens e verificações de integridade após a restauração.</li>
+                  <li>Mapa de dependências e comparação do esquema real com migrações versionadas.</li>
+                  <li>Plano de recuperação/rollback e ensaio completo em staging antes da produção.</li>
+                </ul>
+                <p className="mt-4 text-xs font-semibold">
+                  Nenhuma alteração de Supabase foi executada nesta sessão.
+                </p>
               </div>
             </div>
           )}
@@ -705,6 +499,7 @@ CREATE POLICY "Permitir tudo em work_orders" ON public.work_orders FOR ALL USING
                 }`}
               >
                 <h4 className="font-bold text-sm mb-1">Configuração de Chaves do Supabase</h4>
+                <p className="text-xs opacity-70">Estas credenciais serão usadas somente em {cityName || normalizedCityId || "um município selecionado"}.</p>
                 <p className="text-xs opacity-75">
                   Insira ou atualize o URL do seu projeto Supabase e a chave pública (Anon Key).
                 </p>

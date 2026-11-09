@@ -1,4 +1,12 @@
-import { supabase, isRealSupabase, generateUUID, isUUID } from "./supabase";
+import { getSupabaseClientForCity, isRealSupabaseForCity, generateUUID, isUUID } from "./supabase";
+import { rowBelongsToCity } from "../domain/cityScopedRows";
+import {
+  resolveExistingTenantCityId,
+  resolveLegacyTenantPrincipal,
+  resolveWritableTenantCityId,
+} from "../domain/tenantAccess";
+import { extractNeighborhoodFromAddress } from "../domain/municipalAddress";
+export { extractNeighborhoodFromAddress } from "../domain/municipalAddress";
 import {
   WorkOrderItem,
   WorkOrderHistoryItem,
@@ -13,6 +21,31 @@ import {
   notifyReportCancelled,
   notifyReportUpdated,
 } from "./notificationService";
+
+const requireWorkOrderCityId = (cityId: string | null | undefined): string => {
+  const normalizedCityId = cityId?.trim();
+  if (!normalizedCityId) {
+    throw new Error("Não foi possível confirmar o município desta Ordem de Serviço.");
+  }
+  return normalizedCityId;
+};
+
+const resolveActorWorkOrderCityId = (workOrder: WorkOrderItem, actor: UserProfile): string => {
+  const principal = resolveLegacyTenantPrincipal({
+    id: actor.id,
+    role: actor.role,
+    is_admin: actor.is_admin,
+    city_id: actor.city_id,
+  });
+  if (!workOrder.city_id?.trim()) {
+    throw new Error("Esta Ordem de Serviço não tem município validado; a atualização foi bloqueada.");
+  }
+  const cityId = resolveExistingTenantCityId(principal, workOrder.city_id);
+  if (!cityId) {
+    throw new Error("Você não tem um município autorizado para alterar esta Ordem de Serviço.");
+  }
+  return cityId;
+};
 
 // Key for deduplicating notifications
 const hasNotificationBeenSent = (key: string): boolean => {
@@ -195,94 +228,27 @@ export const resolveWorkOrderCoordinates = (
 };
 
 /**
- * Extrai o bairro / região real a partir do endereço registrado em Araucária - PR
- */
-export const extractNeighborhoodFromAddress = (address?: string | null): string => {
-  if (!address || !address.trim()) return "Região Central / Sede";
-
-  const knownNeighborhoods = [
-    "Capela Velha",
-    "Costeira",
-    "Iguaçu",
-    "Centro",
-    "Cachoeira",
-    "Fazenda Velha",
-    "Campina da Barra",
-    "Tindiquera",
-    "Boqueirão",
-    "Thomaz Coelho",
-    "Estação",
-    "Passaúna",
-    "São Miguel",
-    "Vila Nova",
-    "Porto das Laranjeiras",
-    "Jardim Plínio",
-    "Barigui",
-    "Laranjeiras",
-    "Sabiá",
-    "Califórnia",
-    "Guajuvira",
-  ];
-
-  const lower = address.toLowerCase();
-  if (lower.includes("victor do amaral")) return "Centro";
-  if (lower.includes("vila angélica") || lower.includes("vila angelica")) return "Vila Angélica";
-  if (lower.includes("jardim industrial")) return "Jardim Industrial";
-
-  for (const nb of knownNeighborhoods) {
-    if (lower.includes(nb.toLowerCase())) {
-      return nb;
-    }
-  }
-
-  const ignoreTokens = [
-    "araucária",
-    "araucaria",
-    "paraná",
-    "parana",
-    "pr",
-    "brasil",
-    "região sul",
-    "regiao sul",
-    "região metropolitana de curitiba",
-  ];
-
-  const parts = address
-    .split(/[,-]/)
-    .map((p) => p.trim())
-    .filter((p) => {
-      if (!p) return false;
-      const pl = p.toLowerCase();
-      if (/^\d+$/.test(pl) || /^\d{5}-?\d{3}$/.test(pl)) return false;
-      if (ignoreTokens.some((tok) => pl === tok)) return false;
-      return true;
-    });
-
-  if (parts.length >= 2) {
-    return parts[parts.length - 1];
-  }
-  if (parts.length === 1) {
-    return parts[0];
-  }
-  return "Araucária (Sede)";
-};
-
-/**
  * Carrega todas as Ordens de Serviço reais do Supabase mescladas com sincronizações locais
  */
-export const fetchSystemWorkOrders = async (cityId = "araucaria-pr"): Promise<WorkOrderItem[]> => {
+export const fetchSystemWorkOrders = async (
+  cityId?: string | null,
+): Promise<WorkOrderItem[]> => {
+  const scopedCityId = cityId?.trim() || "";
+  if (!scopedCityId) return [];
   const map = new Map<string, WorkOrderItem>();
+  const citySupabase = getSupabaseClientForCity(scopedCityId);
 
-  if (supabase) {
+  if (citySupabase) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await citySupabase
         .from("work_orders")
         .select("*")
-        .eq("city_id", cityId)
+        .eq("city_id", scopedCityId)
         .order("created_at", { ascending: false });
 
       if (!error && Array.isArray(data)) {
         data.forEach((w: WorkOrderItem) => {
+          if (!rowBelongsToCity(w, scopedCityId, "araucaria-pr")) return;
           map.set(w.id || w.order_number, w);
         });
       }
@@ -298,8 +264,8 @@ export const fetchSystemWorkOrders = async (cityId = "araucaria-pr"): Promise<Wo
       const localWos: WorkOrderItem[] = JSON.parse(raw);
       if (Array.isArray(localWos)) {
         localWos.forEach((lw) => {
-          if ((lw.city_id || "araucaria-pr") !== cityId) return;
-          if (isRealSupabase && lw.id?.startsWith("mock-")) return;
+          if (!rowBelongsToCity(lw, scopedCityId, "araucaria-pr")) return;
+          if (isRealSupabaseForCity(scopedCityId) && lw.id?.startsWith("mock-")) return;
           const key = lw.id || lw.order_number;
           if (!map.has(key)) {
             map.set(key, lw);
@@ -327,22 +293,26 @@ export const fetchSystemWorkOrders = async (cityId = "araucaria-pr"): Promise<Wo
  * Carrega os eventos recentes de auditoria de todas as Ordens de Serviço
  */
 export const fetchRecentWorkOrderHistory = async (
+  cityId?: string | null,
   limit = 100,
-  cityId = "araucaria-pr"
 ): Promise<WorkOrderHistoryItem[]> => {
+  const scopedCityId = cityId?.trim() || "";
+  if (!scopedCityId) return [];
   const map = new Map<string, WorkOrderHistoryItem>();
+  const citySupabase = getSupabaseClientForCity(scopedCityId);
 
-  if (supabase) {
+  if (citySupabase) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await citySupabase
         .from("work_order_history")
         .select("*")
-        .eq("city_id", cityId)
+        .eq("city_id", scopedCityId)
         .order("created_at", { ascending: false })
         .limit(limit);
 
       if (!error && Array.isArray(data)) {
         data.forEach((h: WorkOrderHistoryItem) => {
+          if (!rowBelongsToCity(h, scopedCityId, "araucaria-pr")) return;
           map.set(h.id, h);
         });
       }
@@ -357,7 +327,7 @@ export const fetchRecentWorkOrderHistory = async (
     );
     if (Array.isArray(localHistory)) {
       localHistory.forEach((lh) => {
-        if ((lh.city_id || "araucaria-pr") !== cityId) return;
+        if (!rowBelongsToCity(lh, scopedCityId, "araucaria-pr")) return;
         if (!map.has(lh.id)) {
           map.set(lh.id, lh);
         }
@@ -383,20 +353,17 @@ export const recordWorkOrderHistoryEvent = async (params: {
   newStatus: string;
   message: string;
   photoUrl?: string | null;
-  cityId?: string;
+  cityId: string;
 }): Promise<WorkOrderHistoryItem> => {
   const historyId = "woh_" + Math.random().toString(36).substring(2, 9);
   const nowIso = new Date().toISOString();
-  let orderCityId = params.cityId;
-  try {
-    const orders: WorkOrderItem[] = JSON.parse(localStorage.getItem("commuaria_work_orders") || "[]");
-    orderCityId = orderCityId || orders.find((order) => order.id === params.workOrderId)?.city_id;
-  } catch { /* The database trigger resolves city_id from the linked work order. */ }
+  const orderCityId = requireWorkOrderCityId(params.cityId);
+  const citySupabase = getSupabaseClientForCity(orderCityId);
 
   const historyItem: WorkOrderHistoryItem = {
     id: historyId,
     work_order_id: params.workOrderId,
-    city_id: orderCityId || "araucaria-pr",
+    city_id: orderCityId,
     user_id: params.userId || null,
     user_name: params.userName || "Agente Municipal",
     user_role: params.userRole || "funcionario",
@@ -420,7 +387,7 @@ export const recordWorkOrderHistoryEvent = async (params: {
   }
 
   // 2. Supabase
-  if (supabase) {
+  if (citySupabase) {
     try {
       const payload: any = {
         id: historyId,
@@ -437,7 +404,7 @@ export const recordWorkOrderHistoryEvent = async (params: {
         created_at: historyItem.created_at,
       };
 
-      const { error } = await supabase.from("work_order_history").insert([payload]);
+      const { error } = await citySupabase.from("work_order_history").insert([payload]);
       if (error) {
         console.warn("Supabase work_order_history insert notice:", error);
       }
@@ -452,20 +419,29 @@ export const recordWorkOrderHistoryEvent = async (params: {
 /**
  * Carrega a linha do tempo de eventos de uma Ordem de Serviço
  */
-export const getWorkOrderHistory = async (workOrderId: string): Promise<WorkOrderHistoryItem[]> => {
+export const getWorkOrderHistory = async (
+  workOrderId: string,
+  cityId: string,
+): Promise<WorkOrderHistoryItem[]> => {
+  const normalizedCityId = cityId.trim();
+  const citySupabase = getSupabaseClientForCity(normalizedCityId);
+  if (!workOrderId.trim() || !normalizedCityId) return [];
   let list: WorkOrderHistoryItem[] = [];
 
-  // 1. Tenta carregar do Supabase
-  if (supabase) {
+  // 1. Tenta carregar do Supabase, limitando explicitamente a Ordem de Serviço ao município.
+  if (citySupabase) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await citySupabase
         .from("work_order_history")
         .select("*")
         .eq("work_order_id", workOrderId)
+        .eq("city_id", normalizedCityId)
         .order("created_at", { ascending: false });
 
       if (!error && data) {
-        list = data as WorkOrderHistoryItem[];
+        list = (data as WorkOrderHistoryItem[]).filter((item) =>
+          rowBelongsToCity(item, normalizedCityId, "araucaria-pr"),
+        );
       }
     } catch (e) {
       console.warn("Erro ao buscar histórico no Supabase:", e);
@@ -477,7 +453,11 @@ export const getWorkOrderHistory = async (workOrderId: string): Promise<WorkOrde
     const localHistory: WorkOrderHistoryItem[] = JSON.parse(
       localStorage.getItem("commuaria_work_order_history") || "[]"
     );
-    const matchedLocal = localHistory.filter((h) => h.work_order_id === workOrderId);
+    const matchedLocal = localHistory.filter(
+      (h) =>
+        h.work_order_id === workOrderId &&
+        rowBelongsToCity(h, normalizedCityId, "araucaria-pr"),
+    );
     matchedLocal.forEach((lh) => {
       if (!list.some((item) => item.id === lh.id)) {
         list.push(lh);
@@ -502,31 +482,40 @@ export const addWorkOrderFieldNote = async (params: {
 }): Promise<{ updatedOrder: WorkOrderItem; historyItem: WorkOrderHistoryItem }> => {
   const { workOrder, agentUser, message, photoUrl } = params;
   const cleanMsg = message.trim();
+  const cityId = resolveActorWorkOrderCityId(workOrder, agentUser);
+  const citySupabase = getSupabaseClientForCity(cityId);
 
   const updatedOrder: WorkOrderItem = {
     ...workOrder,
+    city_id: cityId,
     status_notes: cleanMsg,
   };
 
-  // 1. Atualiza LocalStorage
+  // 1. Atualiza somente a cópia local deste município.
   try {
-    const localOrders: WorkOrderItem[] = JSON.parse(
-      localStorage.getItem("commuaria_work_orders") || "[]"
+    const localOrdersValue = JSON.parse(localStorage.getItem("commuaria_work_orders") || "[]");
+    const localOrders: WorkOrderItem[] = Array.isArray(localOrdersValue) ? localOrdersValue : [];
+    const existsInCity = localOrders.some(
+      (order) => order.id === workOrder.id && rowBelongsToCity(order, cityId, "araucaria-pr"),
     );
-    const exists = localOrders.some((o) => o.id === workOrder.id);
-    const nextOrders = exists
-      ? localOrders.map((o) => (o.id === workOrder.id ? updatedOrder : o))
+    const nextOrders = existsInCity
+      ? localOrders.map((order) =>
+          order.id === workOrder.id && rowBelongsToCity(order, cityId, "araucaria-pr")
+            ? updatedOrder
+            : order,
+        )
       : [updatedOrder, ...localOrders];
     localStorage.setItem("commuaria_work_orders", JSON.stringify(nextOrders));
   } catch (_) {}
 
   // 2. Atualiza status_notes na work_orders do Supabase
-  if (supabase) {
+  if (citySupabase) {
     try {
-      await supabase
+      await citySupabase
         .from("work_orders")
         .update({ status_notes: cleanMsg })
-        .eq("id", workOrder.id);
+        .eq("id", workOrder.id)
+        .eq("city_id", cityId);
     } catch (e) {
       console.warn("Aviso ao atualizar nota da O.S. no Supabase:", e);
     }
@@ -543,6 +532,7 @@ export const addWorkOrderFieldNote = async (params: {
     newStatus: workOrder.status,
     message: cleanMsg,
     photoUrl: photoUrl || null,
+    cityId,
   });
 
   // 4. Sincroniza nota técnica no chamado original, se houver
@@ -554,7 +544,10 @@ export const addWorkOrderFieldNote = async (params: {
       );
       let matchedReport: ReportItem | undefined;
       const updatedReports = localReports.map((r) => {
-        if (r.id === workOrder.linked_report_id) {
+        if (
+          r.id === workOrder.linked_report_id &&
+          rowBelongsToCity(r, cityId, "araucaria-pr")
+        ) {
           matchedReport = { ...r, status_notes: noteSummary };
           return matchedReport;
         }
@@ -562,11 +555,12 @@ export const addWorkOrderFieldNote = async (params: {
       });
       localStorage.setItem("commuaria_reports", JSON.stringify(updatedReports));
 
-      if (supabase && isUUID(workOrder.linked_report_id)) {
-        await supabase
+      if (citySupabase && isUUID(workOrder.linked_report_id)) {
+        await citySupabase
           .from("reports")
           .update({ status_notes: noteSummary })
-          .eq("id", workOrder.linked_report_id);
+          .eq("id", workOrder.linked_report_id)
+          .eq("city_id", cityId);
       }
 
       if (matchedReport && matchedReport.user_email) {
@@ -593,28 +587,37 @@ export const updateWorkOrderChecklist = async (params: {
   checklistState: Record<string, boolean>;
 }): Promise<WorkOrderItem> => {
   const { workOrder, checklistState } = params;
+  const cityId = requireWorkOrderCityId(workOrder.city_id);
+  const citySupabase = getSupabaseClientForCity(cityId);
   const updatedOrder: WorkOrderItem = {
     ...workOrder,
+    city_id: cityId,
     checklist_state: checklistState,
   };
 
   try {
-    const localOrders: WorkOrderItem[] = JSON.parse(
-      localStorage.getItem("commuaria_work_orders") || "[]"
+    const localOrdersValue = JSON.parse(localStorage.getItem("commuaria_work_orders") || "[]");
+    const localOrders: WorkOrderItem[] = Array.isArray(localOrdersValue) ? localOrdersValue : [];
+    const existsInCity = localOrders.some(
+      (order) => order.id === workOrder.id && rowBelongsToCity(order, cityId, "araucaria-pr"),
     );
-    const exists = localOrders.some((o) => o.id === workOrder.id);
-    const nextOrders = exists
-      ? localOrders.map((o) => (o.id === workOrder.id ? updatedOrder : o))
+    const nextOrders = existsInCity
+      ? localOrders.map((order) =>
+          order.id === workOrder.id && rowBelongsToCity(order, cityId, "araucaria-pr")
+            ? updatedOrder
+            : order,
+        )
       : [updatedOrder, ...localOrders];
     localStorage.setItem("commuaria_work_orders", JSON.stringify(nextOrders));
   } catch (_) {}
 
-  if (supabase) {
+  if (citySupabase) {
     try {
-      await supabase
+      await citySupabase
         .from("work_orders")
         .update({ checklist_state: checklistState })
-        .eq("id", workOrder.id);
+        .eq("id", workOrder.id)
+        .eq("city_id", cityId);
     } catch (e) {
       console.warn("Aviso ao salvar checklist no Supabase:", e);
     }
@@ -632,10 +635,25 @@ export const createWorkOrderClean = async (params: {
   linkedReport?: ReportItem | null;
 }): Promise<WorkOrderItem> => {
   const { order, creator, linkedReport } = params;
+  const creatorPrincipal = resolveLegacyTenantPrincipal({
+    id: creator.id,
+    role: creator.role,
+    is_admin: creator.is_admin,
+    city_id: creator.city_id,
+  });
+  const cityId = resolveWritableTenantCityId(
+    creatorPrincipal,
+    order.city_id,
+    linkedReport?.city_id,
+  );
+  if (!cityId) {
+    throw new Error("Selecione um município válido e confirme que a ocorrência vinculada pertence a ele.");
+  }
+  const citySupabase = getSupabaseClientForCity(cityId);
 
   const enrichedOrder: WorkOrderItem = {
     ...order,
-    city_id: order.city_id || linkedReport?.city_id || creator.city_id || "araucaria-pr",
+    city_id: cityId,
     latitude:
       typeof order.latitude === "number"
         ? order.latitude
@@ -650,12 +668,15 @@ export const createWorkOrderClean = async (params: {
         : null,
   };
 
-  // 1. Salva O.S. no LocalStorage
-  const localOrders: WorkOrderItem[] = JSON.parse(
-    localStorage.getItem("commuaria_work_orders") || "[]"
+  // 1. Salva O.S. no LocalStorage sem tocar em cópias de outros municípios.
+  const localOrdersValue = JSON.parse(localStorage.getItem("commuaria_work_orders") || "[]");
+  const localOrders: WorkOrderItem[] = Array.isArray(localOrdersValue) ? localOrdersValue : [];
+  const withoutCurrentCityDuplicate = localOrders.filter(
+    (existing) =>
+      !(existing.id === enrichedOrder.id && rowBelongsToCity(existing, cityId, "araucaria-pr")),
   );
-  localOrders.unshift(enrichedOrder);
-  localStorage.setItem("commuaria_work_orders", JSON.stringify(localOrders));
+  withoutCurrentCityDuplicate.unshift(enrichedOrder);
+  localStorage.setItem("commuaria_work_orders", JSON.stringify(withoutCurrentCityDuplicate));
 
   // 2. Se houver chamado vinculado, atualiza o chamado original (NÃO DUPLICA CHAMADO!)
   if (enrichedOrder.linked_report_id) {
@@ -663,7 +684,10 @@ export const createWorkOrderClean = async (params: {
       localStorage.getItem("commuaria_reports") || "[]"
     );
     const updatedReports = localReports.map((r) => {
-      if (r.id === enrichedOrder.linked_report_id) {
+      if (
+        r.id === enrichedOrder.linked_report_id &&
+        rowBelongsToCity(r, cityId, "araucaria-pr")
+      ) {
         return {
           ...r,
           status: "in_progress",
@@ -677,9 +701,9 @@ export const createWorkOrderClean = async (params: {
     localStorage.setItem("commuaria_reports", JSON.stringify(updatedReports));
 
     // Atualiza chamado no Supabase
-    if (supabase && isUUID(enrichedOrder.linked_report_id)) {
+    if (citySupabase && isUUID(enrichedOrder.linked_report_id)) {
       try {
-        await supabase
+        await citySupabase
           .from("reports")
           .update({
             status: "in_progress",
@@ -687,7 +711,8 @@ export const createWorkOrderClean = async (params: {
             assigned_team: enrichedOrder.assigned_team,
             status_notes: `Ordem de Serviço ${enrichedOrder.order_number} despachada para a equipe de ${enrichedOrder.category}.`,
           })
-          .eq("id", enrichedOrder.linked_report_id);
+          .eq("id", enrichedOrder.linked_report_id)
+          .eq("city_id", cityId);
       } catch (err) {
         console.warn("Aviso ao sincronizar chamado original no Supabase:", err);
       }
@@ -695,7 +720,7 @@ export const createWorkOrderClean = async (params: {
   }
 
   // 3. Salva O.S. no Supabase
-  if (supabase) {
+  if (citySupabase) {
     try {
       const woPayload: any = {
         id: enrichedOrder.id,
@@ -721,7 +746,7 @@ export const createWorkOrderClean = async (params: {
         linked_report_id: enrichedOrder.linked_report_id || null,
       };
 
-      const { error: woErr } = await supabase.from("work_orders").insert([woPayload]);
+      const { error: woErr } = await citySupabase.from("work_orders").insert([woPayload]);
       if (woErr) {
         console.warn("Supabase work_orders insert aviso:", woErr);
       }
@@ -740,6 +765,7 @@ export const createWorkOrderClean = async (params: {
     previousStatus: null,
     newStatus: enrichedOrder.status,
     message: `Ordem de Serviço ${enrichedOrder.order_number} criada e despachada para ${enrichedOrder.assigned_team}.`,
+    cityId,
   });
 
   return enrichedOrder;
@@ -758,10 +784,13 @@ export const updateWorkOrderStatusUnified = async (params: {
   reason?: string;
 }): Promise<WorkOrderItem> => {
   const { workOrder, newStatus, agentUser, message, photoUrl, reason } = params;
+  const cityId = resolveActorWorkOrderCityId(workOrder, agentUser);
+  const citySupabase = getSupabaseClientForCity(cityId);
   const prevStatus = workOrder.status;
 
   const updatedOrder: WorkOrderItem = {
     ...workOrder,
+    city_id: cityId,
     status: newStatus,
     status_notes: message,
     resolution_notes: newStatus === "completed" || newStatus === "impossible" ? message : workOrder.resolution_notes,
@@ -769,18 +798,23 @@ export const updateWorkOrderStatusUnified = async (params: {
     completed_at: newStatus === "completed" ? new Date().toISOString() : workOrder.completed_at,
   };
 
-  // 1. Atualiza O.S. no LocalStorage
-  const localOrders: WorkOrderItem[] = JSON.parse(
-    localStorage.getItem("commuaria_work_orders") || "[]"
+  // 1. Atualiza somente a cópia local deste município.
+  const localOrdersValue = JSON.parse(localStorage.getItem("commuaria_work_orders") || "[]");
+  const localOrders: WorkOrderItem[] = Array.isArray(localOrdersValue) ? localOrdersValue : [];
+  const existsInCity = localOrders.some(
+    (order) => order.id === workOrder.id && rowBelongsToCity(order, cityId, "araucaria-pr"),
   );
-  const existsLocally = localOrders.some((o) => o.id === workOrder.id);
-  const updatedOrders = existsLocally
-    ? localOrders.map((o) => (o.id === workOrder.id ? updatedOrder : o))
+  const updatedOrders = existsInCity
+    ? localOrders.map((order) =>
+        order.id === workOrder.id && rowBelongsToCity(order, cityId, "araucaria-pr")
+          ? updatedOrder
+          : order,
+      )
     : [updatedOrder, ...localOrders];
   localStorage.setItem("commuaria_work_orders", JSON.stringify(updatedOrders));
 
   // 2. Atualiza O.S. no Supabase
-  if (supabase) {
+  if (citySupabase) {
     try {
       const updatePayload: any = {
         status: newStatus,
@@ -790,10 +824,11 @@ export const updateWorkOrderStatusUnified = async (params: {
         completed_at: updatedOrder.completed_at || null,
       };
 
-      await supabase
+      await citySupabase
         .from("work_orders")
         .update(updatePayload)
-        .eq("id", workOrder.id);
+        .eq("id", workOrder.id)
+        .eq("city_id", cityId);
     } catch (e) {
       console.warn("Erro ao atualizar O.S. no Supabase:", e);
     }
@@ -822,6 +857,7 @@ export const updateWorkOrderStatusUnified = async (params: {
     newStatus,
     message: reason ? `[Motivo: ${reason}] ${message}` : message,
     photoUrl: photoUrl || null,
+    cityId,
   });
 
   // 5. Se houver chamado original vinculado (`linked_report_id`), atualiza diretamente o chamado do munícipe
@@ -849,7 +885,10 @@ export const updateWorkOrderStatusUnified = async (params: {
     let originalReportTarget: ReportItem | undefined;
 
     const updatedReports = localReports.map((r) => {
-      if (r.id === workOrder.linked_report_id) {
+      if (
+        r.id === workOrder.linked_report_id &&
+        rowBelongsToCity(r, cityId, "araucaria-pr")
+      ) {
         originalReportTarget = {
           ...r,
           status: reportStatusToApply as any,
@@ -863,16 +902,17 @@ export const updateWorkOrderStatusUnified = async (params: {
     localStorage.setItem("commuaria_reports", JSON.stringify(updatedReports));
 
     // Supabase
-    if (supabase && isUUID(workOrder.linked_report_id)) {
+    if (citySupabase && isUUID(workOrder.linked_report_id)) {
       try {
-        await supabase
+        await citySupabase
           .from("reports")
           .update({
             status: reportStatusToApply,
             status_notes: reportNote,
             resolved_at: newStatus === "completed" ? new Date().toISOString() : null,
           })
-          .eq("id", workOrder.linked_report_id);
+          .eq("id", workOrder.linked_report_id)
+          .eq("city_id", cityId);
       } catch (rErr) {
         console.warn("Erro ao sincronizar chamado original no Supabase:", rErr);
       }

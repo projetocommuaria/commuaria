@@ -35,6 +35,8 @@ jobs:
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_SUPABASE_CURITIBA_URL: ${{ vars.VITE_SUPABASE_CURITIBA_URL }}
+          VITE_SUPABASE_CURITIBA_ANON_KEY: ${{ secrets.VITE_SUPABASE_CURITIBA_ANON_KEY }}
         run: npm run build
 
       - name: Upload artifact

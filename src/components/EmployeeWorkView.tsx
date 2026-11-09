@@ -73,7 +73,7 @@ export const EmployeeWorkView: React.FC<EmployeeWorkViewProps> = ({
   const loadWorkOrders = async () => {
     setLoading(true);
     try {
-      const list = await fetchSystemWorkOrders(user.city_id || "araucaria-pr");
+      const list = await fetchSystemWorkOrders(user.city_id);
       setWorkOrders(list);
     } finally {
       setLoading(false);

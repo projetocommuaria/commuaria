@@ -15,9 +15,12 @@ import {
 } from "lucide-react";
 import { useTheme } from "../ThemeContext";
 import { CATEGORIES_CONFIG, ReportCategory, UserProfile } from "../types";
-import { supabase, isUUID, generateUUID } from "../lib/supabase";
+import { getSupabaseClientForCity, isUUID } from "../lib/supabase";
+import { findUnambiguousProfileByIdentity } from "../domain/profileIdentity";
+import { isLegacyGlobalTenantAdmin } from "../domain/tenantAccess";
 
 interface SupervisorManagerModalProps {
+  cityId: string;
   onClose: () => void;
   reports?: any[];
   onRefresh?: () => Promise<void>;
@@ -25,12 +28,14 @@ interface SupervisorManagerModalProps {
 }
 
 export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
+  cityId,
   onClose,
   reports = [],
   onRefresh,
   onSupervisorsChange,
 }) => {
   const { isDark } = useTheme();
+  const tenantSupabase = getSupabaseClientForCity(cityId);
   const [supervisors, setSupervisors] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -62,52 +67,55 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
   const loadSupervisors = async () => {
     setLoading(true);
     try {
+      const scopedCityId = cityId.trim();
+      if (!scopedCityId) {
+        setSupervisors([]);
+        return;
+      }
+
       let profilesList: any[] = [];
-      if (supabase) {
-        const { data, error } = await supabase
+      if (tenantSupabase) {
+        const { data, error } = await tenantSupabase
           .from("profiles")
           .select("*")
-          .eq("role", "supervisor");
-        if (!error && data && data.length > 0) {
-          profilesList = data.filter((d: any) => !isLegacyMock(d));
+          .eq("role", "supervisor")
+          .eq("city_id", scopedCityId);
+        if (!error && data) {
+          profilesList = data.filter(
+            (profile: any) =>
+              !isLegacyMock(profile) &&
+              profile.city_id === scopedCityId &&
+              !isLegacyGlobalTenantAdmin(profile),
+          );
         }
       }
 
-      // Merge with localStorage and purge legacy mocks
-      const rawLocalProfiles = JSON.parse(
-        localStorage.getItem("commuaria_profiles") || "[]"
-      );
-      const cleanedLocalProfiles = rawLocalProfiles.filter(
-        (p: any) => !isLegacyMock(p)
-      );
+      // Merge only this municipality's supervisors; preserve other cities' browser data.
+      const rawLocalProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+      const rawLocalProfiles = Array.isArray(rawLocalProfilesValue) ? rawLocalProfilesValue : [];
+      const cleanedLocalProfiles = rawLocalProfiles.filter((profile: any) => !isLegacyMock(profile));
       if (cleanedLocalProfiles.length !== rawLocalProfiles.length) {
-        localStorage.setItem(
-          "commuaria_profiles",
-          JSON.stringify(cleanedLocalProfiles)
-        );
+        localStorage.setItem("commuaria_profiles", JSON.stringify(cleanedLocalProfiles));
       }
 
-      const rawLocalUsers = JSON.parse(
-        localStorage.getItem("commuaria_users") || "[]"
-      );
-      const cleanedLocalUsers = rawLocalUsers.filter(
-        (u: any) => !isLegacyMock(u)
-      );
+      const rawLocalUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+      const rawLocalUsers = Array.isArray(rawLocalUsersValue) ? rawLocalUsersValue : [];
+      const cleanedLocalUsers = rawLocalUsers.filter((user: any) => !isLegacyMock(user));
       if (cleanedLocalUsers.length !== rawLocalUsers.length) {
-        localStorage.setItem(
-          "commuaria_users",
-          JSON.stringify(cleanedLocalUsers)
-        );
+        localStorage.setItem("commuaria_users", JSON.stringify(cleanedLocalUsers));
       }
 
       const localSupervisors = cleanedLocalProfiles.filter(
-        (p: any) => p.role === "supervisor"
+        (profile: any) =>
+          profile.role === "supervisor" &&
+          profile.city_id === scopedCityId &&
+          !isLegacyGlobalTenantAdmin(profile),
       );
 
       const merged = [...profilesList];
-      localSupervisors.forEach((ls: any) => {
-        if (!merged.some((m: any) => m.id === ls.id || m.email?.toLowerCase() === ls.email?.toLowerCase())) {
-          merged.push(ls);
+      localSupervisors.forEach((profile: any) => {
+        if (!merged.some((existing: any) => existing.id === profile.id || existing.email?.toLowerCase() === profile.email?.toLowerCase())) {
+          merged.push(profile);
         }
       });
 
@@ -121,7 +129,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
 
   useEffect(() => {
     loadSupervisors();
-  }, []);
+  }, [cityId]);
 
   const generateUUID = () => {
     if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -145,26 +153,65 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
       setFormError("Preencha o nome e o e-mail do supervisor.");
       return;
     }
+    const scopedCityId = cityId.trim();
+    if (!scopedCityId) {
+      setFormError("Selecione um município válido antes de cadastrar o supervisor.");
+      return;
+    }
 
     try {
       const cleanEmail = formEmail.trim().toLowerCase();
       const cleanName = formName.trim();
       const assignedCat = formCategory;
 
-      // 1. Check existing in localStorage users & profiles
-      const localUsers = JSON.parse(
-        localStorage.getItem("commuaria_users") || "[]"
-      );
-      const localProfiles = JSON.parse(
-        localStorage.getItem("commuaria_profiles") || "[]"
-      );
+      // Check existing profiles before any local or remote changes.
+      const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+      const localUsers: any[] = Array.isArray(localUsersValue) ? localUsersValue : [];
+      const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+      const localProfiles: any[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
 
-      const existingUserIdx = localUsers.findIndex(
-        (u: any) => (u.email || "").toLowerCase() === cleanEmail
+      const localEmailMatches = [...localProfiles, ...localUsers].filter(
+        (profile: any) => (profile.email || "").trim().toLowerCase() === cleanEmail,
       );
-      const existingProfileIdx = localProfiles.findIndex(
-        (p: any) => (p.email || "").toLowerCase() === cleanEmail
+      if (localEmailMatches.some(isLegacyGlobalTenantAdmin)) {
+        throw new Error("Esta conta é ADM Global e não pode ser convertida em supervisor.");
+      }
+      if (localEmailMatches.some((profile: any) => profile.city_id?.trim() !== scopedCityId)) {
+        throw new Error("A conta já está vinculada a outro município ou sem município definido.");
+      }
+
+      const localMatch = findUnambiguousProfileByIdentity(
+        [...localProfiles, ...localUsers],
+        null,
+        cleanEmail,
       );
+      if (localEmailMatches.length > 0 && !localMatch) {
+        throw new Error("Há cópias locais ambíguas para este e-mail; nenhuma transferência foi aplicada.");
+      }
+
+      const matchesTargetAccount = (profile: any) =>
+        (profile.email || "").trim().toLowerCase() === cleanEmail &&
+        profile.city_id?.trim() === scopedCityId;
+      const existingUserIdx = localUsers.findIndex(matchesTargetAccount);
+      const existingProfileIdx = localProfiles.findIndex(matchesTargetAccount);
+
+      let existingDbProfile: any = null;
+      if (tenantSupabase) {
+        const { data, error } = await tenantSupabase
+          .from("profiles")
+          .select("id,city_id,role,is_admin")
+          .ilike("email", cleanEmail)
+          .eq("city_id", scopedCityId)
+          .maybeSingle();
+        if (error) throw error;
+        existingDbProfile = data;
+        if (existingDbProfile && isLegacyGlobalTenantAdmin(existingDbProfile)) {
+          throw new Error("Esta conta é ADM Global e não pode ser convertida em supervisor.");
+        }
+        if (existingDbProfile && existingDbProfile.city_id?.trim() !== scopedCityId) {
+          throw new Error("A conta já está vinculada a outro município ou sem município definido.");
+        }
+      }
 
       let targetId = generateUUID();
       if (existingProfileIdx !== -1 && localProfiles[existingProfileIdx].id) {
@@ -179,6 +226,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
         email: cleanEmail,
         password: formPassword || (existingUserIdx !== -1 ? localUsers[existingUserIdx].password : "super123"),
         role: "supervisor",
+        city_id: scopedCityId,
         assigned_category: assignedCat,
         is_admin: false,
         created_at: existingProfileIdx !== -1 ? localProfiles[existingProfileIdx].created_at : new Date().toISOString(),
@@ -190,6 +238,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
           ...localUsers[existingUserIdx],
           name: cleanName,
           role: "supervisor",
+          city_id: scopedCityId,
           assigned_category: assignedCat,
           is_admin: false,
           ...(formPassword ? { password: formPassword } : {}),
@@ -205,6 +254,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
           ...localProfiles[existingProfileIdx],
           name: cleanName,
           role: "supervisor",
+          city_id: scopedCityId,
           assigned_category: assignedCat,
           is_admin: false,
           ...(formPassword ? { password: formPassword } : {}),
@@ -220,13 +270,17 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
         try {
           const activeSession = JSON.parse(activeSessionStr);
           const activeEmail = (activeSession.email || "").toLowerCase().trim();
-          if (cleanEmail === activeEmail || targetId === activeSession.id) {
+          if (
+            activeSession.city_id?.trim() === scopedCityId &&
+            (cleanEmail === activeEmail || targetId === activeSession.id)
+          ) {
             localStorage.setItem(
               "commuaria_active_session",
               JSON.stringify({
                 ...activeSession,
                 name: cleanName,
                 role: "supervisor",
+                city_id: scopedCityId,
                 assigned_category: assignedCat,
                 is_admin: false,
               })
@@ -236,21 +290,22 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
       }
 
       // 2. If Supabase is connected, register in Auth and sync to profiles table
-      if (supabase) {
+      if (tenantSupabase) {
         try {
           let authUserId: string | null = null;
 
           // Only attempt signUp if nobody is logged in, to avoid hijacking the admin's active session
-          const { data: currentSessionData } = await supabase.auth.getSession();
+          const { data: currentSessionData } = await tenantSupabase.auth.getSession();
           if (!currentSessionData?.session) {
             try {
-              const { data: authData } = await supabase.auth.signUp({
+              const { data: authData } = await tenantSupabase.auth.signUp({
                 email: cleanEmail,
                 password: formPassword || "super123",
                 options: {
                   data: {
                     name: cleanName,
                     role: "supervisor",
+                    city_id: scopedCityId,
                     assigned_category: assignedCat,
                   },
                 },
@@ -263,28 +318,22 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
             }
           }
 
-          // Check if profile exists with this email in database
-          const { data: existingDbProfile } = await supabase
-            .from("profiles")
-            .select("id")
-            .ilike("email", cleanEmail)
-            .maybeSingle();
-
           const dbId = existingDbProfile?.id || authUserId || (isUUID(targetId) ? targetId : generateUUID());
 
           // Upsert profile in Supabase with explicit is_admin: false and role: "supervisor"
-          const { error: upsertErr } = await supabase.from("profiles").upsert({
+          const { error: upsertErr } = await tenantSupabase.from("profiles").upsert({
             id: dbId,
             name: cleanName,
             email: cleanEmail,
             role: "supervisor",
+            city_id: scopedCityId,
             assigned_category: assignedCat,
             is_admin: false,
           });
 
           if (upsertErr) {
             console.warn("Supabase upsert error, tentando update direto por email:", upsertErr);
-            await supabase
+            await tenantSupabase
               .from("profiles")
               .update({
                 name: cleanName,
@@ -292,7 +341,8 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
                 assigned_category: assignedCat,
                 is_admin: false,
               })
-              .ilike("email", cleanEmail);
+              .ilike("email", cleanEmail)
+              .eq("city_id", scopedCityId);
           }
         } catch (dbErr) {
           console.warn("Supabase sync warning:", dbErr);
@@ -313,37 +363,45 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
   };
 
   const handleUpdateCategory = async (supId: string, newCategory: string) => {
+    const scopedCityId = cityId.trim();
+    if (!scopedCityId) return;
     try {
-      // 1. Update localStorage
-      const localProfiles = JSON.parse(
-        localStorage.getItem("commuaria_profiles") || "[]"
+      // 1. Update only the local supervisor assigned to this municipality.
+      const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+      const localProfiles: any[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+      const targetProfile = localProfiles.find(
+        (profile: any) => profile.id === supId && profile.city_id === scopedCityId,
       );
-      const targetProfile = localProfiles.find((p: any) => p.id === supId);
-      const updated = localProfiles.map((p: any) =>
-        p.id === supId ? { ...p, assigned_category: newCategory } : p
+      const updated = localProfiles.map((profile: any) =>
+        profile.id === supId && profile.city_id === scopedCityId
+          ? { ...profile, assigned_category: newCategory }
+          : profile,
       );
       localStorage.setItem("commuaria_profiles", JSON.stringify(updated));
 
-      const localUsers = JSON.parse(
-        localStorage.getItem("commuaria_users") || "[]"
-      );
-      const updatedUsers = localUsers.map((u: any) =>
-        u.id === supId ? { ...u, assigned_category: newCategory } : u
+      const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+      const localUsers: any[] = Array.isArray(localUsersValue) ? localUsersValue : [];
+      const updatedUsers = localUsers.map((user: any) =>
+        user.id === supId && user.city_id === scopedCityId
+          ? { ...user, assigned_category: newCategory }
+          : user,
       );
       localStorage.setItem("commuaria_users", JSON.stringify(updatedUsers));
 
-      // 2. Update Supabase if available
-      if (supabase) {
-        await supabase
+      // 2. Update Supabase only inside this municipality.
+      if (tenantSupabase) {
+        await tenantSupabase
           .from("profiles")
           .update({ assigned_category: newCategory })
-          .eq("id", supId);
+          .eq("id", supId)
+          .eq("city_id", scopedCityId);
 
         if (targetProfile?.email) {
-          await supabase
+          await tenantSupabase
             .from("profiles")
             .update({ assigned_category: newCategory })
-            .eq("email", targetProfile.email.toLowerCase());
+            .eq("email", targetProfile.email.toLowerCase())
+            .eq("city_id", scopedCityId);
         }
       }
 
@@ -358,25 +416,39 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
 
   const handleDeleteSupervisor = async (supId: string, name: string) => {
     if (!confirm(`Deseja realmente remover o supervisor ${name}?`)) return;
+    const scopedCityId = cityId.trim();
+    if (!scopedCityId) return;
 
     try {
-      const localProfiles = JSON.parse(
-        localStorage.getItem("commuaria_profiles") || "[]"
+      const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+      const localProfiles: any[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+      const targetProfile = localProfiles.find(
+        (profile: any) => profile.id === supId && profile.city_id === scopedCityId,
       );
-      const targetProfile = localProfiles.find((p: any) => p.id === supId);
-      const filtered = (localProfiles || []).filter((p: any) => p.id !== supId);
+      const filtered = localProfiles.filter(
+        (profile: any) => !(profile.id === supId && profile.city_id === scopedCityId),
+      );
       localStorage.setItem("commuaria_profiles", JSON.stringify(filtered));
 
-      const localUsers = JSON.parse(
-        localStorage.getItem("commuaria_users") || "[]"
+      const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+      const localUsers: any[] = Array.isArray(localUsersValue) ? localUsersValue : [];
+      const filteredUsers = localUsers.filter(
+        (user: any) => !(user.id === supId && user.city_id === scopedCityId),
       );
-      const filteredUsers = (localUsers || []).filter((u: any) => u.id !== supId);
       localStorage.setItem("commuaria_users", JSON.stringify(filteredUsers));
 
-      if (supabase) {
-        await supabase.from("profiles").delete().eq("id", supId);
+      if (tenantSupabase) {
+        await tenantSupabase
+          .from("profiles")
+          .delete()
+          .eq("id", supId)
+          .eq("city_id", scopedCityId);
         if (targetProfile?.email) {
-          await supabase.from("profiles").delete().eq("email", targetProfile.email.toLowerCase());
+          await tenantSupabase
+            .from("profiles")
+            .delete()
+            .eq("email", targetProfile.email.toLowerCase())
+            .eq("city_id", scopedCityId);
         }
       }
 

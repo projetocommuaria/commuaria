@@ -17,7 +17,8 @@ import {
 import { useTheme } from "../ThemeContext";
 import { CATEGORIES_CONFIG, ReportCategory, ReportItem, UserProfile } from "../types";
 import { SafeLogoImage } from "./SafeLogoImage";
-import { supabase } from "../lib/supabase";
+import { getSupabaseClientForCity } from "../lib/supabase";
+import { rowBelongsToCity } from "../domain/cityScopedRows";
 
 interface SupervisorTasksViewProps {
   reports: ReportItem[];
@@ -57,15 +58,25 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
   const loadReportsDirectly = async () => {
     try {
       setIsRefreshing(true);
+      const cityId = user?.city_id?.trim() || "";
+      if (!cityId) {
+        setInternalReports([]);
+        return;
+      }
+
       let supaReports: ReportItem[] = [];
-      if (supabase) {
+      const citySupabase = getSupabaseClientForCity(cityId);
+      if (citySupabase) {
         try {
-          const { data, error } = await supabase
+          const { data, error } = await citySupabase
             .from("reports")
             .select("*")
+            .eq("city_id", cityId)
             .order("created_at", { ascending: false });
           if (!error && data && data.length > 0) {
-            supaReports = data.map((r: any) => ({
+            supaReports = data.filter((report: ReportItem) =>
+              rowBelongsToCity(report, cityId, "araucaria-pr"),
+            ).map((r: any) => ({
               ...r,
               category:
                 r.category ||
@@ -80,10 +91,14 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
         }
       }
 
-      const localReports = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+      const localReportsValue = JSON.parse(localStorage.getItem("commuaria_reports") || "[]");
+      const localReports = Array.isArray(localReportsValue) ? localReportsValue : [];
       const combined = [...supaReports];
       localReports.forEach((lr: any) => {
-        const matchIdx = combined.findIndex((cr: any) => cr.id === lr.id);
+        if (!rowBelongsToCity(lr, cityId, "araucaria-pr")) return;
+        const matchIdx = combined.findIndex(
+          (cr: any) => cr.id === lr.id && rowBelongsToCity(cr, cityId, "araucaria-pr"),
+        );
         if (matchIdx === -1) {
           combined.push(lr);
         } else {
@@ -105,7 +120,7 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
 
   useEffect(() => {
     loadReportsDirectly();
-  }, [assignedCategory]);
+  }, [assignedCategory, user?.city_id]);
 
   const displayReports = reports && reports.length > 0 ? reports : internalReports;
   const safeReports = Array.isArray(displayReports) ? displayReports : [];
@@ -548,7 +563,7 @@ export const SupervisorTasksView: React.FC<SupervisorTasksViewProps> = ({
                   >
                     <div className="flex items-center gap-1.5 truncate max-w-[200px]">
                       <MapPin size={13} className="text-red-500 shrink-0" />
-                      <span className="truncate">{report.address || "Araucária"}</span>
+                      <span className="truncate">{report.address || "Endereço não informado"}</span>
                     </div>
 
                     <div className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-bold shrink-0">
