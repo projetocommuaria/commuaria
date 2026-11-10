@@ -7,6 +7,7 @@ import {
   resolveSupabaseTenantConfig,
 } from './supabaseTenants';
 import type { SupabaseTenantConfig, SupabaseTenantEnvironment } from './supabaseTenants';
+import { getCityTableName } from './tenantTables';
 
 export { DEFAULT_SUPABASE_ANON_KEY, DEFAULT_SUPABASE_URL } from './supabaseTenants';
 
@@ -31,16 +32,11 @@ const getSupabaseEnvironment = (): SupabaseTenantEnvironment => {
   return env || {};
 };
 
-const getCustomConfigStorageKeys = (cityId: string) =>
-  cityId === ARAUCARIA_CITY_ID
-    ? {
-        url: 'commuaria_custom_supabase_url',
-        anonKey: 'commuaria_custom_supabase_anon_key',
-      }
-    : {
-        url: `commuaria_custom_supabase_${cityId}_url`,
-        anonKey: `commuaria_custom_supabase_${cityId}_anon_key`,
-      };
+// Database credentials are shared by every city; legacy city-specific overrides are ignored.
+const getCustomConfigStorageKeys = (_cityId: string) => ({
+  url: 'commuaria_custom_supabase_url',
+  anonKey: 'commuaria_custom_supabase_anon_key',
+});
 
 const getStoredConfig = (cityId = ARAUCARIA_CITY_ID) => {
   let override: { url?: string; anonKey?: string } | undefined;
@@ -650,8 +646,6 @@ if (typeof window !== 'undefined') {
   });
 }
 
-const supabaseClients = new Map<string, any>();
-
 function createRealSupabaseClient(config: SupabaseTenantConfig): any {
   const storageKey = getSupabaseAuthStorageKey(config.url);
   const realClient = createClient(config.url, config.anonKey, {
@@ -764,36 +758,66 @@ function createRealSupabaseClient(config: SupabaseTenantConfig): any {
   return realClient;
 }
 
-/** Returns only the client configured for the requested municipality; it never falls back to another city. */
+const baseSupabaseClients = new Map<string, any>();
+const cityScopedClients = new Map<string, any>();
+
+function createCityScopedSupabaseClient(baseClient: any, cityId: string): any {
+  return new Proxy(baseClient, {
+    get(target, property) {
+      if (property === 'from') {
+        return (tableName: string) => target.from(getCityTableName(cityId, tableName));
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+function getBaseSupabaseClient(config: SupabaseTenantConfig): any {
+  const cacheKey = `${config.url}|${config.anonKey}`;
+  const cachedClient = baseSupabaseClients.get(cacheKey);
+  if (cachedClient) return cachedClient;
+
+  const client = createRealSupabaseClient(config);
+  baseSupabaseClients.set(cacheKey, client);
+  return client;
+}
+
+/**
+ * Returns a city-scoped view of the shared Supabase project. Auth and RPC are shared;
+ * only city-owned table names are routed to that municipality's physical table set.
+ */
 export function getSupabaseClientForCity(cityId: string | null | undefined): any | null {
-  const normalizedCityId = cityId?.trim();
+  const normalizedCityId = cityId?.trim().toLowerCase();
   if (!normalizedCityId) return null;
   const config = getStoredConfig(normalizedCityId);
   if (!config) return null;
 
-  const cachedClient = supabaseClients.get(normalizedCityId);
+  const cachedClient = cityScopedClients.get(normalizedCityId);
   if (cachedClient) return cachedClient;
 
   if (!isUsableSupabaseTenantConfig(config)) {
-    // Preserve the existing offline mock mode for Araucária. An unconfigured second
-    // municipality deliberately has no mock/remote client, preventing cross-tenant fallback.
+    // Preserve offline mode for Araucaria without letting another city read its mock data.
     if (normalizedCityId === ARAUCARIA_CITY_ID) {
       const mockClient = createMockSupabaseClient();
-      supabaseClients.set(normalizedCityId, mockClient);
+      cityScopedClients.set(normalizedCityId, mockClient);
       return mockClient;
     }
     return null;
   }
 
   try {
-    const client = createRealSupabaseClient(config);
-    supabaseClients.set(normalizedCityId, client);
+    const client = createCityScopedSupabaseClient(
+      getBaseSupabaseClient(config),
+      normalizedCityId,
+    );
+    cityScopedClients.set(normalizedCityId, client);
     return client;
   } catch (error) {
-    console.warn(`Falha ao inicializar Supabase para ${normalizedCityId}:`, error);
+    console.warn(`Falha ao inicializar Supabase compartilhado para ${normalizedCityId}:`, error);
     if (normalizedCityId === ARAUCARIA_CITY_ID) {
       const mockClient = createMockSupabaseClient();
-      supabaseClients.set(normalizedCityId, mockClient);
+      cityScopedClients.set(normalizedCityId, mockClient);
       return mockClient;
     }
     return null;
@@ -827,14 +851,12 @@ export async function syncAllDataToSupabase(cityId = ARAUCARIA_CITY_ID): Promise
   try {
     const { data: authData, error: authError } = await tenantSupabase.auth.getUser();
     if (authError || !authData.user) {
-      return failureResult("Entre na sua conta ADM Global antes de iniciar a sincronização.");
+      return failureResult(
+        "Não há uma sessão ADM Global válida no projeto Supabase selecionado. A sincronização envia dados locais; não carrega contas existentes.",
+      );
     }
-    const { data: adminProfile, error: profileError } = await tenantSupabase
-      .from("profiles")
-      .select("role,is_admin")
-      .eq("id", authData.user.id)
-      .maybeSingle();
-    if (profileError || !isLegacyGlobalTenantAdmin(adminProfile)) {
+    const { data: databaseAdminFlag, error: adminCheckError } = await tenantSupabase.rpc("is_active_global_admin");
+    if (adminCheckError || databaseAdminFlag !== true) {
       return failureResult("A sincronização está disponível somente para perfis ADM Global.");
     }
     const { data: cityRows, error: cityError } = await tenantSupabase.from("cities").select("id");
@@ -886,6 +908,7 @@ export async function syncAllDataToSupabase(cityId = ARAUCARIA_CITY_ID): Promise
         const profileId = typeof p.id === "string" ? p.id.trim() : "";
         const cityId = typeof p.city_id === "string" ? p.city_id.trim() : "";
         const isGlobalAdmin = isLegacyGlobalTenantAdmin(p);
+        if ((cityId && cityId !== scopedCityId) || (!cityId && scopedCityId !== ARAUCARIA_CITY_ID)) continue;
         if (
           !profileId ||
           (!cityId && !isGlobalAdmin) ||
@@ -924,6 +947,7 @@ export async function syncAllDataToSupabase(cityId = ARAUCARIA_CITY_ID): Promise
     if (Array.isArray(rawReports) && rawReports.length > 0) {
       for (const r of rawReports) {
         const cityId = typeof r.city_id === "string" ? r.city_id.trim() : "";
+        if (cityId && cityId !== scopedCityId) continue;
         if (!cityId || !knownCityIds.has(cityId)) {
           errors.push("Ocorrências sem município válido foram ignoradas; revise o vínculo antes de sincronizar.");
           continue;
@@ -990,6 +1014,7 @@ export async function syncAllDataToSupabase(cityId = ARAUCARIA_CITY_ID): Promise
       for (const o of rawOrders) {
         const cityId = typeof o.city_id === "string" ? o.city_id.trim() : "";
         const orderId = typeof o.id === "string" ? o.id.trim() : "";
+        if (cityId && cityId !== scopedCityId) continue;
         if (!cityId || !knownCityIds.has(cityId) || !orderId) {
           errors.push("Ordens de serviço sem município válido ou identificador foram ignoradas.");
           continue;
@@ -1044,6 +1069,7 @@ export async function syncAllDataToSupabase(cityId = ARAUCARIA_CITY_ID): Promise
       for (const n of rawNews) {
         const cityId = typeof n.city_id === "string" ? n.city_id.trim() : "";
         const newsId = typeof n.id === "string" ? n.id.trim() : "";
+        if (cityId && cityId !== scopedCityId) continue;
         if (!cityId || !knownCityIds.has(cityId) || !newsId) {
           errors.push("Comunicados sem município válido ou identificador foram ignorados.");
           continue;

@@ -11,7 +11,7 @@ import {
   resolveSupabaseTenantConfig,
 } from "./supabaseTenants";
 
-test("Araucária keeps the existing Supabase project and credentials", () => {
+test("Araucaria keeps the existing main Supabase project and credentials", () => {
   const config = resolveSupabaseTenantConfig(ARAUCARIA_CITY_ID);
   assert.deepEqual(config, {
     cityId: ARAUCARIA_CITY_ID,
@@ -21,41 +21,49 @@ test("Araucária keeps the existing Supabase project and credentials", () => {
   assert.equal(isUsableSupabaseTenantConfig(config), true);
 });
 
-test("Curitiba routes to its project and never inherits Araucária credentials", () => {
+test("Curitiba uses the same project and Auth credentials as Araucaria", () => {
   const config = resolveSupabaseTenantConfig(CURITIBA_CITY_ID);
   assert.deepEqual(config, {
     cityId: CURITIBA_CITY_ID,
-    url: DEFAULT_CURITIBA_SUPABASE_URL,
-    anonKey: "",
+    url: DEFAULT_SUPABASE_URL,
+    anonKey: DEFAULT_SUPABASE_ANON_KEY,
   });
-  assert.equal(isUsableSupabaseTenantConfig(config), false);
+  assert.equal(DEFAULT_CURITIBA_SUPABASE_URL, DEFAULT_SUPABASE_URL);
+  assert.equal(isUsableSupabaseTenantConfig(config), true);
 });
 
-test("Curitiba accepts only its own environment or city-specific override", () => {
-  const fromEnvironment = resolveSupabaseTenantConfig(CURITIBA_CITY_ID, {
-    VITE_SUPABASE_ANON_KEY: "araucaria-key-must-not-be-used",
-    VITE_SUPABASE_CURITIBA_ANON_KEY: "curitiba-publishable-key",
+test("legacy Curitiba-specific environment variables are ignored", () => {
+  const config = resolveSupabaseTenantConfig(CURITIBA_CITY_ID, {
+    VITE_SUPABASE_URL: "https://commuaria-main.supabase.co",
+    VITE_SUPABASE_ANON_KEY: "main-publishable-key",
+    VITE_SUPABASE_CURITIBA_URL: "https://old-curitiba-project.supabase.co",
+    VITE_SUPABASE_CURITIBA_ANON_KEY: "old-curitiba-key",
   });
-  assert.equal(fromEnvironment?.url, DEFAULT_CURITIBA_SUPABASE_URL);
-  assert.equal(fromEnvironment?.anonKey, "curitiba-publishable-key");
+  assert.equal(config?.url, "https://commuaria-main.supabase.co");
+  assert.equal(config?.anonKey, "main-publishable-key");
+});
 
-  const fromOverride = resolveSupabaseTenantConfig(
+test("valid future city IDs reuse the one project; invalid IDs fail closed", () => {
+  const futureCity = resolveSupabaseTenantConfig("campo-largo-pr");
+  assert.equal(futureCity?.url, DEFAULT_SUPABASE_URL);
+  assert.equal(futureCity?.anonKey, DEFAULT_SUPABASE_ANON_KEY);
+  assert.equal(resolveSupabaseTenantConfig(""), null);
+  assert.equal(resolveSupabaseTenantConfig("../profiles"), null);
+  assert.equal(resolveSupabaseTenantConfig("city name"), null);
+});
+
+test("a local override changes the shared project configuration", () => {
+  const override = resolveSupabaseTenantConfig(
     CURITIBA_CITY_ID,
-    { VITE_SUPABASE_CURITIBA_ANON_KEY: "environment-curitiba-key" },
-    { url: "https://curitiba-custom.supabase.co", anonKey: "local-curitiba-key" },
+    { VITE_SUPABASE_URL: "https://main.supabase.co", VITE_SUPABASE_ANON_KEY: "main-key" },
+    { url: "https://local.supabase.co", anonKey: "local-publishable-key" },
   );
-  assert.equal(fromOverride?.url, "https://curitiba-custom.supabase.co");
-  assert.equal(fromOverride?.anonKey, "local-curitiba-key");
-  assert.equal(isUsableSupabaseTenantConfig(fromOverride), true);
+  assert.equal(override?.url, "https://local.supabase.co");
+  assert.equal(override?.anonKey, "local-publishable-key");
 });
 
-test("unknown or empty municipalities fail closed", () => {
-  assert.equal(resolveSupabaseTenantConfig(" "), null);
-  assert.equal(resolveSupabaseTenantConfig("another-city-pr"), null);
-});
-
-test("auth storage keys stay separated by project", () => {
-  assert.notEqual(
+test("all cities in the shared project use one Auth storage key", () => {
+  assert.equal(
     getSupabaseAuthStorageKey(DEFAULT_SUPABASE_URL),
     getSupabaseAuthStorageKey(DEFAULT_CURITIBA_SUPABASE_URL),
   );

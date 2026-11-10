@@ -32,10 +32,16 @@ import {
   isUUID,
   generateUUID,
 } from "../lib/supabase";
-import { ARAUCARIA_CITY_ID, CURITIBA_CITY_ID } from "../lib/supabaseTenants";
+import { CURITIBA_CITY_ID } from "../lib/supabaseTenants";
 import { checkAccountBlockStatus } from "../utils/blockUtils";
 import { isLegacyGlobalTenantAdmin, type MunicipalRole } from "../domain/tenantAccess";
 import { rowBelongsToCity } from "../domain/cityScopedRows";
+
+const PROTECTED_GLOBAL_ADMIN_EMAILS = new Set([
+  "projetocomnuaria@gmail.com",
+  "antonioadm@gmail.com",
+  "admin@commuaria.com",
+]);
 
 interface AdminAccountsViewProps {
   activeCityId?: string;
@@ -44,57 +50,6 @@ interface AdminAccountsViewProps {
   onRefreshStats?: () => Promise<void>;
   onViewDetails?: (user: UserProfile) => void;
   onRoleChanged?: (userIdOrEmail: string, newRole: UserRole, newCategory: string | null) => void;
-}
-
-async function updateCuritibaProfileRoleThroughServer(input: {
-  profileId?: string;
-  email?: string;
-  role: MunicipalRole;
-  assignedCategory: string | null;
-}): Promise<UserProfile> {
-  const authClient = getSupabaseClientForCity(ARAUCARIA_CITY_ID);
-  if (!authClient || !isRealSupabaseForCity(ARAUCARIA_CITY_ID)) {
-    throw new Error("Não foi possível acessar a sessão ADM Global de Araucária.");
-  }
-
-  const { data: sessionData, error: sessionError } = await authClient.auth.getSession();
-  const accessToken = sessionData?.session?.access_token;
-  if (sessionError || !accessToken) {
-    throw new Error("Sua sessão ADM Global em Araucária expirou. Entre novamente e tente outra vez.");
-  }
-
-  let response: Response;
-  try {
-    response = await fetch("/api/admin/curitiba/profile-role", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({
-        cityId: CURITIBA_CITY_ID,
-        profileId: input.profileId,
-        email: input.email,
-        role: input.role,
-        assignedCategory: input.assignedCategory,
-      }),
-    });
-  } catch {
-    throw new Error("Não foi possível conectar ao servidor para alterar o cargo em Curitiba.");
-  }
-
-  let responseBody: any = null;
-  try {
-    responseBody = await response.json();
-  } catch (_) {}
-  if (!response.ok) {
-    throw new Error(responseBody?.error || "O servidor recusou a alteração de cargo em Curitiba.");
-  }
-  if (!responseBody?.profile?.id || responseBody.profile.city_id !== CURITIBA_CITY_ID) {
-    throw new Error("O servidor não confirmou o perfil atualizado em Curitiba.");
-  }
-
-  return responseBody.profile as UserProfile;
 }
 
 export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
@@ -106,25 +61,35 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 }) => {
   const { isDark } = useTheme();
   const tenantSupabase = getSupabaseClientForCity(activeCityId);
+  const isCuritibaTenant = activeCityId?.trim() === CURITIBA_CITY_ID;
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [accountsLoadError, setAccountsLoadError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
-  // Helper to determine accurate effective role
+  const isGlobalAdminAccount = (p?: UserProfile | null): boolean => {
+    if (!p) return false;
+    return isLegacyGlobalTenantAdmin(p) ||
+      PROTECTED_GLOBAL_ADMIN_EMAILS.has((p.email || "").trim().toLowerCase());
+  };
+
+  // Helper to determine accurate effective role without making protected ADM accounts editable.
   const getEffectiveRole = (p?: UserProfile | null): UserRole => {
     if (!p) return "user";
-    if (p.is_admin === true || p.role === "admin") return "admin";
+    if (isGlobalAdminAccount(p)) return "admin";
     if (p.role === "diretor") return "diretor";
     if (p.role === "supervisor") return "supervisor";
     if (p.role === "funcionario") return "funcionario";
     return "user";
   };
-  const isGlobalAdminAccount = (p?: UserProfile | null): boolean =>
-    p ? isLegacyGlobalTenantAdmin(p) : false;
   const localProfileMatchesTarget = (candidate: any, target: UserProfile): boolean => {
     const targetCityId = target.city_id?.trim();
-    if (!targetCityId || !rowBelongsToCity(candidate, targetCityId, "araucaria-pr")) return false;
+    if (
+      !targetCityId ||
+      targetCityId === CURITIBA_CITY_ID ||
+      !rowBelongsToCity(candidate, targetCityId, "araucaria-pr")
+    ) return false;
     const targetEmail = (target.email || "").toLowerCase().trim();
     return candidate.id === target.id || Boolean(
       targetEmail && (candidate.email || "").toLowerCase().trim() === targetEmail,
@@ -186,6 +151,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
   const loadAllAccounts = async () => {
     setLoading(true);
+    setAccountsLoadError(null);
     try {
       let supaProfiles: UserProfile[] = [];
       if (tenantSupabase) {
@@ -194,24 +160,26 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
             .from("profiles")
             .select("*")
             .order("created_at", { ascending: false });
-          if (!error && data) {
+          if (error) throw error;
+          if (data) {
             supaProfiles = data.filter((profile: any) =>
               !isLegacyMock(profile) &&
               (isGlobalAdminAccount(profile) || profile.city_id?.trim() === activeCityId?.trim()),
             );
           }
-        } catch (e) {
+        } catch (e: any) {
           console.warn("Supabase profiles query error:", e);
+          setAccountsLoadError(e?.message || "Não foi possível carregar os perfis do Supabase.");
         }
       }
 
       // Local storage fallback and merge
-      const localProfiles: UserProfile[] = JSON.parse(
-        localStorage.getItem("commuaria_profiles") || "[]"
-      ).filter((profile: any) =>
-        !isLegacyMock(profile) &&
-        (isGlobalAdminAccount(profile) || profile.city_id?.trim() === activeCityId?.trim()),
-      );
+      const localProfiles: UserProfile[] = activeCityId?.trim() === CURITIBA_CITY_ID
+        ? []
+        : JSON.parse(localStorage.getItem("commuaria_profiles") || "[]").filter((profile: any) =>
+          !isLegacyMock(profile) &&
+          (isGlobalAdminAccount(profile) || profile.city_id?.trim() === activeCityId?.trim()),
+        );
 
       const mergedMap = new Map<string, UserProfile>();
       const accountKey = (profile: UserProfile) => {
@@ -278,6 +246,11 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
   // Synchronize with Supabase
   const handleSyncWithSupabase = async () => {
+    if (isCuritibaTenant) {
+      setSyncMessage("A sincronização local está desativada para Curitiba; nenhuma conta ou dado local será importado.");
+      setTimeout(() => setSyncMessage(null), 5000);
+      return;
+    }
     setSyncing(true);
     setSyncMessage(null);
     try {
@@ -563,15 +536,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
         is_admin: false,
       };
       let databaseProfileId: string | null = null;
-      if (targetCityId === CURITIBA_CITY_ID && isRealSupabaseForCity(targetCityId)) {
-        const updatedProfile = await updateCuritibaProfileRoleThroughServer({
-          profileId: isUUID(targetUserId) ? targetUserId : undefined,
-          email: cleanEmail || undefined,
-          role: newRole,
-          assignedCategory: targetCategory,
-        });
-        databaseProfileId = updatedProfile.id;
-      } else if (targetSupabase) {
+      if (targetSupabase) {
         let profileById: any = null;
         if (isUUID(targetUserId)) {
           const { data, error } = await targetSupabase
@@ -747,6 +712,11 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
     if (!cityId) {
       setAddError("Selecione um município ativo antes de criar a conta.");
+      setAddLoading(false);
+      return;
+    }
+    if (cityId === CURITIBA_CITY_ID) {
+      setAddError("Em Curitiba, não é permitido criar perfis sem vínculo com Auth. O interessado deve se cadastrar pela tela pública como cidadão; depois, um ADM Global poderá atribuir o cargo.");
       setAddLoading(false);
       return;
     }
@@ -968,13 +938,13 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
               <button
                 type="button"
                 onClick={handleSyncWithSupabase}
-                disabled={syncing}
-                className={`px-3.5 py-2 rounded-2xl border text-xs font-bold flex items-center gap-2 transition-all active:scale-95 shadow-sm ${
+                disabled={syncing || isCuritibaTenant}
+                className={`px-3.5 py-2 rounded-2xl border text-xs font-bold flex items-center gap-2 transition-all active:scale-95 shadow-sm disabled:cursor-not-allowed disabled:opacity-50 ${
                   isDark
                     ? "bg-white/10 hover:bg-white/15 border-white/20 text-white"
                     : "bg-white hover:bg-zinc-50 border-black/10 text-[#183a2b]"
                 }`}
-                title="Sincronizar base de dados"
+                title={isCuritibaTenant ? "Importação local desativada para Curitiba" : "Sincronizar dados locais com o Supabase"}
               >
                 <RefreshCw size={14} className={syncing ? "animate-spin text-emerald-500" : ""} />
                 <span>{syncing ? "Sincronizando..." : "Sincronizar"}</span>
@@ -982,8 +952,12 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
               <button
                 type="button"
-                onClick={() => setShowAddAccountModal(true)}
-                className={`px-4 py-2 rounded-2xl text-xs font-bold flex items-center gap-2 shadow-md transition-all active:scale-95 ${
+                onClick={() => {
+                  if (!isCuritibaTenant) setShowAddAccountModal(true);
+                }}
+                disabled={isCuritibaTenant}
+                title={isCuritibaTenant ? "Curitiba usa apenas contas criadas pelo fluxo autenticado" : "Criar conta"}
+                className={`px-4 py-2 rounded-2xl text-xs font-bold flex items-center gap-2 shadow-md transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 ${
                   isDark
                     ? "bg-white text-[#5A635C] hover:bg-white/90"
                     : "bg-[#183a2b] hover:bg-[#122c21] text-white"
@@ -996,6 +970,14 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
           </div>
         </div>
       </header>
+
+      {isCuritibaTenant && (
+        <div className={`mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 pt-4 ${isDark ? "text-amber-100" : "text-amber-950"}`}>
+          <div className={`rounded-2xl border p-4 text-xs ${isDark ? "border-amber-300/20 bg-amber-300/10" : "border-amber-700/15 bg-amber-50"}`}>
+            Curitiba não aceita perfis placeholder nem importação do armazenamento local. Novas contas devem ser criadas pelo cadastro autenticado como cidadãos; depois do vínculo com Auth, o ADM Global pode atribuir cargos municipais.
+          </div>
+        </div>
+      )}
 
       {/* Main Container */}
       <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
@@ -1070,6 +1052,20 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
             </motion.div>
           )}
         </AnimatePresence>
+
+        {accountsLoadError && (
+          <div
+            role="alert"
+            className={`p-3.5 rounded-2xl border text-xs flex items-center gap-3 ${
+              isDark
+                ? "bg-amber-500/10 border-amber-500/30 text-amber-200"
+                : "bg-amber-50 border-amber-200 text-amber-900"
+            }`}
+          >
+            <AlertTriangle size={16} className="shrink-0" />
+            <span>{accountsLoadError}</span>
+          </div>
+        )}
 
         {/* Summary Statistics Strip */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
@@ -1999,7 +1995,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
 
       {/* MODAL: Nova Conta */}
       <AnimatePresence>
-        {showAddAccountModal && (
+        {showAddAccountModal && !isCuritibaTenant && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}

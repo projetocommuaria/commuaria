@@ -392,23 +392,10 @@ const SignupView = ({
           return;
         }
 
-        // Save profile in Supabase profiles table
-        if (data?.user) {
-          registeredUserId = data.user.id;
-          try {
-            await citySupabase.from("profiles").upsert({
-              id: data.user.id,
-              name: name.trim(),
-              email: email.trim().toLowerCase(),
-              role: "user",
-              is_admin: false,
-              city_id: selectedCity.id,
-              created_at: new Date().toISOString(),
-            });
-          } catch (pErr) {
-            console.warn("Erro ao registrar profile no Supabase:", pErr);
-          }
-        }
+        // The database auth trigger creates or links the city-specific profile.
+        // Do not upsert a second row by Auth UUID: an imported municipal profile
+        // may retain a different stable id while auth_user_id links the login.
+        if (data?.user) registeredUserId = data.user.id;
 
         // Se for um Supabase real com confirmação de e-mail ativada
         if (data && !data.session && data.user) {
@@ -581,20 +568,13 @@ const ForgotPasswordView = ({
   onBack,
   initialStep = "email",
   onChangeStep,
-  cities,
-  initialCityId,
-  onCityChange,
 }: {
   onBack: () => void;
   initialStep?: "email" | "code" | "reset";
   onChangeStep?: (step: "email" | "code" | "reset") => void;
-  cities: CityItem[];
-  initialCityId: string;
-  onCityChange: (cityId: string) => void;
 }) => {
   const { isDark } = useTheme();
   const [step, setStep] = useState<"email" | "code" | "reset">(initialStep);
-  const [cityId, setCityId] = useState(initialCityId);
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -605,10 +585,6 @@ const ForgotPasswordView = ({
   useEffect(() => {
     setStep(initialStep);
   }, [initialStep]);
-
-  useEffect(() => {
-    setCityId(initialCityId);
-  }, [initialCityId]);
 
   const handleStepChange = (newStep: "email" | "code" | "reset") => {
     setStep(newStep);
@@ -626,9 +602,9 @@ const ForgotPasswordView = ({
     setError("");
     setIsSubmitting(true);
     try {
-      const citySupabase = getSupabaseClientForCity(cityId);
+      const citySupabase = getSupabaseClientForCity(ARAUCARIA_CITY_ID);
       if (!citySupabase) {
-        setError("O projeto Supabase do município selecionado não está configurado.");
+        setError("O projeto Supabase compartilhado não está configurado.");
         return;
       }
       if (citySupabase) {
@@ -666,9 +642,9 @@ const ForgotPasswordView = ({
     setError("");
     setIsSubmitting(true);
     try {
-      const citySupabase = getSupabaseClientForCity(cityId);
+      const citySupabase = getSupabaseClientForCity(ARAUCARIA_CITY_ID);
       if (!citySupabase) {
-        setError("O projeto Supabase do município selecionado não está configurado.");
+        setError("O projeto Supabase compartilhado não está configurado.");
         return;
       }
       if (citySupabase) {
@@ -718,9 +694,9 @@ const ForgotPasswordView = ({
     setError("");
     setIsSubmitting(true);
     try {
-      const citySupabase = getSupabaseClientForCity(cityId);
+      const citySupabase = getSupabaseClientForCity(ARAUCARIA_CITY_ID);
       if (!citySupabase) {
-        setError("O projeto Supabase do município selecionado não está configurado.");
+        setError("O projeto Supabase compartilhado não está configurado.");
         return;
       }
       if (citySupabase) {
@@ -855,30 +831,6 @@ const ForgotPasswordView = ({
 
           {/* Dynamic Inputs Based on Step */}
           <div className="space-y-4 mb-2">
-            {step === "email" && (
-              <label className={`block text-left text-xs font-semibold ${isDark ? "text-white/85" : "text-[#183a2b]"}`}>
-                Município da conta
-                <select
-                  required
-                  value={cityId}
-                  onChange={(event) => {
-                    setCityId(event.target.value);
-                    onCityChange(event.target.value);
-                    setError("");
-                  }}
-                  className={`mt-1.5 w-full backdrop-blur-[6px] border rounded-full px-7 py-3.5 transition-all shadow-inner focus:outline-none ${
-                    isDark
-                      ? "bg-[#34433f] border-white/15 text-white"
-                      : "bg-white/90 border-black/15 text-[#183a2b]"
-                  }`}
-                >
-                  <option value="">Selecione seu município</option>
-                  {cities.filter((city) => city.is_active).map((city) => (
-                    <option key={city.id} value={city.id}>{city.name} · {city.state}</option>
-                  ))}
-                </select>
-              </label>
-            )}
             {step === "email" && (
               <input
                 type="email"
@@ -1154,11 +1106,12 @@ const LoginView = ({
             }
           }
 
-          if (hasAmbiguousNameInCity || targetEmailsByCity.size === 0) {
+          const uniqueNameMatchEmails = new Set(targetEmailsByCity.values());
+          if (hasAmbiguousNameInCity || uniqueNameMatchEmails.size !== 1) {
             setError("Por favor, informe seu e-mail completo de cadastro.");
             return;
           }
-          targetEmail = Array.from(targetEmailsByCity.values())[0];
+          targetEmail = Array.from(uniqueNameMatchEmails)[0];
         }
       }
       const tenantTargets = uniqueAvailableCities.map((city) => {
@@ -1170,14 +1123,16 @@ const LoginView = ({
         };
       });
 
+      type TenantAuthFailure =
+        | { kind: "rejected"; message?: string }
+        | { kind: "unavailable"; message: string; sessionCleanupFailed?: boolean };
       type TenantAttempt =
         | { kind: "candidate"; candidate: LoginTenantCandidate }
-        | { kind: "rejected"; message?: string }
-        | { kind: "unavailable"; message: string; sessionCleanupFailed?: boolean }
+        | TenantAuthFailure
         | { kind: "unlinked" }
         | { kind: "no-match" };
 
-      const classifyAuthError = (authError: any): TenantAttempt => {
+      const classifyAuthError = (authError: any): TenantAuthFailure => {
         const message = typeof authError?.message === "string" ? authError.message : "";
         const normalizedMessage = message.toLowerCase();
         if (normalizedMessage.includes("rate limit") || normalizedMessage.includes("rate_limit")) {
@@ -1251,8 +1206,45 @@ const LoginView = ({
           tenantEmail,
         );
 
+        let authoritativeGlobalAdmin: boolean | null = null;
+        let globalAdminCheckFailed = false;
+        if (isReal && city.id === ARAUCARIA_CITY_ID && typeof client?.rpc === "function") {
+          try {
+            const { data: databaseAdminFlag, error: adminCheckError } = await client.rpc(
+              "is_active_global_admin",
+            );
+            if (adminCheckError) {
+              globalAdminCheckFailed = true;
+              authoritativeGlobalAdmin = false;
+              console.warn("Não foi possível validar o ADM Global pelo banco:", adminCheckError);
+            } else {
+              authoritativeGlobalAdmin = databaseAdminFlag === true;
+            }
+          } catch (adminCheckError) {
+            globalAdminCheckFailed = true;
+            authoritativeGlobalAdmin = false;
+            console.warn("Não foi possível validar o ADM Global pelo banco:", adminCheckError);
+          }
+        }
+        if (
+          globalAdminCheckFailed &&
+          (isLegacyGlobalTenantAdmin(resolvedProfile) || isLegacyGlobalTenantAdmin(matchedLocalProfile))
+        ) {
+          const sessionCleared = await signOutTenantLocally(client);
+          return sessionCleared
+            ? { kind: "unavailable", message: "Não foi possível validar as permissões ADM Global neste momento." }
+            : {
+                kind: "unavailable",
+                message: "Não foi possível validar ou encerrar a sessão ADM Global.",
+                sessionCleanupFailed: true,
+              };
+        }
+        const isGlobalAdmin = city.id === ARAUCARIA_CITY_ID && (
+          authoritativeGlobalAdmin ??
+          (isLegacyGlobalTenantAdmin(resolvedProfile) || isLegacyGlobalTenantAdmin(matchedLocalProfile))
+        );
         const roleFromProfile = (profile: any): UserRole => {
-          if (city.id === ARAUCARIA_CITY_ID && isLegacyGlobalTenantAdmin(profile)) return "admin";
+          if (isGlobalAdmin) return "admin";
           if (profile?.role === "diretor" || profile?.role === "supervisor" || profile?.role === "funcionario") {
             return profile.role;
           }
@@ -1261,9 +1253,6 @@ const LoginView = ({
         const finalRole: UserRole = resolvedProfile
           ? roleFromProfile(resolvedProfile)
           : roleFromProfile(matchedLocalProfile);
-        const isGlobalAdmin =
-          city.id === ARAUCARIA_CITY_ID &&
-          (isLegacyGlobalTenantAdmin(resolvedProfile) || isLegacyGlobalTenantAdmin(matchedLocalProfile));
         const authenticatedProfileCityId =
           resolvedProfile?.city_id?.trim() || matchedLocalProfile?.city_id?.trim() || "";
 
@@ -1326,6 +1315,114 @@ const LoginView = ({
           },
         };
       };
+
+      const sharedAuthClient = getSupabaseClientForCity(ARAUCARIA_CITY_ID);
+      if (sharedAuthClient && isRealSupabaseForCity(ARAUCARIA_CITY_ID)) {
+        markLoginProbe([ARAUCARIA_CITY_ID]);
+        try {
+          const { data: authData, error: authError } = await sharedAuthClient.auth.signInWithPassword({
+            email: targetEmail,
+            password: password.trim(),
+          });
+          if (authError || !authData?.user) {
+            clearLoginProbe();
+            const attempt = classifyAuthError(authError || { message: "Conta não encontrada." });
+            setError(
+              attempt.kind === "rejected"
+                ? attempt.message || "E-mail ou senha incorretos. Verifique suas credenciais."
+                : attempt.message || "Não foi possível conectar ao Supabase compartilhado.",
+            );
+            return;
+          }
+
+          const candidateCityIds: string[] = [];
+          const addCityCandidate = (value: unknown) => {
+            if (typeof value !== "string") return;
+            const candidate = value.trim();
+            if (candidate && !candidateCityIds.includes(candidate)) candidateCityIds.push(candidate);
+          };
+
+          try {
+            const { data: resolvedCityId, error: cityResolutionError } = await sharedAuthClient.rpc(
+              "current_user_city_id",
+            );
+            if (!cityResolutionError) addCityCandidate(resolvedCityId);
+          } catch (cityResolutionError) {
+            console.warn("Não foi possível resolver a cidade da sessão pelo banco:", cityResolutionError);
+          }
+          addCityCandidate(authData.user.user_metadata?.city_id);
+          uniqueAvailableCities.forEach((city) => addCityCandidate(city.id));
+
+          let authenticatedCity: CityItem | null = null;
+          for (const candidateCityId of candidateCityIds) {
+            const city = uniqueAvailableCities.find((availableCity) => availableCity.id === candidateCityId);
+            if (!city) continue;
+            const cityClient = getSupabaseClientForCity(city.id);
+            if (!cityClient) continue;
+
+            try {
+              const { data: profileById, error: profileByIdError } = await cityClient
+                .from("profiles")
+                .select("id,city_id")
+                .eq("id", authData.user.id)
+                .maybeSingle();
+              if (!profileByIdError && profileById?.city_id?.trim() === city.id) {
+                authenticatedCity = city;
+                break;
+              }
+
+              if (authData.user.email) {
+                const { data: profileByEmail, error: profileByEmailError } = await cityClient
+                  .from("profiles")
+                  .select("id,city_id")
+                  .ilike("email", authData.user.email)
+                  .maybeSingle();
+                if (!profileByEmailError && profileByEmail?.city_id?.trim() === city.id) {
+                  authenticatedCity = city;
+                  break;
+                }
+              }
+            } catch (profileLookupError) {
+              console.warn(`Não foi possível validar o vínculo em ${city.name}:`, profileLookupError);
+            }
+          }
+
+          if (!authenticatedCity) {
+            await signOutTenantLocally(sharedAuthClient);
+            clearLoginProbe();
+            setError("A conta foi autenticada, mas não possui vínculo ativo e validado com uma cidade.");
+            return;
+          }
+
+          const candidateResult = await createAuthenticatedCandidate(
+            authenticatedCity,
+            getSupabaseClientForCity(authenticatedCity.id),
+            true,
+            authData.user,
+            targetEmail,
+          );
+          if (candidateResult.kind === "candidate") {
+            clearLoginProbe();
+            await finishLogin(candidateResult.candidate);
+            return;
+          }
+
+          await signOutTenantLocally(sharedAuthClient);
+          clearLoginProbe();
+          setError(
+            candidateResult.kind === "unavailable"
+              ? candidateResult.message
+              : candidateResult.kind === "unlinked"
+              ? "A conta autenticada não tem vínculo validado com um município."
+              : "A conta autenticada não tem um perfil municipal correspondente.",
+          );
+        } catch (authError: any) {
+          await signOutTenantLocally(sharedAuthClient);
+          clearLoginProbe();
+          setError(authError?.message || "Não foi possível entrar no projeto Supabase compartilhado.");
+        }
+        return;
+      }
 
       const authenticateLocalAccount = (
         city: CityItem,
@@ -7233,7 +7330,6 @@ export function AppContent() {
   );
   const [userReports, setUserReports] = useState<any[]>([]);
   const [forgotPasswordStep, setForgotPasswordStep] = useState<"email" | "code" | "reset">("email");
-  const [forgotPasswordCityId, setForgotPasswordCityId] = useState("");
 
   // System statistics states
   const [systemPendingCount, setSystemPendingCount] = useState(0);
@@ -7768,6 +7864,18 @@ export function AppContent() {
       (currentUserMatchesRequest ? currentUser.city_id?.trim() : "") ||
       authCityId;
     const citySupabase = getSupabaseClientForCity(lookupCityId);
+    let activeGlobalAdminStatus: boolean | null = null;
+    if (citySupabase && isRealSupabaseForCity(lookupCityId)) {
+      try {
+        const { data: databaseAdminFlag, error: adminCheckError } = await citySupabase.rpc(
+          "is_active_global_admin",
+        );
+        activeGlobalAdminStatus = adminCheckError ? false : databaseAdminFlag === true;
+      } catch (adminCheckError) {
+        activeGlobalAdminStatus = false;
+        console.warn("Não foi possível validar o ADM Global durante a restauração da conta:", adminCheckError);
+      }
+    }
 
     if (citySupabase) {
       try {
@@ -7877,9 +7985,12 @@ export function AppContent() {
     );
     const localFallbackProfile = localMatchesDatabaseTenant ? localMatched : null;
 
-    const isAdminAccount = dbProfile
+    const legacyGlobalAdminSignal = dbProfile
       ? isLegacyGlobalTenantAdmin(dbProfile)
       : Boolean(localMatched && isLegacyGlobalTenantAdmin(localMatched));
+    const isAdminAccount = activeGlobalAdminStatus === null
+      ? legacyGlobalAdminSignal
+      : activeGlobalAdminStatus;
     const roleProfile = dbProfile || localFallbackProfile;
     const resolvedRole: UserRole = isAdminAccount
       ? "admin"
@@ -8108,7 +8219,25 @@ export function AppContent() {
           return;
         }
         if (session?.user) {
-          await fetchUserData(session.user.id, session.user.email, authCityId);
+          let resolvedSessionCityId = "";
+          try {
+            const { data: serverCityId, error: cityResolutionError } = await initialTenantClient.rpc(
+              "current_user_city_id",
+            );
+            if (!cityResolutionError && typeof serverCityId === "string") {
+              resolvedSessionCityId = serverCityId.trim();
+            }
+          } catch (cityResolutionError) {
+            console.warn("Não foi possível resolver a cidade da sessão restaurada:", cityResolutionError);
+          }
+          resolvedSessionCityId ||= session.user.user_metadata?.city_id?.trim() || "";
+          if (!resolvedSessionCityId) {
+            await initialTenantClient.auth.signOut({ scope: "local" });
+            localStorage.removeItem("commuaria_active_session");
+            return;
+          }
+          if (resolvedSessionCityId !== authCityId) changeAuthCity(resolvedSessionCityId);
+          await fetchUserData(session.user.id, session.user.email, resolvedSessionCityId);
           if (mounted) setScreen("feed");
         } else {
           localStorage.removeItem("commuaria_active_session");
@@ -8154,7 +8283,6 @@ export function AppContent() {
       search.includes("recovery")
     ) {
       setForgotPasswordStep("reset");
-      setForgotPasswordCityId(authCityId);
       setScreen("forgot-password");
       try {
         window.history.replaceState(null, "", window.location.pathname);
@@ -8180,11 +8308,29 @@ export function AppContent() {
         loginProbeCleanupRef.current ||
         (screenRef.current === "login" && (session?.user || event === "SIGNED_OUT"))
       ) {
-        // Login may probe several tenant projects before the user chooses one.
-        // Ignore those temporary auth events until the chosen city is committed.
+        // Ignore temporary login events until the authenticated city has been validated.
         return;
       } else if (session?.user) {
-        fetchUserData(session.user.id, session.user.email, authCityId);
+        void (async () => {
+          let resolvedSessionCityId = "";
+          try {
+            const { data: serverCityId, error: cityResolutionError } = await tenantClient.rpc(
+              "current_user_city_id",
+            );
+            if (!cityResolutionError && typeof serverCityId === "string") {
+              resolvedSessionCityId = serverCityId.trim();
+            }
+          } catch (cityResolutionError) {
+            console.warn("Não foi possível resolver a cidade da sessão ativa:", cityResolutionError);
+          }
+          resolvedSessionCityId ||= session.user.user_metadata?.city_id?.trim() || "";
+          if (!resolvedSessionCityId) {
+            console.warn("Sessão autenticada sem vínculo municipal válido.");
+            return;
+          }
+          if (resolvedSessionCityId !== authCityId) changeAuthCity(resolvedSessionCityId);
+          await fetchUserData(session.user.id, session.user.email, resolvedSessionCityId);
+        })().catch((error) => console.warn("Falha ao carregar a sessão municipal:", error));
       } else if (event === "SIGNED_OUT") {
         setIsAdmin(false);
         setUserRole("user");
@@ -8368,7 +8514,6 @@ export function AppContent() {
                   }}
                   onGoToSignup={() => setScreen("signup")}
                   onForgotPassword={() => {
-                    setForgotPasswordCityId("");
                     setForgotPasswordStep("email");
                     setScreen("forgot-password");
                   }}
@@ -8388,15 +8533,11 @@ export function AppContent() {
               >
                 <ForgotPasswordView
                   onBack={() => {
-                    setForgotPasswordCityId("");
                     setForgotPasswordStep("email");
                     setScreen("login");
                   }}
                   initialStep={forgotPasswordStep}
                   onChangeStep={(s) => setForgotPasswordStep(s)}
-                  cities={cities}
-                  initialCityId={forgotPasswordCityId}
-                  onCityChange={changeAuthCity}
                 />
               </motion.div>
             )}

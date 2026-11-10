@@ -186,7 +186,7 @@ export const DatabaseManagerModal: React.FC<DatabaseManagerModalProps> = ({
                 </span>
               </div>
               <p className={`text-xs ${isDark ? "text-white/60" : "text-[#2d4a3b]/70"}`}>
-                Projeto de {cityName || normalizedCityId || "município não selecionado"}; diagnóstico e sincronização com escopo municipal.
+                Projeto Supabase compartilhado; dados roteados para as tabelas de {cityName || normalizedCityId || "cada município"}.
               </p>
             </div>
           </div>
@@ -499,7 +499,7 @@ export const DatabaseManagerModal: React.FC<DatabaseManagerModalProps> = ({
                 }`}
               >
                 <h4 className="font-bold text-sm mb-1">Configuração de Chaves do Supabase</h4>
-                <p className="text-xs opacity-70">Estas credenciais serão usadas somente em {cityName || normalizedCityId || "um município selecionado"}.</p>
+                <p className="text-xs opacity-70">Estas são as credenciais da base compartilhada e serão usadas por todas as cidades; os dados permanecem em tabelas municipais separadas.</p>
                 <p className="text-xs opacity-75">
                   Insira ou atualize o URL do seu projeto Supabase e a chave pública (Anon Key).
                 </p>
