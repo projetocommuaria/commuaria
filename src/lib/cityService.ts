@@ -25,29 +25,36 @@ const asCity = (row: any): CityItem => ({
   updated_at: row.updated_at,
 });
 
-/** Fetches each seeded municipality only from its own Supabase project. */
+/** Loads the shared city registry, with local IBGE geometry as an offline fallback. */
 export async function fetchCities(): Promise<CityItem[]> {
-  const cities = await Promise.all(
-    DEFAULT_SEEDED_CITIES.map(async (seededCity) => {
-      const citySupabase = getSupabaseClientForCity(seededCity.id);
-      if (!citySupabase || !isRealSupabaseForCity(seededCity.id)) return seededCity;
+  const sharedClient = getSupabaseClientForCity(DEFAULT_SEEDED_CITIES[0]?.id);
+  if (!sharedClient || !isRealSupabaseForCity(DEFAULT_SEEDED_CITIES[0]?.id)) {
+    return sortCities(DEFAULT_SEEDED_CITIES);
+  }
 
-      try {
-        const { data, error } = await citySupabase
-          .from("cities")
-          .select(CITY_COLUMNS)
-          .eq("id", seededCity.id)
-          .maybeSingle();
-        if (error) throw error;
-        return data ? { ...seededCity, ...asCity(data) } : seededCity;
-      } catch (error) {
-        console.warn(`Não foi possível carregar ${seededCity.name} do seu projeto Supabase; usando os limites locais:`, error);
-        return seededCity;
-      }
-    }),
-  );
+  try {
+    const { data, error } = await sharedClient
+      .from("cities")
+      .select(CITY_COLUMNS)
+      .order("state", { ascending: true })
+      .order("name", { ascending: true });
+    if (error) throw error;
 
-  return cities.sort(
+    const seededById = new Map(DEFAULT_SEEDED_CITIES.map((city) => [city.id, city]));
+    const cities = (Array.isArray(data) ? data : []).map((row: any) => {
+      const databaseCity = asCity(row);
+      const seededCity = seededById.get(databaseCity.id);
+      return seededCity ? { ...seededCity, ...databaseCity } : databaseCity;
+    });
+    return sortCities(cities.length > 0 ? cities : DEFAULT_SEEDED_CITIES);
+  } catch (error) {
+    console.warn("Não foi possível carregar o cadastro municipal do Supabase compartilhado; usando dados locais:", error);
+    return sortCities(DEFAULT_SEEDED_CITIES);
+  }
+}
+
+function sortCities(cities: CityItem[]): CityItem[] {
+  return [...cities].sort(
     (a, b) => a.state.localeCompare(b.state, "pt-BR") || a.name.localeCompare(b.name, "pt-BR"),
   );
 }

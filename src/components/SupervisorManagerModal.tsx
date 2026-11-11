@@ -16,6 +16,7 @@ import {
 import { useTheme } from "../ThemeContext";
 import { CATEGORIES_CONFIG, ReportCategory, UserProfile } from "../types";
 import { getSupabaseClientForCity, isUUID } from "../lib/supabase";
+import { CURITIBA_CITY_ID } from "../lib/supabaseTenants";
 import { findUnambiguousProfileByIdentity } from "../domain/profileIdentity";
 import { isLegacyGlobalTenantAdmin } from "../domain/tenantAccess";
 
@@ -36,6 +37,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
 }) => {
   const { isDark } = useTheme();
   const tenantSupabase = getSupabaseClientForCity(cityId);
+  const isCuritibaTenant = cityId.trim() === CURITIBA_CITY_ID;
   const [supervisors, setSupervisors] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -90,18 +92,22 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
         }
       }
 
-      // Merge only this municipality's supervisors; preserve other cities' browser data.
-      const rawLocalProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+      // Curitiba is remote/Auth-only here: do not merge or mutate potentially legacy local data.
+      const rawLocalProfilesValue = isCuritibaTenant
+        ? []
+        : JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
       const rawLocalProfiles = Array.isArray(rawLocalProfilesValue) ? rawLocalProfilesValue : [];
       const cleanedLocalProfiles = rawLocalProfiles.filter((profile: any) => !isLegacyMock(profile));
-      if (cleanedLocalProfiles.length !== rawLocalProfiles.length) {
+      if (!isCuritibaTenant && cleanedLocalProfiles.length !== rawLocalProfiles.length) {
         localStorage.setItem("commuaria_profiles", JSON.stringify(cleanedLocalProfiles));
       }
 
-      const rawLocalUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+      const rawLocalUsersValue = isCuritibaTenant
+        ? []
+        : JSON.parse(localStorage.getItem("commuaria_users") || "[]");
       const rawLocalUsers = Array.isArray(rawLocalUsersValue) ? rawLocalUsersValue : [];
       const cleanedLocalUsers = rawLocalUsers.filter((user: any) => !isLegacyMock(user));
-      if (cleanedLocalUsers.length !== rawLocalUsers.length) {
+      if (!isCuritibaTenant && cleanedLocalUsers.length !== rawLocalUsers.length) {
         localStorage.setItem("commuaria_users", JSON.stringify(cleanedLocalUsers));
       }
 
@@ -156,6 +162,10 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
     const scopedCityId = cityId.trim();
     if (!scopedCityId) {
       setFormError("Selecione um município válido antes de cadastrar o supervisor.");
+      return;
+    }
+    if (scopedCityId === CURITIBA_CITY_ID) {
+      setFormError("Em Curitiba, não é permitido criar perfil supervisor sem vínculo com Auth. O interessado deve usar o cadastro autenticado como cidadão; depois, o ADM Global pode atribuir o cargo.");
       return;
     }
 
@@ -366,43 +376,49 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
     const scopedCityId = cityId.trim();
     if (!scopedCityId) return;
     try {
-      // 1. Update only the local supervisor assigned to this municipality.
-      const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
-      const localProfiles: any[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
-      const targetProfile = localProfiles.find(
-        (profile: any) => profile.id === supId && profile.city_id === scopedCityId,
-      );
-      const updated = localProfiles.map((profile: any) =>
-        profile.id === supId && profile.city_id === scopedCityId
-          ? { ...profile, assigned_category: newCategory }
-          : profile,
-      );
-      localStorage.setItem("commuaria_profiles", JSON.stringify(updated));
+      let targetLocalProfile: any = null;
+      if (!isCuritibaTenant) {
+        const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+        const localProfiles: any[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+        targetLocalProfile = localProfiles.find(
+          (profile: any) => profile.id === supId && profile.city_id === scopedCityId,
+        );
+        const updated = localProfiles.map((profile: any) =>
+          profile.id === supId && profile.city_id === scopedCityId
+            ? { ...profile, assigned_category: newCategory }
+            : profile,
+        );
+        localStorage.setItem("commuaria_profiles", JSON.stringify(updated));
 
-      const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
-      const localUsers: any[] = Array.isArray(localUsersValue) ? localUsersValue : [];
-      const updatedUsers = localUsers.map((user: any) =>
-        user.id === supId && user.city_id === scopedCityId
-          ? { ...user, assigned_category: newCategory }
-          : user,
-      );
-      localStorage.setItem("commuaria_users", JSON.stringify(updatedUsers));
+        const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+        const localUsers: any[] = Array.isArray(localUsersValue) ? localUsersValue : [];
+        const updatedUsers = localUsers.map((user: any) =>
+          user.id === supId && user.city_id === scopedCityId
+            ? { ...user, assigned_category: newCategory }
+            : user,
+        );
+        localStorage.setItem("commuaria_users", JSON.stringify(updatedUsers));
+      }
 
-      // 2. Update Supabase only inside this municipality.
+      // Curitiba uses only the Auth-linked remote profile; never update a local placeholder.
       if (tenantSupabase) {
-        await tenantSupabase
+        const { error } = await tenantSupabase
           .from("profiles")
           .update({ assigned_category: newCategory })
           .eq("id", supId)
           .eq("city_id", scopedCityId);
+        if (error) throw error;
 
-        if (targetProfile?.email) {
-          await tenantSupabase
+        if (!isCuritibaTenant && targetLocalProfile?.email) {
+          const { error: emailUpdateError } = await tenantSupabase
             .from("profiles")
             .update({ assigned_category: newCategory })
-            .eq("email", targetProfile.email.toLowerCase())
+            .eq("email", targetLocalProfile.email.toLowerCase())
             .eq("city_id", scopedCityId);
+          if (emailUpdateError) throw emailUpdateError;
         }
+      } else if (isCuritibaTenant) {
+        throw new Error("A conexão autenticada de Curitiba não está disponível.");
       }
 
       setEditingId(null);
@@ -420,36 +436,43 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
     if (!scopedCityId) return;
 
     try {
-      const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
-      const localProfiles: any[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
-      const targetProfile = localProfiles.find(
-        (profile: any) => profile.id === supId && profile.city_id === scopedCityId,
-      );
-      const filtered = localProfiles.filter(
-        (profile: any) => !(profile.id === supId && profile.city_id === scopedCityId),
-      );
-      localStorage.setItem("commuaria_profiles", JSON.stringify(filtered));
+      let targetLocalProfile: any = null;
+      if (!isCuritibaTenant) {
+        const localProfilesValue = JSON.parse(localStorage.getItem("commuaria_profiles") || "[]");
+        const localProfiles: any[] = Array.isArray(localProfilesValue) ? localProfilesValue : [];
+        targetLocalProfile = localProfiles.find(
+          (profile: any) => profile.id === supId && profile.city_id === scopedCityId,
+        );
+        const filtered = localProfiles.filter(
+          (profile: any) => !(profile.id === supId && profile.city_id === scopedCityId),
+        );
+        localStorage.setItem("commuaria_profiles", JSON.stringify(filtered));
 
-      const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
-      const localUsers: any[] = Array.isArray(localUsersValue) ? localUsersValue : [];
-      const filteredUsers = localUsers.filter(
-        (user: any) => !(user.id === supId && user.city_id === scopedCityId),
-      );
-      localStorage.setItem("commuaria_users", JSON.stringify(filteredUsers));
+        const localUsersValue = JSON.parse(localStorage.getItem("commuaria_users") || "[]");
+        const localUsers: any[] = Array.isArray(localUsersValue) ? localUsersValue : [];
+        const filteredUsers = localUsers.filter(
+          (user: any) => !(user.id === supId && user.city_id === scopedCityId),
+        );
+        localStorage.setItem("commuaria_users", JSON.stringify(filteredUsers));
+      }
 
       if (tenantSupabase) {
-        await tenantSupabase
+        const { error } = await tenantSupabase
           .from("profiles")
           .delete()
           .eq("id", supId)
           .eq("city_id", scopedCityId);
-        if (targetProfile?.email) {
-          await tenantSupabase
+        if (error) throw error;
+        if (!isCuritibaTenant && targetLocalProfile?.email) {
+          const { error: emailDeleteError } = await tenantSupabase
             .from("profiles")
             .delete()
-            .eq("email", targetProfile.email.toLowerCase())
+            .eq("email", targetLocalProfile.email.toLowerCase())
             .eq("city_id", scopedCityId);
+          if (emailDeleteError) throw emailDeleteError;
         }
+      } else if (isCuritibaTenant) {
+        throw new Error("A conexão autenticada de Curitiba não está disponível.");
       }
 
       await loadSupervisors();
@@ -528,6 +551,12 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
           </p>
         </div>
 
+        {isCuritibaTenant && (
+          <div className={`mb-5 rounded-2xl border p-3 text-xs ${isDark ? "border-amber-300/20 bg-amber-300/10 text-amber-100" : "border-amber-700/15 bg-amber-50 text-amber-950"}`}>
+            Cadastro direto de supervisores está pausado para Curitiba. As contas devem ser criadas pelo fluxo autenticado como cidadãos e só então promovidas pelo ADM Global; nenhum perfil placeholder é criado.
+          </div>
+        )}
+
         {/* Categories Overview Pills */}
         <div className="mb-6 grid grid-cols-2 sm:grid-cols-3 gap-2 text-left">
           {CATEGORIES_CONFIG.map((cat) => {
@@ -564,7 +593,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
         </div>
 
         {/* Form to Add Supervisor */}
-        {showAddForm ? (
+        {showAddForm && !isCuritibaTenant ? (
           <form
             onSubmit={handleCreateSupervisor}
             className={`p-5 rounded-3xl border mb-6 text-left transition-all ${
@@ -695,11 +724,15 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
               <span>Supervisores Cadastrados ({supervisors.length})</span>
             </h4>
             <button
-              onClick={() => setShowAddForm(true)}
-              className="px-3.5 py-1.5 rounded-full text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1.5 shadow-md active:scale-95 transition-all"
+              onClick={() => {
+                if (!isCuritibaTenant) setShowAddForm(true);
+              }}
+              disabled={isCuritibaTenant}
+              title={isCuritibaTenant ? "Cadastro de supervisor requer uma conta Auth já vinculada" : "Novo Supervisor"}
+              className="px-3.5 py-1.5 rounded-full text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1.5 shadow-md active:scale-95 transition-all disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Plus size={14} />
-              <span>Novo Supervisor</span>
+              <span>{isCuritibaTenant ? "Cadastro via Auth" : "Novo Supervisor"}</span>
             </button>
           </div>
         )}
@@ -712,8 +745,9 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
             </p>
           ) : supervisors.length === 0 ? (
             <div className="text-center py-8 opacity-60 text-xs border rounded-2xl border-dashed p-6">
-              Nenhum supervisor cadastrado ainda. Clique em "Novo Supervisor" para
-              adicionar o responsável por cada categoria.
+              {isCuritibaTenant
+                ? "Nenhum supervisor vinculado a Auth está cadastrado ainda. Após o cidadão criar a própria conta, o ADM Global pode atribuir o cargo municipal."
+                : 'Nenhum supervisor cadastrado ainda. Clique em "Novo Supervisor" para adicionar o responsável por cada categoria.'}
             </div>
           ) : (
             supervisors.map((sup) => {
