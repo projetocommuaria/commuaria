@@ -32,11 +32,8 @@ jobs:
         run: npm ci
 
       - name: Build
-        env:
-          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
-          VITE_SUPABASE_CURITIBA_URL: ${{ vars.VITE_SUPABASE_CURITIBA_URL }}
-          VITE_SUPABASE_CURITIBA_ANON_KEY: ${{ secrets.VITE_SUPABASE_CURITIBA_ANON_KEY }}
+        # The shared Commuaria Supabase project is configured in src/lib/supabaseTenants.ts.
+        # Do not let stale repository secrets redirect the Pages build to the deleted Curitiba project.
         run: npm run build
 
       - name: Upload artifact
