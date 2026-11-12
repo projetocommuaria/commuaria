@@ -27,7 +27,7 @@ import { rowBelongsToCity } from "../domain/cityScopedRows";
 import { ARAUCARIA_CITY_ID } from "../lib/supabaseTenants";
 import { useTheme } from "../ThemeContext";
 import { SafeLogoImage } from "./SafeLogoImage";
-import landingCityPhoto from "../assets/images/landing_city_maintenance.jpg";
+import landingLightingWorker from "../assets/images/landing_lighting_worker_cutout.png";
 
 interface LandingViewProps {
   onEnter: () => void;
@@ -152,8 +152,10 @@ export const LandingView: React.FC<LandingViewProps> = ({
   const softSurface = isDark
     ? "border-white/12 bg-white/[0.045]"
     : "border-[#183a2b]/10 bg-white/75";
-  const linkClass = `whitespace-nowrap rounded-full px-3 py-2 text-xs font-medium transition-colors ${
-    isDark ? "text-white/75 hover:bg-white/10 hover:text-white" : "text-[#40594b] hover:bg-[#183a2b]/[0.06] hover:text-[#183a2b]"
+  const linkClass = `whitespace-nowrap rounded-full px-3 py-2 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+    isDark
+      ? "text-white/75 hover:bg-white/10 hover:text-white focus-visible:outline-emerald-200"
+      : "text-[#40594b] hover:bg-[#183a2b]/[0.06] hover:text-[#183a2b] focus-visible:outline-emerald-700"
   }`;
 
   return (
@@ -181,16 +183,23 @@ export const LandingView: React.FC<LandingViewProps> = ({
       <div className="relative z-10">
         <div className="sticky top-0 z-40 px-3 pt-3 sm:px-5">
           <header
-            className={`mx-auto flex max-w-7xl items-center justify-between gap-3 rounded-2xl border px-4 py-3 shadow-[0_12px_36px_rgba(18,36,26,0.10)] backdrop-blur-2xl sm:rounded-full sm:px-6 ${
-              isDark ? "border-white/15 bg-[#17231d]/90 text-white" : "border-[#183a2b]/10 bg-white/90 text-[#183a2b]"
+            className={`mx-auto grid max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 rounded-2xl border px-3 py-2 shadow-[0_12px_36px_rgba(18,36,26,0.10)] backdrop-blur-2xl sm:gap-x-3 sm:px-5 sm:py-2.5 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:rounded-full ${
+              isDark ? "border-white/15 bg-[#17231d]/76 text-white" : "border-[#183a2b]/10 bg-white/76 text-[#183a2b]"
             }`}
           >
-            <a href="#inicio" aria-label="Commuária — início" className="flex shrink-0 items-center gap-2.5">
-              <SafeLogoImage isMinimal className="h-9 w-9 object-contain" alt="" />
-              <span className="font-serif text-lg font-bold tracking-[0.11em] sm:text-xl">COMMUÁRIA</span>
+            <a href="#inicio" aria-label="Commuária — início" className="flex min-w-0 items-center gap-1.5 sm:gap-2.5">
+              <SafeLogoImage isMinimal className="h-8 w-8 shrink-0 object-contain sm:h-9 sm:w-9" alt="" />
+              <span className="truncate font-serif text-sm font-bold tracking-[0.09em] sm:text-xl sm:tracking-[0.11em]">
+                COMMUÁRIA
+              </span>
             </a>
 
-            <nav aria-label="Navegação principal" className="hidden items-center gap-1 xl:flex">
+            <nav
+              aria-label="Navegação principal"
+              className={`col-span-2 row-start-2 -mx-2 flex min-w-0 flex-wrap items-center gap-1 border-t px-1 pt-2 xl:col-span-1 xl:col-start-2 xl:row-start-1 xl:mx-0 xl:justify-center xl:border-t-0 xl:px-0 xl:pt-0 ${
+                isDark ? "border-white/10" : "border-[#183a2b]/10"
+              }`}
+            >
               {navLinks.map((link) => (
                 <a key={link.href} className={linkClass} href={link.href}>
                   {link.label}
@@ -198,13 +207,15 @@ export const LandingView: React.FC<LandingViewProps> = ({
               ))}
             </nav>
 
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="col-start-2 row-start-1 flex shrink-0 items-center justify-end gap-1.5 sm:gap-2 xl:col-start-3">
               {themeToggle}
               <button
                 type="button"
                 onClick={onEnter}
-                className={`rounded-full px-4 py-2 text-xs font-semibold transition-colors sm:text-sm ${
-                  isDark ? "border border-white/20 text-white hover:bg-white/10" : "border border-[#183a2b]/15 text-[#183a2b] hover:bg-[#183a2b]/[0.06]"
+                className={`rounded-full px-3 py-2 text-xs font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 sm:px-4 sm:text-sm ${
+                  isDark
+                    ? "border border-white/20 text-white hover:bg-white/10 focus-visible:outline-emerald-200"
+                    : "border border-[#183a2b]/15 text-[#183a2b] hover:bg-[#183a2b]/[0.06] focus-visible:outline-emerald-700"
                 }`}
               >
                 Entrar
@@ -212,34 +223,20 @@ export const LandingView: React.FC<LandingViewProps> = ({
               <button
                 type="button"
                 onClick={onSignup}
-                className="hidden items-center gap-2 rounded-full bg-[#183a2b] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#122c21] sm:inline-flex sm:text-sm"
+                aria-label="Criar conta"
+                className="inline-flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-full bg-[#183a2b] px-2.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#122c21] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600 sm:px-4 sm:text-sm"
               >
-                <span>Criar conta</span>
+                <span className="hidden sm:inline">Criar conta</span>
                 <ArrowRight size={14} aria-hidden="true" />
               </button>
             </div>
           </header>
-          <nav
-            aria-label="Navegação da página"
-            className={`mx-auto mt-2 flex max-w-7xl gap-1 overflow-x-auto rounded-full border p-1 backdrop-blur-xl xl:hidden ${
-              isDark ? "border-white/10 bg-[#17231d]/85" : "border-[#183a2b]/10 bg-white/85"
-            }`}
-          >
-            {navLinks.map((link) => (
-              <a key={link.href} className={linkClass} href={link.href}>
-                {link.label}
-              </a>
-            ))}
-            <button type="button" onClick={onSignup} className={linkClass}>
-              Criar conta
-            </button>
-          </nav>
         </div>
 
         <main id="conteudo" className="relative mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-10">
           <section id="inicio" aria-labelledby="landing-title" className="scroll-mt-32 pb-16 pt-10 sm:pb-24 sm:pt-16 lg:pt-20">
             <div className="grid items-center gap-10 lg:grid-cols-[0.92fr_1.08fr] lg:gap-14">
-              <LandingReveal className="max-w-2xl">
+              <LandingReveal className="order-2 max-w-2xl lg:order-2">
                 <p className={`${sectionLabelClass} mb-5 inline-flex items-center gap-2 ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>
                   <Sparkles size={14} aria-hidden="true" />
                   01 · Participação cidadã
@@ -280,24 +277,26 @@ export const LandingView: React.FC<LandingViewProps> = ({
                 </a>
               </LandingReveal>
 
-              <LandingReveal delay={0.1} className="relative">
-                <figure className="relative min-h-[390px] overflow-hidden rounded-[2rem] border border-white/30 bg-[#24352c] shadow-[0_28px_80px_rgba(18,36,26,0.26)] sm:min-h-[470px] lg:min-h-[550px]">
+              <LandingReveal delay={0.1} className="relative order-1 lg:order-1">
+                <figure className="relative min-h-[390px] sm:min-h-[470px] lg:min-h-[550px]">
                   <img
-                    src={landingCityPhoto}
-                    alt="Profissional realizando manutenção da iluminação pública em uma via urbana ao entardecer."
-                    className="absolute inset-0 h-full w-full object-cover"
-                    width={1408}
-                    height={768}
+                    src={landingLightingWorker}
+                    alt="Funcionário equipado com colete refletivo fazendo manutenção em luminária de poste a partir de uma plataforma elevatória."
+                    className={`absolute inset-0 h-full w-full object-contain ${
+                      isDark
+                        ? "drop-shadow-[0_18px_24px_rgba(0,0,0,0.3)]"
+                        : "drop-shadow-[0_18px_24px_rgba(24,58,43,0.2)]"
+                    }`}
+                    width={606}
+                    height={1283}
                     fetchPriority="high"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-[#0c1711]/85 via-[#0c1711]/10 to-[#0c1711]/15" />
-                  <div className="absolute inset-0 bg-gradient-to-r from-[#0c1711]/25 via-transparent to-transparent" />
-                  <div className="absolute left-5 top-5 inline-flex items-center gap-2 rounded-full border border-white/25 bg-[#102017]/45 px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.17em] text-white backdrop-blur-lg sm:left-7 sm:top-7">
+                  <div className="absolute left-5 top-5 inline-flex items-center gap-2 rounded-full border border-white/25 bg-[#102017]/68 px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.17em] text-white backdrop-blur-lg sm:left-7 sm:top-7">
                     <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
                     Cuidado urbano em movimento
                   </div>
                   <figcaption className="sr-only">
-                    Trabalhador municipal em uma plataforma elevatória reparando uma luminária sobre uma rua urbana.
+                    Funcionário com equipamentos de segurança realiza manutenção em uma luminária de poste.
                   </figcaption>
                   <div className="absolute inset-x-4 bottom-4 rounded-2xl border border-white/20 bg-[#102017]/65 p-4 text-white shadow-lg backdrop-blur-xl sm:inset-x-6 sm:bottom-6 sm:p-5">
                     <div className="flex items-end justify-between gap-4">
