@@ -27,6 +27,12 @@ import { rowBelongsToCity } from "../domain/cityScopedRows";
 import { ARAUCARIA_CITY_ID } from "../lib/supabaseTenants";
 import { useTheme } from "../ThemeContext";
 import { SafeLogoImage } from "./SafeLogoImage";
+import citizenReportPhoto from "../assets/images/landing_citizen_reporting.jpg";
+import cityAerialPhoto from "../assets/images/landing_city_aerial.jpg";
+import cityMaintenancePhoto from "../assets/images/landing_city_maintenance.jpg";
+import desktopReportCapture from "../assets/images/landing_platform_report_desktop.png";
+import mobileReportCapture from "../assets/images/landing_platform_report_mobile.png";
+import roadRepairPhoto from "../assets/images/landing_road_repair.jpg";
 import landingLightingWorker from "../assets/images/landing_lighting_worker_cutout.png";
 
 interface LandingViewProps {
@@ -122,9 +128,9 @@ export const LandingView: React.FC<LandingViewProps> = ({
     (report) => Number.isFinite(Number(report.latitude)) && Number.isFinite(Number(report.longitude)),
   ).length;
   const navLinks = [
-    { href: "#recursos", label: "Funcionalidades" },
-    { href: "#mapa", label: "Mapa público" },
     { href: "#como-funciona", label: "Como funciona" },
+    { href: "#mapa", label: "A plataforma" },
+    { href: "#recursos", label: "Funcionalidades" },
     { href: "#municipios", label: "Municípios" },
   ];
   const steps = [
@@ -149,9 +155,6 @@ export const LandingView: React.FC<LandingViewProps> = ({
   ];
   const rootText = isDark ? "text-white" : "text-[#183a2b]";
   const mutedText = isDark ? "text-white/72" : "text-[#40594b]";
-  const softSurface = isDark
-    ? "border-white/12 bg-white/[0.045]"
-    : "border-[#183a2b]/10 bg-white/75";
   const linkClass = `whitespace-nowrap rounded-full px-3 py-2 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
     isDark
       ? "text-white/75 hover:bg-white/10 hover:text-white focus-visible:outline-emerald-200"
@@ -183,7 +186,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
       <div className="relative z-10">
         <div className="sticky top-0 z-40 px-3 pt-3 sm:px-5">
           <header
-            className={`mx-auto grid max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 rounded-2xl border px-3 py-2 shadow-[0_12px_36px_rgba(18,36,26,0.10)] backdrop-blur-2xl sm:gap-x-3 sm:px-5 sm:py-2.5 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:rounded-full ${
+            className={`mx-auto grid max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 rounded-2xl border px-3 py-2 shadow-[0_12px_36px_rgba(18,36,26,0.10)] backdrop-blur-xl sm:gap-x-3 sm:px-5 sm:py-2.5 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:rounded-full ${
               isDark ? "border-white/15 bg-[#17231d]/76 text-white" : "border-[#183a2b]/10 bg-white/76 text-[#183a2b]"
             }`}
           >
@@ -270,19 +273,19 @@ export const LandingView: React.FC<LandingViewProps> = ({
                   </button>
                 </div>
                 <a
-                  href="#recursos"
+                  href="#mapa"
                   className={`mt-8 inline-flex items-center gap-2 text-sm font-medium transition-colors ${isDark ? "text-white/75 hover:text-white" : "text-[#40594b] hover:text-[#183a2b]"}`}
                 >
                   Conheça a plataforma <ArrowDown size={15} aria-hidden="true" />
                 </a>
               </LandingReveal>
 
-              <LandingReveal delay={0.1} className="relative order-1 lg:order-1">
-                <figure className="relative min-h-[390px] sm:min-h-[470px] lg:min-h-[550px]">
+              <LandingReveal delay={0.1} className="relative order-1 -ml-4 min-w-0 sm:-ml-6 lg:-ml-10 lg:order-1 xl:ml-[calc(37.5rem_-_50vw)]">
+                <figure className="relative min-h-[460px] sm:min-h-[550px] lg:min-h-[650px]">
                   <img
                     src={landingLightingWorker}
                     alt="Funcionário equipado com colete refletivo fazendo manutenção em luminária de poste a partir de uma plataforma elevatória."
-                    className={`absolute inset-0 h-full w-full object-contain ${
+                    className={`absolute inset-0 h-full w-full object-contain object-[-18%_center] ${
                       isDark
                         ? "drop-shadow-[0_18px_24px_rgba(0,0,0,0.3)]"
                         : "drop-shadow-[0_18px_24px_rgba(24,58,43,0.2)]"
@@ -291,14 +294,10 @@ export const LandingView: React.FC<LandingViewProps> = ({
                     height={1283}
                     fetchPriority="high"
                   />
-                  <div className="absolute left-5 top-5 inline-flex items-center gap-2 rounded-full border border-white/25 bg-[#102017]/68 px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.17em] text-white backdrop-blur-lg sm:left-7 sm:top-7">
-                    <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
-                    Cuidado urbano em movimento
-                  </div>
                   <figcaption className="sr-only">
                     Funcionário com equipamentos de segurança realiza manutenção em uma luminária de poste.
                   </figcaption>
-                  <div className="absolute inset-x-4 bottom-4 rounded-2xl border border-white/20 bg-[#102017]/65 p-4 text-white shadow-lg backdrop-blur-xl sm:inset-x-6 sm:bottom-6 sm:p-5">
+                  <div className="absolute inset-x-4 bottom-4 rounded-2xl border border-white/20 bg-[#102017]/65 p-4 text-white shadow-lg backdrop-blur-lg sm:inset-x-6 sm:bottom-6 sm:p-5">
                     <div className="flex items-end justify-between gap-4">
                       <div>
                         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/70">Mapa público · {currentCity?.state || "Brasil"}</p>
@@ -323,84 +322,109 @@ export const LandingView: React.FC<LandingViewProps> = ({
             </div>
           </section>
 
-          <section id="recursos" aria-labelledby="features-title" className="scroll-mt-32 border-t border-[#183a2b]/10 py-16 sm:py-24">
-            <LandingReveal>
-              <div className="grid items-end gap-5 md:grid-cols-[1.1fr_0.7fr] md:gap-12">
-                <div>
-                  <p className={`${sectionLabelClass} mb-4 ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>02 · Funcionalidades</p>
-                  <h2 id="features-title" className={`max-w-3xl font-serif text-3xl font-semibold leading-tight tracking-tight sm:text-4xl lg:text-5xl ${rootText}`}>
-                    Da primeira observação ao cuidado contínuo da cidade.
-                  </h2>
-                </div>
-                <p className={`max-w-xl text-sm leading-6 sm:text-base sm:leading-7 ${mutedText}`}>
-                  Ferramentas simples para compartilhar o que acontece no espaço público e acompanhar as respostas do município.
+          <section id="como-funciona" aria-labelledby="how-title" className="scroll-mt-32 py-16 sm:py-24">
+            <div className="grid items-end gap-5 md:grid-cols-[1.05fr_0.95fr] md:gap-12">
+              <LandingReveal>
+                <p className={`${sectionLabelClass} mb-4 ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>02 · Como funciona</p>
+                <h2 id="how-title" className={`max-w-3xl font-serif text-3xl font-semibold tracking-tight sm:text-4xl lg:text-5xl ${rootText}`}>
+                  Três passos para dar visibilidade ao que importa.
+                </h2>
+              </LandingReveal>
+              <LandingReveal delay={0.05}>
+                <p className={`max-w-xl text-sm leading-7 sm:text-base ${mutedText}`}>
+                  Uma observação, uma localização e um retorno ajudam a aproximar quem vive a cidade de quem cuida dos serviços públicos.
                 </p>
-              </div>
-            </LandingReveal>
+              </LandingReveal>
+            </div>
 
-            <div className="mt-10 grid gap-5 lg:grid-cols-12 lg:gap-7">
-              <LandingReveal className="lg:col-span-5">
-                <article className={`relative flex h-full min-h-[340px] flex-col overflow-hidden rounded-[2rem] border p-7 sm:p-9 ${isDark ? "border-white/10 bg-[#183a2b]" : "border-[#183a2b]/10 bg-[#e7eee8]"}`}>
-                  <div aria-hidden="true" className="absolute -right-20 -top-20 h-64 w-64 rounded-full border border-white/10" />
-                  <div aria-hidden="true" className="absolute -right-10 -top-10 h-44 w-44 rounded-full border border-white/10" />
-                  <span className="grid h-12 w-12 place-items-center rounded-2xl border border-white/20 bg-white/10 text-white">
-                    <Camera size={22} aria-hidden="true" />
-                  </span>
-                  <p className="mt-8 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-100/80">Registre com contexto</p>
-                  <h3 className="mt-3 max-w-sm font-serif text-2xl font-semibold leading-tight text-white sm:text-3xl">
-                    Mostre o que precisa de atenção.
-                  </h3>
-                  <p className="mt-4 max-w-sm text-sm leading-6 text-white/75">
-                    Descreva o problema, escolha uma categoria e compartilhe a localização para facilitar o encaminhamento.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={onEnter}
-                    className="mt-auto inline-flex w-fit items-center gap-2 pt-8 text-sm font-semibold text-white transition-colors hover:text-emerald-100"
-                  >
-                    Acessar para registrar <ArrowRight size={16} aria-hidden="true" />
-                  </button>
-                </article>
+            <div className="mt-10 grid items-stretch gap-6 lg:grid-cols-[1.06fr_0.94fr] lg:gap-8">
+              <LandingReveal className="relative min-w-0">
+                <figure className="group relative h-full min-h-[340px] overflow-hidden rounded-[2.25rem] border border-white/20 shadow-[0_24px_70px_rgba(18,36,26,0.18)] sm:min-h-[440px]">
+                  <img
+                    src={citizenReportPhoto}
+                    alt="Imagem ilustrativa de uma moradora registrando com o celular um buraco e uma calçada danificada."
+                    className="absolute inset-0 h-full w-full object-cover object-[58%_center] transition-transform duration-700 group-hover:scale-[1.025]"
+                    width={1376}
+                    height={768}
+                    loading="lazy"
+                  />
+                  <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-t from-[#0c1711]/85 via-[#0c1711]/15 to-transparent" />
+                  <div className="absolute left-5 top-5 inline-flex items-center gap-2 rounded-full border border-white/25 bg-[#102017]/65 px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.17em] text-white backdrop-blur-lg sm:left-7 sm:top-7">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
+                    01 · Perceber
+                  </div>
+                  <figcaption className="absolute inset-x-5 bottom-5 text-white sm:inset-x-7 sm:bottom-7">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/75">A cidade conta com você</p>
+                    <p className="mt-2 max-w-lg font-serif text-2xl font-semibold leading-tight sm:text-3xl">
+                      O primeiro passo é mostrar o que precisa de atenção.
+                    </p>
+                  </figcaption>
+                </figure>
               </LandingReveal>
 
-              <div className={`lg:col-span-7 lg:pl-5 ${isDark ? "divide-y divide-white/15" : "divide-y divide-[#183a2b]/12"}`}>
-                <LandingReveal delay={0.04}>
-                  <article className="flex gap-5 py-6 sm:gap-7 sm:py-8">
-                    <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl border ${isDark ? "border-white/15 bg-white/5 text-emerald-100" : "border-[#183a2b]/10 bg-white text-[#183a2b]"}`}>
-                      <ClipboardCheck size={22} aria-hidden="true" />
-                    </span>
-                    <div>
-                      <p className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>Acompanhamento</p>
-                      <h3 className={`mt-2 font-serif text-xl font-semibold sm:text-2xl ${rootText}`}>Saiba em que etapa está.</h3>
-                      <p className={`mt-2 max-w-xl text-sm leading-6 ${mutedText}`}>
-                        Consulte o andamento da solicitação e acompanhe as atualizações sem perder o contexto do seu município.
-                      </p>
-                    </div>
-                  </article>
-                </LandingReveal>
-                <LandingReveal delay={0.08}>
-                  <article className="flex gap-5 py-6 sm:gap-7 sm:py-8">
-                    <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl border ${isDark ? "border-white/15 bg-white/5 text-emerald-100" : "border-[#183a2b]/10 bg-white text-[#183a2b]"}`}>
-                      <Megaphone size={22} aria-hidden="true" />
-                    </span>
-                    <div>
-                      <p className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>Informação local</p>
-                      <h3 className={`mt-2 font-serif text-xl font-semibold sm:text-2xl ${rootText}`}>Notícias e serviços perto de você.</h3>
-                      <p className={`mt-2 max-w-xl text-sm leading-6 ${mutedText}`}>
-                        Acesse comunicados, notícias e informações de serviços publicados para o município selecionado.
-                      </p>
-                    </div>
-                  </article>
+              <div className="flex min-w-0 flex-col">
+                <ol
+                  aria-label="Etapas para registrar e acompanhar uma solicitação"
+                  className={`divide-y ${isDark ? "divide-white/12" : "divide-[#183a2b]/12"}`}
+                >
+                  {steps.map(({ number, title, description, Icon }, index) => (
+                    <li key={number}>
+                      <LandingReveal delay={index * 0.05}>
+                        <div className="flex gap-4 py-5 sm:gap-5 sm:py-6">
+                          <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl border ${isDark ? "border-white/15 bg-white/[0.06] text-emerald-100" : "border-[#183a2b]/10 bg-white/70 text-[#183a2b]"}`}>
+                            <Icon size={20} aria-hidden="true" />
+                          </span>
+                          <div>
+                            <p className={`font-mono text-[10px] font-semibold tracking-[0.16em] ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>
+                              ETAPA {number}
+                            </p>
+                            <h3 className={`mt-1.5 font-serif text-xl font-semibold sm:text-2xl ${rootText}`}>{title}</h3>
+                            <p className={`mt-2 max-w-xl text-sm leading-6 ${mutedText}`}>{description}</p>
+                          </div>
+                        </div>
+                      </LandingReveal>
+                    </li>
+                  ))}
+                </ol>
+
+                <LandingReveal delay={0.16} className="mt-auto pt-7">
+                  <figure className="group relative min-h-[230px] overflow-hidden rounded-[2rem] border border-white/20 shadow-[0_18px_50px_rgba(18,36,26,0.16)] sm:min-h-[270px]">
+                    <img
+                      src={roadRepairPhoto}
+                      alt="Imagem ilustrativa de uma equipe municipal trabalhando no reparo de uma via urbana."
+                      className="absolute inset-0 h-full w-full object-cover object-[62%_center] transition-transform duration-700 group-hover:scale-[1.025]"
+                      width={1376}
+                      height={768}
+                      loading="lazy"
+                    />
+                    <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-r from-[#0c1711]/75 via-[#0c1711]/30 to-transparent" />
+                    <figcaption className="absolute bottom-5 left-5 max-w-sm text-white sm:bottom-6 sm:left-6">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/75">Serviços municipais em campo</p>
+                      <p className="mt-1.5 font-serif text-xl font-semibold sm:text-2xl">O cuidado continua nas ruas.</p>
+                    </figcaption>
+                  </figure>
                 </LandingReveal>
               </div>
             </div>
           </section>
 
           <section id="mapa" aria-labelledby="map-title" className="scroll-mt-32 py-8 sm:py-12">
-            <div className={`rounded-[2rem] border p-5 sm:p-8 lg:p-10 ${isDark ? "border-white/10 bg-[#18251e]/80" : "border-[#183a2b]/10 bg-[#e9efea]"}`}>
-              <div className="grid gap-8 lg:grid-cols-[0.72fr_1.28fr] lg:items-center lg:gap-10">
+            <div className={`overflow-hidden rounded-[2.25rem] border shadow-[0_28px_80px_rgba(18,36,26,0.12)] backdrop-blur-xl ${isDark ? "border-white/12 bg-[#18251e]/80" : "border-[#183a2b]/10 bg-white/60"}`}>
+              <div className={`flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:px-6 ${isDark ? "border-white/10 bg-white/[0.035]" : "border-[#183a2b]/10 bg-white/55"}`}>
+                <div className={`flex min-w-0 items-center gap-2 text-xs ${rootText}`}>
+                  <SafeLogoImage isMinimal className="h-7 w-7 shrink-0 object-contain" alt="" />
+                  <span className="font-serif font-bold tracking-[0.08em]">COMMUÁRIA</span>
+                  <span aria-hidden="true" className={mutedText}>/</span>
+                  <span className={mutedText}>Mapa público</span>
+                </div>
+                <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] backdrop-blur-lg ${isDark ? "border-white/12 bg-white/[0.05] text-emerald-100" : "border-[#183a2b]/10 bg-white/70 text-emerald-800"}`}>
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  {currentCity ? `${currentCity.name} · ${currentCity.state}` : "Mapa municipal"}
+                </span>
+              </div>
+              <div className="grid gap-8 p-5 sm:p-8 lg:grid-cols-[0.72fr_1.28fr] lg:items-center lg:gap-10">
                 <LandingReveal className="flex flex-col">
-                  <p className={`${sectionLabelClass} mb-4 ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>03 · Mapa público</p>
+                  <p className={`${sectionLabelClass} mb-4 ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>03 · A plataforma</p>
                   <h2 id="map-title" className={`font-serif text-3xl font-semibold leading-tight tracking-tight sm:text-4xl ${rootText}`}>
                     Veja as ocorrências no território.
                   </h2>
@@ -519,7 +543,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
                       })}
                     </MapContainer>
                     {mapPointCount === 0 && (
-                      <div className="pointer-events-none absolute bottom-4 left-4 z-[400] rounded-xl border border-white/60 bg-white/90 px-3.5 py-2.5 text-xs font-medium text-[#183a2b] shadow-lg backdrop-blur">
+                      <div className="pointer-events-none absolute bottom-4 left-4 z-[400] rounded-xl border border-white/60 bg-white/90 px-3.5 py-2.5 text-xs font-medium text-[#183a2b] shadow-lg backdrop-blur-sm">
                         Nenhum marcador público carregado neste momento.
                       </div>
                     )}
@@ -533,64 +557,183 @@ export const LandingView: React.FC<LandingViewProps> = ({
                   </div>
                 </LandingReveal>
               </div>
+              <div className={`grid gap-6 border-t p-5 sm:p-8 lg:grid-cols-[0.82fr_1.18fr] lg:items-center ${isDark ? "border-white/10 bg-white/[0.025]" : "border-[#183a2b]/10 bg-white/35"}`}>
+                <div className="max-w-sm">
+                  <p className={`text-[10px] font-semibold uppercase tracking-[0.18em] ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>Commuária em uso</p>
+                  <h3 className={`mt-2 font-serif text-2xl font-semibold leading-tight sm:text-3xl ${rootText}`}>
+                    Uma experiência que acompanha você.
+                  </h3>
+                  <p className={`mt-3 text-sm leading-6 ${mutedText}`}>
+                    Capturas reais da tela de registro em computador e celular, com dados de demonstração.
+                  </p>
+                </div>
+                <div className="mx-auto flex w-full max-w-2xl items-end justify-center gap-3 sm:gap-5">
+                  <figure className="min-w-0 max-w-[360px] flex-1">
+                    <div className={`overflow-hidden rounded-[1.35rem] border shadow-[0_18px_50px_rgba(18,36,26,0.2)] ${isDark ? "border-white/15 bg-[#111b15]" : "border-[#183a2b]/15 bg-[#f4f7f4]"}`}>
+                      <div aria-hidden="true" className={`flex h-8 items-center gap-1.5 border-b px-3 ${isDark ? "border-white/10 bg-white/[0.04]" : "border-[#183a2b]/10 bg-white/85"}`}>
+                        <span className="h-2 w-2 rounded-full bg-rose-400/80" />
+                        <span className="h-2 w-2 rounded-full bg-amber-400/80" />
+                        <span className="h-2 w-2 rounded-full bg-emerald-400/80" />
+                        <span className={`ml-2 truncate text-[9px] font-medium ${mutedText}`}>commuaria · nova ocorrência</span>
+                      </div>
+                      <img
+                        src={desktopReportCapture}
+                        alt="Captura real da interface do Commuária em computador, com as categorias de registro de uma ocorrência."
+                        className="block h-auto w-full"
+                        width={700}
+                        height={780}
+                        loading="lazy"
+                      />
+                    </div>
+                    <figcaption className={`mt-2 text-center text-[10px] font-medium ${mutedText}`}>Computador · categorias de solicitação</figcaption>
+                  </figure>
+                  <figure className="w-[min(24vw,150px)] min-w-[104px] shrink-0">
+                    <div className={`rounded-[2rem] border p-1 shadow-[0_18px_50px_rgba(18,36,26,0.22)] ${isDark ? "border-white/15 bg-[#111b15]" : "border-[#183a2b]/15 bg-[#111b15]"}`}>
+                      <img
+                        src={mobileReportCapture}
+                        alt="Captura real e responsiva da tela de registro do Commuária em celular."
+                        className="block h-auto w-full rounded-[1.65rem]"
+                        width={430}
+                        height={1180}
+                        loading="lazy"
+                      />
+                    </div>
+                    <figcaption className={`mt-2 text-center text-[10px] font-medium ${mutedText}`}>Celular · mesma plataforma</figcaption>
+                  </figure>
+                </div>
+              </div>
             </div>
           </section>
 
-          <section id="como-funciona" aria-labelledby="how-title" className="scroll-mt-32 py-16 sm:py-24">
+          <section id="recursos" aria-labelledby="features-title" className="scroll-mt-32 border-t border-[#183a2b]/10 py-16 sm:py-24">
             <LandingReveal>
-              <div className="mx-auto max-w-3xl text-center">
-                <p className={`${sectionLabelClass} mb-4 ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>04 · Como funciona</p>
-                <h2 id="how-title" className={`font-serif text-3xl font-semibold tracking-tight sm:text-4xl lg:text-5xl ${rootText}`}>
-                  Três passos para dar visibilidade ao que importa.
-                </h2>
+              <div className="grid items-end gap-5 md:grid-cols-[1.1fr_0.7fr] md:gap-12">
+                <div>
+                  <p className={`${sectionLabelClass} mb-4 ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>04 · Funcionalidades</p>
+                  <h2 id="features-title" className={`max-w-3xl font-serif text-3xl font-semibold leading-tight tracking-tight sm:text-4xl lg:text-5xl ${rootText}`}>
+                    Da primeira observação ao cuidado contínuo da cidade.
+                  </h2>
+                </div>
+                <p className={`max-w-xl text-sm leading-6 sm:text-base sm:leading-7 ${mutedText}`}>
+                  Ferramentas simples para compartilhar o que acontece no espaço público e acompanhar as respostas do município.
+                </p>
               </div>
             </LandingReveal>
 
-            <div className={`mt-10 grid overflow-hidden rounded-[2rem] border md:grid-cols-3 ${softSurface}`}>
-              {steps.map(({ number, title, description, Icon }, index) => (
-                <LandingReveal key={number} delay={index * 0.06} className="h-full">
-                  <article className={`relative flex h-full min-h-[260px] flex-col p-6 sm:p-8 ${index < steps.length - 1 ? `md:border-r ${isDark ? "md:border-white/10" : "md:border-[#183a2b]/10"}` : ""}`}>
-                    <div className="flex items-center justify-between">
-                      <span className={`font-mono text-sm font-semibold ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>{number}</span>
-                      <span className={`grid h-11 w-11 place-items-center rounded-2xl ${isDark ? "bg-white/10 text-emerald-100" : "bg-[#183a2b]/[0.06] text-[#183a2b]"}`}>
-                        <Icon size={21} aria-hidden="true" />
+            <div className="mt-10 grid items-stretch gap-8 lg:grid-cols-[0.82fr_1.18fr] lg:gap-12">
+              <div className={`flex flex-col justify-center divide-y ${isDark ? "divide-white/12" : "divide-[#183a2b]/12"}`}>
+                {[
+                  {
+                    eyebrow: "Participação cidadã",
+                    title: "Registre com contexto.",
+                    description: "Descreva o que aconteceu, selecione uma categoria e informe onde a cidade precisa de atenção.",
+                    Icon: Camera,
+                  },
+                  {
+                    eyebrow: "Acompanhamento",
+                    title: "Saiba em que etapa está.",
+                    description: "Consulte as atualizações da solicitação e mantenha o histórico do pedido sempre à mão.",
+                    Icon: ClipboardCheck,
+                  },
+                  {
+                    eyebrow: "Informação local",
+                    title: "Encontre notícias e serviços.",
+                    description: "Acesse comunicados e informações publicados para o município que você acompanha.",
+                    Icon: Megaphone,
+                  },
+                ].map(({ eyebrow, title, description, Icon }, index) => (
+                  <LandingReveal key={eyebrow} delay={index * 0.05}>
+                    <article className="flex gap-4 py-5 sm:gap-5 sm:py-6">
+                      <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl border ${isDark ? "border-white/15 bg-white/[0.06] text-emerald-100" : "border-[#183a2b]/10 bg-white/70 text-[#183a2b]"}`}>
+                        <Icon size={20} aria-hidden="true" />
                       </span>
-                    </div>
-                    <h3 className={`mt-8 font-serif text-xl font-semibold sm:text-2xl ${rootText}`}>{title}</h3>
-                    <p className={`mt-3 text-sm leading-6 ${mutedText}`}>{description}</p>
-                    {index < steps.length - 1 && (
-                      <span aria-hidden="true" className={`absolute -right-3 top-1/2 z-10 hidden h-6 w-6 -translate-y-1/2 place-items-center rounded-full border md:grid ${isDark ? "border-white/15 bg-[#26372d] text-white/60" : "border-[#183a2b]/10 bg-[#f4f7f4] text-[#40594b]"}`}>
-                        <ArrowRight size={12} />
-                      </span>
-                    )}
-                  </article>
+                      <div>
+                        <p className={`text-[10px] font-semibold uppercase tracking-[0.17em] ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>{eyebrow}</p>
+                        <h3 className={`mt-1.5 font-serif text-xl font-semibold sm:text-2xl ${rootText}`}>{title}</h3>
+                        <p className={`mt-2 max-w-lg text-sm leading-6 ${mutedText}`}>{description}</p>
+                      </div>
+                    </article>
+                  </LandingReveal>
+                ))}
+                <LandingReveal delay={0.16} className="pt-6">
+                  <button
+                    type="button"
+                    onClick={onEnter}
+                    className={`inline-flex min-h-11 items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${isDark ? "bg-white text-[#183a2b] hover:bg-emerald-50" : "bg-[#183a2b] text-white hover:bg-[#122c21]"}`}
+                  >
+                    Acessar para registrar <ArrowRight size={15} aria-hidden="true" />
+                  </button>
                 </LandingReveal>
-              ))}
+              </div>
+
+              <LandingReveal delay={0.06} className="min-w-0">
+                <figure className="group relative h-full min-h-[390px] overflow-hidden rounded-[2.25rem] border border-white/20 shadow-[0_24px_70px_rgba(18,36,26,0.18)] sm:min-h-[510px]">
+                  <img
+                    src={cityMaintenancePhoto}
+                    alt="Imagem ilustrativa de um técnico ajustando uma luminária de rua a partir de uma plataforma elevatória ao anoitecer."
+                    className="absolute inset-0 h-full w-full object-cover object-[58%_center] transition-transform duration-700 group-hover:scale-[1.025]"
+                    width={1408}
+                    height={768}
+                    loading="lazy"
+                  />
+                  <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-t from-[#0c1711]/88 via-[#0c1711]/15 to-[#0c1711]/5" />
+                  <div className="absolute left-5 top-5 inline-flex items-center gap-2 rounded-full border border-white/25 bg-[#102017]/65 px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.17em] text-white backdrop-blur-lg sm:left-7 sm:top-7">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
+                    Cuidado urbano em movimento
+                  </div>
+                  <figcaption className="absolute inset-x-5 bottom-5 text-white sm:inset-x-7 sm:bottom-7">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/75">Da informação ao trabalho em campo</p>
+                    <p className="mt-2 max-w-lg font-serif text-2xl font-semibold leading-tight sm:text-3xl">
+                      Uma cidade mais bem cuidada começa com uma conversa que chega ao lugar certo.
+                    </p>
+                  </figcaption>
+                </figure>
+              </LandingReveal>
             </div>
           </section>
 
           <section id="municipios" aria-labelledby="cities-title" className="scroll-mt-32 py-10 sm:py-16">
-            <div className={`relative overflow-hidden rounded-[2rem] border p-7 sm:p-10 lg:p-14 ${isDark ? "border-white/10 bg-[#183a2b]" : "border-[#183a2b]/10 bg-[#e7eee8]"}`}>
-              <div aria-hidden="true" className="absolute -right-16 -top-20 h-80 w-80 rounded-full border border-current opacity-[0.08] sm:-right-8 sm:-top-28" />
-              <div aria-hidden="true" className="absolute -right-4 -top-8 h-52 w-52 rounded-full border border-current opacity-[0.08]" />
-              <div className="relative grid gap-8 lg:grid-cols-[1.1fr_0.9fr] lg:items-center lg:gap-14">
-                <div>
-                  <p className={`${sectionLabelClass} mb-4 ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>05 · Para diferentes municípios</p>
-                  <h2 id="cities-title" className={`max-w-2xl font-serif text-3xl font-semibold leading-tight tracking-tight sm:text-4xl lg:text-5xl ${isDark ? "text-white" : "text-[#183a2b]"}`}>
-                    Uma plataforma. Muitos contextos locais.
-                  </h2>
-                  <p className={`mt-5 max-w-2xl text-sm leading-7 sm:text-base ${isDark ? "text-white/75" : "text-[#40594b]"}`}>
-                    Nascido em Araucária e preparado para diferentes municípios, o Commuária mantém cada experiência conectada ao território e às necessidades de quem vive nele.
-                  </p>
-                </div>
-                <div className={`rounded-2xl border p-5 sm:p-7 ${isDark ? "border-white/15 bg-black/10" : "border-[#183a2b]/10 bg-white/70"}`}>
+            <div className={`grid overflow-hidden rounded-[2.25rem] border shadow-[0_28px_80px_rgba(18,36,26,0.12)] lg:grid-cols-[1.08fr_0.92fr] ${isDark ? "border-white/10 bg-[#183a2b]" : "border-[#183a2b]/10 bg-[#e7eee8]"}`}>
+              <LandingReveal className="relative min-h-[330px] overflow-hidden sm:min-h-[460px] lg:min-h-[590px]">
+                <figure className="group absolute inset-0">
+                  <img
+                    src={cityAerialPhoto}
+                    alt="Imagem ilustrativa de uma paisagem urbana ao entardecer, sem representar um município específico."
+                    className="absolute inset-0 h-full w-full object-cover object-center transition-transform duration-700 group-hover:scale-[1.02]"
+                    width={1376}
+                    height={768}
+                    loading="lazy"
+                  />
+                  <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-t from-[#0c1711]/80 via-[#0c1711]/10 to-transparent" />
+                  <div className="absolute left-5 top-5 inline-flex items-center gap-2 rounded-full border border-white/25 bg-[#102017]/60 px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.17em] text-white backdrop-blur-lg sm:left-7 sm:top-7">
+                    <MapPin size={13} aria-hidden="true" />
+                    Territórios com histórias próprias
+                  </div>
+                  <figcaption className="absolute inset-x-5 bottom-5 text-white sm:inset-x-8 sm:bottom-8">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/75">Contexto urbano ilustrativo</p>
+                    <p className="mt-2 max-w-xl font-serif text-2xl font-semibold leading-tight sm:text-3xl lg:text-4xl">
+                      Cada cidade tem seu ritmo — e suas próprias prioridades.
+                    </p>
+                  </figcaption>
+                </figure>
+              </LandingReveal>
+
+              <LandingReveal delay={0.08} className="flex flex-col justify-center p-6 sm:p-9 lg:p-12">
+                <p className={`${sectionLabelClass} mb-4 ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>05 · Para diferentes municípios</p>
+                <h2 id="cities-title" className={`max-w-2xl font-serif text-3xl font-semibold leading-tight tracking-tight sm:text-4xl lg:text-5xl ${rootText}`}>
+                  Uma plataforma. Muitos contextos locais.
+                </h2>
+                <p className={`mt-5 max-w-2xl text-sm leading-7 sm:text-base ${mutedText}`}>
+                  Nascido em Araucária e preparado para diferentes municípios, o Commuária mantém cada experiência conectada ao território e às necessidades de quem vive nele.
+                </p>
+                <div className={`mt-8 border-t pt-6 ${isDark ? "border-white/15" : "border-[#183a2b]/12"}`}>
                   <div className="flex items-center gap-3">
                     <span className={`grid h-10 w-10 place-items-center rounded-xl ${isDark ? "bg-white/10 text-emerald-100" : "bg-[#183a2b]/[0.06] text-[#183a2b]"}`}>
                       <Building2 size={20} aria-hidden="true" />
                     </span>
                     <div>
                       <p className={`text-xs font-semibold uppercase tracking-[0.14em] ${rootText}`}>Municípios disponíveis</p>
-                      <p className={`mt-1 text-xs ${mutedText}`}>Selecione um território para explorar o mapa público.</p>
+                      <p className={`mt-1 text-xs ${mutedText}`}>Escolha um território para explorar o mapa público.</p>
                     </div>
                   </div>
                   <div className="mt-5 flex flex-wrap gap-2">
@@ -602,7 +745,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
                           onCityChange(availableCity.id);
                           document.getElementById("mapa")?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth" });
                         }}
-                        className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${isDark ? "border-white/15 text-white/85 hover:bg-white/10" : "border-[#183a2b]/12 bg-white text-[#183a2b] hover:bg-[#183a2b]/[0.05]"}`}
+                        className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${isDark ? "border-white/15 text-white/85 hover:bg-white/10" : "border-[#183a2b]/12 bg-white/75 text-[#183a2b] hover:bg-[#183a2b]/[0.05]"}`}
                       >
                         <MapPin size={13} aria-hidden="true" />
                         {availableCity.name} · {availableCity.state}
@@ -613,7 +756,10 @@ export const LandingView: React.FC<LandingViewProps> = ({
                     )}
                   </div>
                 </div>
-              </div>
+                <p className={`mt-7 text-[10px] leading-5 ${isDark ? "text-white/50" : "text-[#52675a]"}`}>
+                  A imagem aérea é ilustrativa e não corresponde a um município específico.
+                </p>
+              </LandingReveal>
             </div>
           </section>
 
