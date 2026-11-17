@@ -238,7 +238,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
 
         <main id="conteudo" className="relative mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-10">
           <section id="inicio" aria-labelledby="landing-title" className="scroll-mt-32 pb-16 pt-10 sm:pb-24 sm:pt-16 lg:pt-20">
-            <div className="grid items-center gap-10 lg:grid-cols-[0.92fr_1.08fr] lg:gap-14">
+            <div className="grid grid-cols-[minmax(0,0.72fr)_minmax(0,1.28fr)] items-center gap-3 sm:gap-6 lg:grid-cols-[0.92fr_1.08fr] lg:gap-14">
               <LandingReveal className="order-2 max-w-2xl lg:order-2">
                 <p className={`${sectionLabelClass} mb-5 inline-flex items-center gap-2 ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>
                   <Sparkles size={14} aria-hidden="true" />
@@ -246,25 +246,25 @@ export const LandingView: React.FC<LandingViewProps> = ({
                 </p>
                 <h1
                   id="landing-title"
-                  className={`max-w-[12ch] font-serif text-[2.55rem] font-semibold leading-[1.06] tracking-[-0.045em] sm:text-5xl lg:text-[4.25rem] ${rootText}`}
+                  className={`max-w-none font-serif text-[clamp(1.25rem,6vw,1.5rem)] font-semibold leading-[1.06] tracking-[-0.045em] sm:max-w-[18ch] sm:text-3xl md:text-4xl lg:max-w-[12ch] lg:text-[4.25rem] ${rootText}`}
                 >
                   A cidade que você vive se transforma com a sua participação.
                 </h1>
-                <p className={`mt-6 max-w-xl text-base leading-7 sm:text-lg sm:leading-8 ${mutedText}`}>
+                <p className={`mt-3 max-w-xl text-[13px] leading-5 sm:mt-5 sm:text-sm sm:leading-6 lg:mt-6 lg:text-lg lg:leading-8 ${mutedText}`}>
                   Registre problemas urbanos, acompanhe solicitações e encontre notícias e serviços locais em uma plataforma feita para aproximar pessoas e municípios.
                 </p>
-                <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="mt-4 flex flex-col gap-2 sm:mt-6 sm:gap-3 lg:mt-8 lg:flex-row lg:items-center">
                   <button
                     type="button"
                     onClick={onEnter}
-                    className="inline-flex min-h-12 items-center justify-center gap-3 rounded-full bg-[#183a2b] px-6 py-3 text-sm font-semibold text-white shadow-[0_12px_28px_rgba(24,58,43,0.22)] transition-all hover:-translate-y-0.5 hover:bg-[#122c21] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+                    className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full bg-[#183a2b] px-2.5 py-2 text-[11px] font-semibold text-white shadow-[0_12px_28px_rgba(24,58,43,0.22)] transition-all hover:-translate-y-0.5 hover:bg-[#122c21] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 sm:min-h-11 sm:gap-2 sm:px-3 sm:text-xs lg:min-h-12 lg:gap-3 lg:px-6 lg:py-3 lg:text-sm"
                   >
                     Acessar a plataforma <ArrowRight size={17} aria-hidden="true" />
                   </button>
                   <button
                     type="button"
                     onClick={onSignup}
-                    className={`inline-flex min-h-12 items-center justify-center gap-2 rounded-full border px-6 py-3 text-sm font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${
+                    className={`inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border px-2.5 py-2 text-[11px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 sm:min-h-11 sm:gap-2 sm:px-3 sm:text-xs lg:min-h-12 lg:gap-2 lg:px-6 lg:py-3 lg:text-sm ${
                       isDark ? "border-white/25 text-white hover:bg-white/10" : "border-[#183a2b]/20 text-[#183a2b] hover:bg-[#183a2b]/[0.05]"
                     }`}
                   >
@@ -274,14 +274,14 @@ export const LandingView: React.FC<LandingViewProps> = ({
                 </div>
                 <a
                   href="#mapa"
-                  className={`mt-8 inline-flex items-center gap-2 text-sm font-medium transition-colors ${isDark ? "text-white/75 hover:text-white" : "text-[#40594b] hover:text-[#183a2b]"}`}
+                  className={`mt-4 inline-flex items-center gap-2 text-xs font-medium transition-colors sm:mt-6 sm:text-sm lg:mt-8 ${isDark ? "text-white/75 hover:text-white" : "text-[#40594b] hover:text-[#183a2b]"}`}
                 >
                   Conheça a plataforma <ArrowDown size={15} aria-hidden="true" />
                 </a>
               </LandingReveal>
 
               <LandingReveal delay={0.1} className="relative order-1 -ml-4 min-w-0 sm:-ml-6 lg:-ml-10 lg:order-1 xl:ml-[calc(37.5rem_-_50vw)]">
-                <figure className="relative min-h-[460px] sm:min-h-[550px] lg:min-h-[650px]">
+                <figure className="relative min-h-[330px] sm:min-h-[440px] md:min-h-[520px] lg:min-h-[650px]">
                   <img
                     src={landingLightingWorker}
                     alt="Funcionário equipado com colete refletivo fazendo manutenção em luminária de poste a partir de uma plataforma elevatória."
@@ -297,26 +297,6 @@ export const LandingView: React.FC<LandingViewProps> = ({
                   <figcaption className="sr-only">
                     Funcionário com equipamentos de segurança realiza manutenção em uma luminária de poste.
                   </figcaption>
-                  <div className="absolute inset-x-4 bottom-4 rounded-2xl border border-white/20 bg-[#102017]/65 p-4 text-white shadow-lg backdrop-blur-lg sm:inset-x-6 sm:bottom-6 sm:p-5">
-                    <div className="flex items-end justify-between gap-4">
-                      <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/70">Mapa público · {currentCity?.state || "Brasil"}</p>
-                        <p className="mt-1 font-serif text-xl font-semibold sm:text-2xl">{currentCity?.name || "Municípios atendidos"}</p>
-                        <p className="mt-1 text-xs text-white/75 sm:text-sm">
-                          {mapPointCount > 0
-                            ? `${mapPointCount} ${mapPointCount === 1 ? "ocorrência pública" : "ocorrências públicas"} no mapa`
-                            : "Explore o mapa público de ocorrências"}
-                        </p>
-                      </div>
-                      <a
-                        href="#mapa"
-                        aria-label={`Explorar mapa público de ${cityName}`}
-                        className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-white text-[#183a2b] transition-transform hover:scale-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-                      >
-                        <ArrowRight size={19} aria-hidden="true" />
-                      </a>
-                    </div>
-                  </div>
                 </figure>
               </LandingReveal>
             </div>
@@ -677,10 +657,6 @@ export const LandingView: React.FC<LandingViewProps> = ({
                     loading="lazy"
                   />
                   <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-t from-[#0c1711]/88 via-[#0c1711]/15 to-[#0c1711]/5" />
-                  <div className="absolute left-5 top-5 inline-flex items-center gap-2 rounded-full border border-white/25 bg-[#102017]/65 px-3.5 py-2 text-[10px] font-semibold uppercase tracking-[0.17em] text-white backdrop-blur-lg sm:left-7 sm:top-7">
-                    <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
-                    Cuidado urbano em movimento
-                  </div>
                   <figcaption className="absolute inset-x-5 bottom-5 text-white sm:inset-x-7 sm:bottom-7">
                     <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/75">Da informação ao trabalho em campo</p>
                     <p className="mt-2 max-w-lg font-serif text-2xl font-semibold leading-tight sm:text-3xl">
