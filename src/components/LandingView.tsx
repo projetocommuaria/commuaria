@@ -2,7 +2,6 @@ import React from "react";
 import { motion, useReducedMotion } from "motion/react";
 import {
   Activity,
-  ArrowDown,
   ArrowRight,
   Building2,
   Camera,
@@ -10,7 +9,6 @@ import {
   MapPin,
   Megaphone,
   Navigation,
-  Sparkles,
 } from "lucide-react";
 import {
   GeoJSON,
@@ -29,6 +27,7 @@ import { useTheme } from "../ThemeContext";
 import { SafeLogoImage } from "./SafeLogoImage";
 import citizenReportPhoto from "../assets/images/landing_citizen_reporting.jpg";
 import cityAerialPhoto from "../assets/images/landing_city_aerial.jpg";
+import cityPanoramaPhoto from "../assets/images/landing_city_panorama.jpg";
 import cityMaintenancePhoto from "../assets/images/landing_city_maintenance.jpg";
 import desktopReportCapture from "../assets/images/landing_platform_report_desktop.png";
 import mobileReportCapture from "../assets/images/landing_platform_report_mobile.png";
@@ -155,11 +154,10 @@ export const LandingView: React.FC<LandingViewProps> = ({
   ];
   const rootText = isDark ? "text-white" : "text-[#183a2b]";
   const mutedText = isDark ? "text-white/72" : "text-[#40594b]";
-  const linkClass = `whitespace-nowrap rounded-full px-3 py-2 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
-    isDark
-      ? "text-white/75 hover:bg-white/10 hover:text-white focus-visible:outline-emerald-200"
-      : "text-[#40594b] hover:bg-[#183a2b]/[0.06] hover:text-[#183a2b] focus-visible:outline-emerald-700"
-  }`;
+  const heroSurface = isDark ? "#5A635C" : "#F4F7F4";
+  const heroFadeRgb = isDark ? "90,99,92" : "244,247,244";
+  const linkClass = "whitespace-nowrap rounded-full px-2.5 py-1.5 text-[11px] font-medium text-white/90 transition-colors hover:bg-white/15 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white sm:px-3 sm:text-xs";
+  const glassButtonEffect = "backdrop-blur-xl shadow-[0_10px_28px_rgba(18,36,26,0.14)] transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0";
 
   return (
     <div
@@ -174,34 +172,19 @@ export const LandingView: React.FC<LandingViewProps> = ({
       >
         Pular para o conteúdo
       </a>
-      <div
-        aria-hidden="true"
-        className={`pointer-events-none absolute inset-x-0 top-0 z-0 h-[900px] ${
-          isDark
-            ? "bg-[radial-gradient(ellipse_65%_55%_at_50%_0%,rgba(255,255,255,0.08),transparent_75%)]"
-            : "bg-[radial-gradient(ellipse_65%_55%_at_50%_0%,rgba(24,58,43,0.07),transparent_75%)]"
-        }`}
-      />
-
       <div className="relative z-10">
-        <div className="sticky top-0 z-40 px-3 pt-3 sm:px-5">
-          <header
-            className={`mx-auto grid max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 rounded-2xl border px-3 py-2 shadow-[0_12px_36px_rgba(18,36,26,0.10)] backdrop-blur-xl sm:gap-x-3 sm:px-5 sm:py-2.5 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:rounded-full ${
-              isDark ? "border-white/15 bg-[#17231d]/76 text-white" : "border-[#183a2b]/10 bg-white/76 text-[#183a2b]"
-            }`}
-          >
+        <div className="fixed inset-x-0 top-0 z-40 px-2 pt-2 sm:px-5 sm:pt-4">
+          <header className="mx-auto grid w-full max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-x-1.5 rounded-full border border-white/25 bg-white/20 px-2.5 py-2 text-white shadow-[0_12px_36px_rgba(18,36,26,0.14)] backdrop-blur-xl sm:gap-x-3 sm:px-5 sm:py-2.5 lg:grid-cols-[auto_minmax(0,1fr)_auto]">
             <a href="#inicio" aria-label="Commuária — início" className="flex min-w-0 items-center gap-1.5 sm:gap-2.5">
-              <SafeLogoImage isMinimal className="h-8 w-8 shrink-0 object-contain sm:h-9 sm:w-9" alt="" />
-              <span className="truncate font-serif text-sm font-bold tracking-[0.09em] sm:text-xl sm:tracking-[0.11em]">
-                COMMUÁRIA
+              <SafeLogoImage forceTheme="dark" isMinimal className="h-8 w-8 shrink-0 object-contain sm:h-10 sm:w-10" alt="" />
+              <span className="truncate font-serif text-[0.85rem] font-bold tracking-tight sm:text-xl">
+                Commuária
               </span>
             </a>
 
             <nav
               aria-label="Navegação principal"
-              className={`col-span-2 row-start-2 -mx-2 flex min-w-0 flex-wrap items-center gap-1 border-t px-1 pt-2 xl:col-span-1 xl:col-start-2 xl:row-start-1 xl:mx-0 xl:justify-center xl:border-t-0 xl:px-0 xl:pt-0 ${
-                isDark ? "border-white/10" : "border-[#183a2b]/10"
-              }`}
+              className="col-span-2 row-start-2 -mx-1.5 mt-1 flex min-w-0 items-center gap-0.5 overflow-x-auto border-t border-white/20 px-1 pt-1.5 [scrollbar-width:none] lg:col-span-1 lg:col-start-2 lg:row-start-1 lg:mx-0 lg:mt-0 lg:justify-center lg:gap-1.5 lg:overflow-visible lg:border-t-0 lg:px-0 lg:pt-0"
             >
               {navLinks.map((link) => (
                 <a key={link.href} className={linkClass} href={link.href}>
@@ -210,16 +193,12 @@ export const LandingView: React.FC<LandingViewProps> = ({
               ))}
             </nav>
 
-            <div className="col-start-2 row-start-1 flex shrink-0 items-center justify-end gap-1.5 sm:gap-2 xl:col-start-3">
+            <div className="col-start-2 row-start-1 flex shrink-0 items-center justify-end gap-1 sm:gap-2 lg:col-start-3">
               {themeToggle}
               <button
                 type="button"
                 onClick={onEnter}
-                className={`rounded-full px-3 py-2 text-xs font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 sm:px-4 sm:text-sm ${
-                  isDark
-                    ? "border border-white/20 text-white hover:bg-white/10 focus-visible:outline-emerald-200"
-                    : "border border-[#183a2b]/15 text-[#183a2b] hover:bg-[#183a2b]/[0.06] focus-visible:outline-emerald-700"
-                }`}
+                className={`whitespace-nowrap rounded-full border border-white/55 bg-white/10 px-3 py-2 text-xs font-medium text-white hover:bg-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white sm:px-4 sm:text-sm ${glassButtonEffect}`}
               >
                 Entrar
               </button>
@@ -227,7 +206,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
                 type="button"
                 onClick={onSignup}
                 aria-label="Criar conta"
-                className="inline-flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-full bg-[#183a2b] px-2.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#122c21] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600 sm:px-4 sm:text-sm"
+                className={`inline-flex h-8 min-w-8 items-center justify-center gap-1.5 rounded-full border border-white/40 bg-[#f4eee4]/85 px-2.5 py-2 text-xs font-semibold text-[#18251e] hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white sm:h-9 sm:px-4 sm:text-sm ${glassButtonEffect}`}
               >
                 <span className="hidden sm:inline">Criar conta</span>
                 <ArrowRight size={14} aria-hidden="true" />
@@ -237,68 +216,36 @@ export const LandingView: React.FC<LandingViewProps> = ({
         </div>
 
         <main id="conteudo" className="relative mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-10">
-          <section id="inicio" aria-labelledby="landing-title" className="scroll-mt-32 pb-16 pt-10 sm:pb-24 sm:pt-16 lg:pt-20">
-            <div className="grid grid-cols-[minmax(0,0.72fr)_minmax(0,1.28fr)] items-center gap-3 sm:gap-6 lg:grid-cols-[0.92fr_1.08fr] lg:gap-14">
-              <LandingReveal className="order-2 max-w-2xl lg:order-2">
-                <p className={`${sectionLabelClass} mb-5 inline-flex items-center gap-2 ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>
-                  <Sparkles size={14} aria-hidden="true" />
-                  01 · Participação cidadã
-                </p>
-                <h1
-                  id="landing-title"
-                  className={`max-w-none font-serif text-[clamp(1.25rem,6vw,1.5rem)] font-semibold leading-[1.06] tracking-[-0.045em] sm:max-w-[18ch] sm:text-3xl md:text-4xl lg:max-w-[12ch] lg:text-[4.25rem] ${rootText}`}
-                >
-                  A cidade que você vive se transforma com a sua participação.
-                </h1>
-                <p className={`mt-3 max-w-xl text-[13px] leading-5 sm:mt-5 sm:text-sm sm:leading-6 lg:mt-6 lg:text-lg lg:leading-8 ${mutedText}`}>
-                  Registre problemas urbanos, acompanhe solicitações e encontre notícias e serviços locais em uma plataforma feita para aproximar pessoas e municípios.
-                </p>
-                <div className="mt-4 flex flex-col gap-2 sm:mt-6 sm:gap-3 lg:mt-8 lg:flex-row lg:items-center">
-                  <button
-                    type="button"
-                    onClick={onEnter}
-                    className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full bg-[#183a2b] px-2.5 py-2 text-[11px] font-semibold text-white shadow-[0_12px_28px_rgba(24,58,43,0.22)] transition-all hover:-translate-y-0.5 hover:bg-[#122c21] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 sm:min-h-11 sm:gap-2 sm:px-3 sm:text-xs lg:min-h-12 lg:gap-3 lg:px-6 lg:py-3 lg:text-sm"
-                  >
-                    Acessar a plataforma <ArrowRight size={17} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onSignup}
-                    className={`inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border px-2.5 py-2 text-[11px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 sm:min-h-11 sm:gap-2 sm:px-3 sm:text-xs lg:min-h-12 lg:gap-2 lg:px-6 lg:py-3 lg:text-sm ${
-                      isDark ? "border-white/25 text-white hover:bg-white/10" : "border-[#183a2b]/20 text-[#183a2b] hover:bg-[#183a2b]/[0.05]"
-                    }`}
-                  >
-                    <span>Criar conta</span>
-                    <ArrowRight size={15} aria-hidden="true" />
-                  </button>
-                </div>
-                <a
-                  href="#mapa"
-                  className={`mt-4 inline-flex items-center gap-2 text-xs font-medium transition-colors sm:mt-6 sm:text-sm lg:mt-8 ${isDark ? "text-white/75 hover:text-white" : "text-[#40594b] hover:text-[#183a2b]"}`}
-                >
-                  Conheça a plataforma <ArrowDown size={15} aria-hidden="true" />
-                </a>
-              </LandingReveal>
-
-              <LandingReveal delay={0.1} className="relative order-1 -ml-4 min-w-0 sm:-ml-6 lg:-ml-10 lg:order-1 xl:ml-[calc(37.5rem_-_50vw)]">
-                <figure className="relative min-h-[330px] sm:min-h-[440px] md:min-h-[520px] lg:min-h-[650px]">
-                  <img
-                    src={landingLightingWorker}
-                    alt="Funcionário equipado com colete refletivo fazendo manutenção em luminária de poste a partir de uma plataforma elevatória."
-                    className={`absolute inset-0 h-full w-full object-contain object-[-18%_center] ${
-                      isDark
-                        ? "drop-shadow-[0_18px_24px_rgba(0,0,0,0.3)]"
-                        : "drop-shadow-[0_18px_24px_rgba(24,58,43,0.2)]"
-                    }`}
-                    width={606}
-                    height={1283}
-                    fetchPriority="high"
-                  />
-                  <figcaption className="sr-only">
-                    Funcionário com equipamentos de segurança realiza manutenção em uma luminária de poste.
-                  </figcaption>
-                </figure>
-              </LandingReveal>
+          <section id="inicio" aria-labelledby="landing-title" className={`relative isolate left-1/2 w-screen -translate-x-1/2 h-[min(880px,100svh)] min-h-[640px] scroll-mt-0 overflow-hidden ${isDark ? "text-white" : "text-[#183a2b]"}`} style={{ backgroundColor: heroSurface }}>
+            <img
+              src={cityPanoramaPhoto}
+              alt=""
+              aria-hidden="true"
+              className="absolute inset-x-0 top-0 h-[80%] w-full object-cover object-center"
+              width={3072}
+              height={1367}
+              fetchPriority="high"
+            />
+            <div
+              aria-hidden="true"
+              className="absolute inset-x-0 top-0 h-[82%]"
+              style={{ background: `linear-gradient(to bottom, rgba(${heroFadeRgb},0) 34%, rgba(${heroFadeRgb},0.2) 52%, ${heroSurface} 86%)` }}
+            />
+            <img
+              src={landingLightingWorker}
+              alt="Funcionário usando colete refletivo para fazer manutenção em uma luminária de rua, apoiado em uma plataforma elevatória."
+              className="absolute bottom-0 left-[-4vw] z-10 w-[56vw] max-w-[360px] object-contain object-bottom drop-shadow-[0_14px_24px_rgba(0,0,0,0.28)] md:left-0 md:h-[90%] md:w-auto md:max-w-none"
+              width={606}
+              height={1283}
+              fetchPriority="high"
+            />
+            <div className="absolute left-[53%] right-4 top-[31%] z-20 max-w-3xl sm:right-8 md:left-[43%] md:top-[35%] md:right-12 lg:left-[40%] xl:left-[42%]">
+              <h1 id="landing-title" className={`max-w-[44rem] font-serif text-[clamp(1.2rem,4.2vw,4rem)] font-semibold leading-[1.04] tracking-[-0.035em] ${rootText}`}>
+                A cidade que você vive se transforma com a sua participação.
+              </h1>
+              <p className={`mt-3 max-w-[44rem] text-[clamp(0.8rem,1.3vw,1.2rem)] leading-[1.48] ${rootText} sm:mt-4 sm:text-sm md:mt-5 md:text-base lg:text-lg`}>
+                Uma plataforma que aproxima cidadãos e administrações públicas, facilitando o registro de problemas urbanos, o acompanhamento de solicitações e a gestão dos serviços municipais.
+              </p>
             </div>
           </section>
 
@@ -639,7 +586,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
                   <button
                     type="button"
                     onClick={onEnter}
-                    className={`inline-flex min-h-11 items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${isDark ? "bg-white text-[#183a2b] hover:bg-emerald-50" : "bg-[#183a2b] text-white hover:bg-[#122c21]"}`}
+                    className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-5 py-2.5 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${glassButtonEffect} ${isDark ? "border-white/40 bg-white/85 text-[#183a2b] hover:bg-white" : "border-[#183a2b]/25 bg-[#183a2b]/90 text-white hover:bg-[#122c21]"}`}
                   >
                     Acessar para registrar <ArrowRight size={15} aria-hidden="true" />
                   </button>
@@ -721,7 +668,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
                           onCityChange(availableCity.id);
                           document.getElementById("mapa")?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth" });
                         }}
-                        className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${isDark ? "border-white/15 text-white/85 hover:bg-white/10" : "border-[#183a2b]/12 bg-white/75 text-[#183a2b] hover:bg-[#183a2b]/[0.05]"}`}
+                        className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${glassButtonEffect} ${isDark ? "border-white/25 bg-white/10 text-white/90 hover:bg-white/20" : "border-[#183a2b]/15 bg-white/60 text-[#183a2b] hover:bg-white/80"}`}
                       >
                         <MapPin size={13} aria-hidden="true" />
                         {availableCity.name} · {availableCity.state}
@@ -758,14 +705,14 @@ export const LandingView: React.FC<LandingViewProps> = ({
                     <button
                       type="button"
                       onClick={onEnter}
-                      className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-semibold text-[#183a2b] transition-colors hover:bg-emerald-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                      className={`inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/40 bg-white/90 px-6 py-3 text-sm font-semibold text-[#183a2b] hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${glassButtonEffect}`}
                     >
                       Acessar plataforma <ArrowRight size={16} aria-hidden="true" />
                     </button>
                     <button
                       type="button"
                       onClick={onSignup}
-                      className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/30 px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                      className={`inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-6 py-3 text-sm font-semibold text-white hover:bg-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${glassButtonEffect}`}
                     >
                       Criar conta <ArrowRight size={16} aria-hidden="true" />
                     </button>
