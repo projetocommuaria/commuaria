@@ -156,7 +156,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
   const mutedText = isDark ? "text-white/72" : "text-[#40594b]";
   const heroSurface = isDark ? "#5A635C" : "#F4F7F4";
   const heroFadeRgb = isDark ? "90,99,92" : "244,247,244";
-  const linkClass = "whitespace-nowrap rounded-full px-2.5 py-1.5 text-[11px] font-medium text-white/90 transition-colors hover:bg-white/15 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white sm:px-3 sm:text-xs";
+  const linkClass = "shrink-0 whitespace-nowrap rounded-full px-1.5 py-1.5 text-[10px] font-medium text-white/90 transition-colors hover:bg-white/15 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white sm:px-2.5 sm:text-xs";
   const glassButtonEffect = "backdrop-blur-xl shadow-[0_10px_28px_rgba(18,36,26,0.14)] transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0";
 
   return (
@@ -174,8 +174,8 @@ export const LandingView: React.FC<LandingViewProps> = ({
       </a>
       <div className="relative z-10">
         <div className="fixed inset-x-0 top-0 z-40 px-2 pt-2 sm:px-5 sm:pt-4">
-          <header className="mx-auto grid w-full max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-x-1.5 rounded-full border border-white/25 bg-white/20 px-2.5 py-2 text-white shadow-[0_12px_36px_rgba(18,36,26,0.14)] backdrop-blur-xl sm:gap-x-3 sm:px-5 sm:py-2.5 lg:grid-cols-[auto_minmax(0,1fr)_auto]">
-            <a href="#inicio" aria-label="Commuária — início" className="flex min-w-0 items-center gap-1.5 sm:gap-2.5">
+          <header className="mx-auto flex w-full max-w-7xl items-center gap-1.5 rounded-full border border-white/25 bg-white/20 px-2.5 py-2 text-white shadow-[0_12px_36px_rgba(18,36,26,0.14)] backdrop-blur-xl sm:gap-3 sm:px-5 sm:py-2.5">
+            <a href="#inicio" aria-label="Commuária — início" className="flex min-w-0 items-center gap-1.5 sm:shrink-0 sm:gap-2.5">
               <SafeLogoImage forceTheme="dark" isMinimal className="h-8 w-8 shrink-0 object-contain sm:h-10 sm:w-10" alt="" />
               <span className="truncate font-serif text-[0.85rem] font-bold tracking-tight sm:text-xl">
                 Commuária
@@ -184,7 +184,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
 
             <nav
               aria-label="Navegação principal"
-              className="col-span-2 row-start-2 -mx-1.5 mt-1 flex min-w-0 items-center gap-0.5 overflow-x-auto border-t border-white/20 px-1 pt-1.5 [scrollbar-width:none] lg:col-span-1 lg:col-start-2 lg:row-start-1 lg:mx-0 lg:mt-0 lg:justify-center lg:gap-1.5 lg:overflow-visible lg:border-t-0 lg:px-0 lg:pt-0"
+              className="flex min-w-0 flex-1 items-center justify-center gap-0.5 overflow-x-auto px-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-1.5 sm:px-0"
             >
               {navLinks.map((link) => (
                 <a key={link.href} className={linkClass} href={link.href}>
@@ -193,7 +193,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
               ))}
             </nav>
 
-            <div className="col-start-2 row-start-1 flex shrink-0 items-center justify-end gap-1 sm:gap-2 lg:col-start-3">
+            <div className="flex shrink-0 items-center justify-end gap-1 sm:gap-2">
               {themeToggle}
               <button
                 type="button"
