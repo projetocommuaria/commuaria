@@ -29,9 +29,10 @@ export interface SupabaseTenantConfig {
 }
 
 /**
- * Every valid municipality uses the same Supabase project and Auth session. The
- * city-specific table boundary is applied separately by tenantTables.ts; no city
- * receives a separate URL or inherits a second project's credentials.
+ * Every valid municipality uses the same Supabase project and Auth service.
+ * Auth state is persisted per browser tab by supabase.ts. The city-specific table
+ * boundary is applied separately by tenantTables.ts; no city receives a separate
+ * URL or inherits a second project's credentials.
  */
 export function resolveSupabaseTenantConfig(
   cityId: string | null | undefined,
@@ -65,13 +66,34 @@ export function isUsableSupabaseTenantConfig(
   );
 }
 
-export function getSupabaseAuthStorageKey(url: string): string {
+/** Returns the project Auth key, optionally isolated for one runtime/page instance. */
+export function getSupabaseAuthStorageKey(url: string, instanceId?: string): string {
+  let baseStorageKey: string;
   try {
     const projectRef = new URL(url).hostname.split(".")[0];
-    return `sb-${projectRef}-auth-token`;
+    baseStorageKey = `sb-${projectRef}-auth-token`;
   } catch {
-    return "supabase.auth.token";
+    baseStorageKey = "supabase.auth.token";
   }
+
+  const safeInstanceId = instanceId?.trim().replace(/[^a-zA-Z0-9_-]/g, "");
+  return safeInstanceId ? `${baseStorageKey}-${safeInstanceId}` : baseStorageKey;
+}
+
+/**
+ * Supabase Auth also uses storageKey as its BroadcastChannel/lock namespace.
+ * Resolve that runtime namespace back to the stable per-tab sessionStorage key.
+ */
+export function mapSupabaseAuthStorageKey(
+  key: string,
+  runtimeStorageKey: string,
+  persistentStorageKey: string,
+): string {
+  if (key === runtimeStorageKey) return persistentStorageKey;
+  if (key.startsWith(`${runtimeStorageKey}-`)) {
+    return `${persistentStorageKey}${key.slice(runtimeStorageKey.length)}`;
+  }
+  return key;
 }
 
 function clean(value: string | null | undefined): string {

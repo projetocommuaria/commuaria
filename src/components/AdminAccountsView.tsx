@@ -36,6 +36,7 @@ import { CURITIBA_CITY_ID } from "../lib/supabaseTenants";
 import { checkAccountBlockStatus } from "../utils/blockUtils";
 import { isLegacyGlobalTenantAdmin, type MunicipalRole } from "../domain/tenantAccess";
 import { rowBelongsToCity } from "../domain/cityScopedRows";
+import { getTabSessionValue, setTabSessionValue } from "../lib/tabSessionStorage";
 
 const PROTECTED_GLOBAL_ADMIN_EMAILS = new Set([
   "projetocomnuaria@gmail.com",
@@ -655,7 +656,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
       localStorage.setItem("commuaria_users", JSON.stringify(updatedUsers));
 
       // 3. Update active session if it's the currently logged-in account
-      const activeSessionStr = localStorage.getItem("commuaria_active_session");
+      const activeSessionStr = getTabSessionValue("commuaria_active_session");
       if (activeSessionStr) {
         try {
           const activeSession = JSON.parse(activeSessionStr);
@@ -670,7 +671,7 @@ export const AdminAccountsView: React.FC<AdminAccountsViewProps> = ({
               ...updatePayload,
               is_admin: false,
             };
-            localStorage.setItem("commuaria_active_session", JSON.stringify(updatedSession));
+            setTabSessionValue("commuaria_active_session", JSON.stringify(updatedSession));
           }
         } catch (_) {}
       }
