@@ -35,6 +35,8 @@ test("future cities use deterministic city-specific table prefixes", () => {
 test("shared and unknown tables are never tenant-prefixed", () => {
   assert.equal(getCityTableName("curitiba-pr", "cities"), "cities");
   assert.equal(getCityTableName("curitiba-pr", "city_memberships"), "city_memberships");
+  assert.equal(getCityTableName("curitiba-pr", "terms_documents"), "terms_documents");
+  assert.equal(getCityTableName("curitiba-pr", "terms_acceptances"), "terms_acceptances");
   assert.equal(getCityTableName("curitiba-pr", "auth.users"), "auth.users");
 });
 

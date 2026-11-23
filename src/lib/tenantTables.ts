@@ -11,7 +11,12 @@ export const CITY_SCOPED_TABLES = [
 export type CityScopedTable = (typeof CITY_SCOPED_TABLES)[number];
 
 const CITY_SCOPED_TABLE_SET = new Set<string>(CITY_SCOPED_TABLES);
-const SHARED_TABLES = new Set(["cities", "city_memberships"]);
+const SHARED_TABLES = new Set([
+  "cities",
+  "city_memberships",
+  "terms_documents",
+  "terms_acceptances",
+]);
 
 /**
  * Maps a logical table to the physical table for one city in the unified Supabase

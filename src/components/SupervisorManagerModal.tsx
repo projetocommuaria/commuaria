@@ -19,6 +19,7 @@ import { getSupabaseClientForCity, isUUID } from "../lib/supabase";
 import { CURITIBA_CITY_ID } from "../lib/supabaseTenants";
 import { findUnambiguousProfileByIdentity } from "../domain/profileIdentity";
 import { isLegacyGlobalTenantAdmin } from "../domain/tenantAccess";
+import { getTabSessionValue, setTabSessionValue } from "../lib/tabSessionStorage";
 
 interface SupervisorManagerModalProps {
   cityId: string;
@@ -275,7 +276,7 @@ export const SupervisorManagerModal: React.FC<SupervisorManagerModalProps> = ({
       localStorage.setItem("commuaria_profiles", JSON.stringify(localProfiles));
 
       // Update active session if it's the current user
-      const activeSessionStr = localStorage.getItem("commuaria_active_session");
+      const activeSessionStr = getTabSessionValue("commuaria_active_session");
       if (activeSessionStr) {
         try {
           const activeSession = JSON.parse(activeSessionStr);

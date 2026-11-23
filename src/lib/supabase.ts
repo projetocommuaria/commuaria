@@ -8,6 +8,14 @@ import {
 } from './supabaseTenants';
 import type { SupabaseTenantConfig, SupabaseTenantEnvironment } from './supabaseTenants';
 import { getCityTableName } from './tenantTables';
+import {
+  createTabAuthStorage,
+  getSupabaseAuthInstanceId,
+  getTabSessionValue,
+  removeTabSessionValue,
+  setTabSessionValue,
+  type KeyValueStorage,
+} from './tabSessionStorage';
 
 export { DEFAULT_SUPABASE_ANON_KEY, DEFAULT_SUPABASE_URL } from './supabaseTenants';
 
@@ -188,7 +196,7 @@ function createMockSupabaseClient(): any {
   // Active session helper
   let currentSessionUser: any = null;
   if (typeof window !== 'undefined') {
-    const rawSession = localStorage.getItem('commuaria_session_user');
+    const rawSession = getTabSessionValue('commuaria_session_user');
     if (rawSession) {
       try {
         currentSessionUser = JSON.parse(rawSession);
@@ -202,9 +210,9 @@ function createMockSupabaseClient(): any {
     currentSessionUser = user;
     if (typeof window !== 'undefined') {
       if (user) {
-        localStorage.setItem('commuaria_session_user', JSON.stringify(user));
+        setTabSessionValue('commuaria_session_user', JSON.stringify(user));
       } else {
-        localStorage.removeItem('commuaria_session_user');
+        removeTabSessionValue('commuaria_session_user');
       }
     }
     listeners.forEach(cb => cb('SIGNED_IN', user ? { user } : null));
@@ -593,10 +601,12 @@ export function isRealSupabaseForCity(cityId: string | null | undefined): boolea
   return isUsableSupabaseTenantConfig(config);
 }
 
-export function clearSupabaseStorageTokens(storageKey?: string) {
-  if (typeof window === 'undefined' || !storageKey) return;
+export function clearSupabaseStorageTokens(storageKey?: string, persistentStorageKey = storageKey) {
+  if (typeof window === 'undefined' || !storageKey || !persistentStorageKey) return;
   try {
-    localStorage.removeItem(storageKey);
+    window.sessionStorage.removeItem(persistentStorageKey);
+    window.sessionStorage.removeItem(`${persistentStorageKey}-code-verifier`);
+    window.sessionStorage.removeItem(`${persistentStorageKey}-user`);
   } catch (_) {}
 }
 
@@ -647,9 +657,32 @@ if (typeof window !== 'undefined') {
 }
 
 function createRealSupabaseClient(config: SupabaseTenantConfig): any {
-  const storageKey = getSupabaseAuthStorageKey(config.url);
+  const persistentStorageKey = getSupabaseAuthStorageKey(config.url);
+  const storageKey = getSupabaseAuthStorageKey(config.url, getSupabaseAuthInstanceId());
+  const unavailableStorage: KeyValueStorage = {
+    getItem: () => null,
+    setItem: () => {},
+    removeItem: () => {},
+  };
+  let tabStorage: KeyValueStorage = unavailableStorage;
+  let sharedStorage: KeyValueStorage | null = null;
+  try {
+    if (typeof window !== 'undefined') {
+      tabStorage = window.sessionStorage;
+      sharedStorage = window.localStorage;
+    }
+  } catch (_) {}
+
+  const tabAuthStorage = createTabAuthStorage(
+    tabStorage,
+    storageKey,
+    persistentStorageKey,
+    sharedStorage,
+  );
   const realClient = createClient(config.url, config.anonKey, {
     auth: {
+      // The runtime key gives each page its own Supabase broadcast/lock channel.
+      // The adapter below maps persisted values to this tab's stable sessionStorage.
       storageKey,
       autoRefreshToken: true,
       persistSession: true,
@@ -658,16 +691,16 @@ function createRealSupabaseClient(config: SupabaseTenantConfig): any {
         getItem: (key: string) => {
           try {
             if (typeof window === 'undefined') return null;
-            const val = window.localStorage.getItem(key);
+            const val = tabAuthStorage.getItem(key);
             if (!val) return null;
             try {
               const parsed = JSON.parse(val);
               if (parsed && typeof parsed === 'object' && !parsed.access_token && !parsed.refresh_token) {
-                window.localStorage.removeItem(key);
+                tabAuthStorage.removeItem(key);
                 return null;
               }
             } catch (_) {
-              window.localStorage.removeItem(key);
+              tabAuthStorage.removeItem(key);
               return null;
             }
             return val;
@@ -677,12 +710,12 @@ function createRealSupabaseClient(config: SupabaseTenantConfig): any {
         },
         setItem: (key: string, value: string) => {
           try {
-            if (typeof window !== 'undefined') window.localStorage.setItem(key, value);
+            if (typeof window !== 'undefined') tabAuthStorage.setItem(key, value);
           } catch (_) {}
         },
         removeItem: (key: string) => {
           try {
-            if (typeof window !== 'undefined') window.localStorage.removeItem(key);
+            if (typeof window !== 'undefined') tabAuthStorage.removeItem(key);
           } catch (_) {}
         },
       },
@@ -694,7 +727,7 @@ function createRealSupabaseClient(config: SupabaseTenantConfig): any {
     try {
       const res = await originalGetSession();
       if (res.error && isRefreshTokenError(res.error)) {
-        clearSupabaseStorageTokens(storageKey);
+        clearSupabaseStorageTokens(storageKey, persistentStorageKey);
         try {
           await realClient.auth.signOut({ scope: 'local' });
         } catch (_) {}
@@ -703,7 +736,7 @@ function createRealSupabaseClient(config: SupabaseTenantConfig): any {
       return res;
     } catch (err: any) {
       if (isRefreshTokenError(err)) {
-        clearSupabaseStorageTokens(storageKey);
+        clearSupabaseStorageTokens(storageKey, persistentStorageKey);
         try {
           await realClient.auth.signOut({ scope: 'local' });
         } catch (_) {}
@@ -718,7 +751,7 @@ function createRealSupabaseClient(config: SupabaseTenantConfig): any {
     try {
       const res = await originalRefreshSession(currentSession);
       if (res.error && isRefreshTokenError(res.error)) {
-        clearSupabaseStorageTokens(storageKey);
+        clearSupabaseStorageTokens(storageKey, persistentStorageKey);
         try {
           await realClient.auth.signOut({ scope: 'local' });
         } catch (_) {}
@@ -727,7 +760,7 @@ function createRealSupabaseClient(config: SupabaseTenantConfig): any {
       return res;
     } catch (err: any) {
       if (isRefreshTokenError(err)) {
-        clearSupabaseStorageTokens(storageKey);
+        clearSupabaseStorageTokens(storageKey, persistentStorageKey);
         try {
           await realClient.auth.signOut({ scope: 'local' });
         } catch (_) {}
@@ -742,13 +775,13 @@ function createRealSupabaseClient(config: SupabaseTenantConfig): any {
     try {
       const res = await originalGetUser(jwt);
       if (res.error && isRefreshTokenError(res.error)) {
-        clearSupabaseStorageTokens(storageKey);
+        clearSupabaseStorageTokens(storageKey, persistentStorageKey);
         return { data: { user: null }, error: null };
       }
       return res;
     } catch (err: any) {
       if (isRefreshTokenError(err)) {
-        clearSupabaseStorageTokens(storageKey);
+        clearSupabaseStorageTokens(storageKey, persistentStorageKey);
         return { data: { user: null }, error: null };
       }
       return { data: { user: null }, error: err };

@@ -103,7 +103,22 @@ import {
 } from "./domain/tenantAccess";
 import { DEFAULT_SEEDED_CITIES } from "./data/rmcIbgeCities";
 import { ARAUCARIA_CITY_ID } from "./lib/supabaseTenants";
+import {
+  getTabSessionValue,
+  removeTabSessionValue,
+  setTabSessionValue,
+} from "./lib/tabSessionStorage";
 import { BlockedAccountModal } from "./components/BlockedAccountModal";
+import { AdminTermsModal } from "./components/AdminTermsModal";
+import { TermsAcceptanceModal } from "./components/TermsAcceptanceModal";
+import {
+  acceptCurrentTerms,
+  fetchCurrentTerms,
+  hasAcceptedTerms,
+  publishTerms,
+  TERMS_DOCUMENTS_STORAGE_KEY,
+  type TermsDocument,
+} from "./lib/termsService";
 import { checkAccountBlockStatus, BlockStatusResult } from "./utils/blockUtils";
 import { CategorySelector } from "./components/CategorySelector";
 import { SupervisorTasksView } from "./components/SupervisorTasksView";
@@ -1872,17 +1887,21 @@ const CustomToggle = ({ label, value, offText, onText, onChange }: any) => {
 const SettingsView = ({
   anonymous,
   setAnonymous,
+  isAdmin,
   onBack,
   onLogout,
   onDeleteAccount,
   onOpenDbManager,
+  onManageTerms,
 }: {
   anonymous: boolean;
   setAnonymous: (v: boolean) => void;
+  isAdmin: boolean;
   onBack: () => void;
   onLogout: () => void;
   onDeleteAccount?: () => Promise<void> | void;
   onOpenDbManager?: () => void;
+  onManageTerms?: () => void;
 }) => {
   const [notifications, setNotifications] = useState(() => {
     try {
@@ -2077,6 +2096,31 @@ const SettingsView = ({
                       <span className="block font-bold">Banco de Dados & Supabase</span>
                       <span className="text-[10px] font-normal opacity-75">
                         Sincronizar chamados, O.S. e script SQL
+                      </span>
+                    </div>
+                  </div>
+                  <ArrowRight size={14} />
+                </button>
+              </div>
+            )}
+
+            {isAdmin && onManageTerms && (
+              <div className="pt-2 border-t border-black/10 dark:border-white/10">
+                <button
+                  type="button"
+                  onClick={onManageTerms}
+                  className={`w-full py-3 px-4 rounded-2xl border text-xs font-bold flex items-center justify-between transition-all ${
+                    isDark
+                      ? "bg-emerald-500/10 border-emerald-300/20 text-white hover:bg-emerald-500/20"
+                      : "bg-emerald-50 border-emerald-300 text-[#183a2b] hover:bg-emerald-100"
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 text-left">
+                    <FileText size={16} className="text-emerald-600 dark:text-emerald-400" />
+                    <div>
+                      <span className="block font-bold">Gerenciar Termos de Uso</span>
+                      <span className="text-[10px] font-normal opacity-75">
+                        Publicar uma nova versão para os usuários
                       </span>
                     </div>
                   </div>
@@ -6554,6 +6598,11 @@ const pageTransition = {
   ease: [0.22, 1, 0.36, 1], // Custom cubic-bezier for a very fluid, "slick" feel
 };
 
+type TermsGateState =
+  | { status: "idle" | "checking" | "accepted" | "exempt" }
+  | { status: "pending"; document: TermsDocument; error?: string | null; isChecking?: boolean }
+  | { status: "error"; document: null; error: string };
+
 export function AppContent() {
   const { isDark } = useTheme();
   const [screen, setScreen] = useState<
@@ -6583,10 +6632,10 @@ export function AppContent() {
   const [activeCityId, setActiveCityId] = useState("araucaria-pr");
   const [authCityId, setAuthCityId] = useState(() => {
     try {
-      const storedSession = JSON.parse(localStorage.getItem("commuaria_active_session") || "null");
+      const storedSession = JSON.parse(getTabSessionValue("commuaria_active_session") || "null");
       return (
         storedSession?.city_id?.trim() ||
-        localStorage.getItem("commuaria_auth_city_id") ||
+        getTabSessionValue("commuaria_auth_city_id") ||
         "araucaria-pr"
       );
     } catch {
@@ -6597,7 +6646,7 @@ export function AppContent() {
     setAuthCityId(cityId);
     setActiveCityId(cityId);
     try {
-      localStorage.setItem("commuaria_auth_city_id", cityId);
+      setTabSessionValue("commuaria_auth_city_id", cityId);
     } catch (_) {}
   };
   const activeCity = cities.find((city) => city.id === activeCityId) || null;
@@ -6633,6 +6682,10 @@ export function AppContent() {
     role: "user",
     assigned_category: null,
   });
+  const [showAdminTermsModal, setShowAdminTermsModal] = useState(false);
+  const [termsGate, setTermsGate] = useState<TermsGateState>({ status: "idle" });
+  const [termsRefreshToken, setTermsRefreshToken] = useState(0);
+  const [isAcceptingTerms, setIsAcceptingTerms] = useState(false);
   const linkedCity = cities.find((city) => city.id === currentUser.city_id) || null;
   const tenantPrincipal = resolveLegacyTenantPrincipal({
     id: currentUser.id || "",
@@ -6656,6 +6709,141 @@ export function AppContent() {
     tenantPrincipal,
     isGlobalTenantAdmin ? activeCityId : currentUser.city_id,
   );
+  const authenticatedTermsScreen = [
+    "feed",
+    "report",
+    "tasks",
+    "accounts",
+    "field_log",
+    "sla",
+    "settings",
+    "profile",
+  ].includes(screen);
+
+  useEffect(() => {
+    if (!authenticatedTermsScreen || !currentUser.id) {
+      setTermsGate({ status: "idle" });
+      return;
+    }
+
+    const termsCityId = currentUser.city_id?.trim() || authCityId;
+    const termsClient = getSupabaseClientForCity(termsCityId);
+    const realSupabase = isRealSupabaseForCity(termsCityId);
+    if (!termsClient) {
+      setTermsGate({
+        status: "error",
+        document: null,
+        error: "Não foi possível verificar os Termos nesta sessão. Saia e entre novamente.",
+      });
+      return;
+    }
+
+    let cancelled = false;
+    let checking = false;
+    const checkCurrentTerms = async () => {
+      if (cancelled || checking) return;
+      checking = true;
+      setTermsGate((previous) => {
+        if (previous.status === "pending") return { ...previous, isChecking: true };
+        if (previous.status === "accepted" || previous.status === "exempt") return previous;
+        return { status: "checking" };
+      });
+
+      try {
+        if (realSupabase) {
+          const { data: activeGlobalAdmin, error: adminCheckError } = await termsClient.rpc(
+            "is_active_global_admin",
+          );
+          if (adminCheckError) throw adminCheckError;
+          if (activeGlobalAdmin === true) {
+            if (!cancelled) setTermsGate({ status: "exempt" });
+            return;
+          }
+        } else if (isGlobalTenantAdmin) {
+          setTermsGate({ status: "exempt" });
+          return;
+        }
+
+        const document = await fetchCurrentTerms(termsClient, realSupabase);
+        if (!document) {
+          throw new Error("Ainda não há Termos de Uso publicados. Peça ao ADM para publicá-los.");
+        }
+        const accepted = await hasAcceptedTerms(
+          termsClient,
+          realSupabase,
+          currentUser.id || currentUser.email,
+          document.version,
+        );
+        if (cancelled) return;
+        setTermsGate(
+          accepted
+            ? { status: "accepted" }
+            : { status: "pending", document, error: null, isChecking: false },
+        );
+      } catch (termsError: any) {
+        if (cancelled) return;
+        const message = termsError?.message || "Não foi possível verificar os Termos vigentes.";
+        setTermsGate((previous) => {
+          if (previous.status === "pending") {
+            return { ...previous, error: message, isChecking: false };
+          }
+          return { status: "error", document: null, error: message };
+        });
+      } finally {
+        checking = false;
+      }
+    };
+
+    void checkCurrentTerms();
+    const interval = window.setInterval(() => void checkCurrentTerms(), 30000);
+    const onWindowFocus = () => void checkCurrentTerms();
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === TERMS_DOCUMENTS_STORAGE_KEY) void checkCurrentTerms();
+    };
+    window.addEventListener("focus", onWindowFocus);
+    window.addEventListener("storage", onStorage);
+
+    let realtimeChannel: any = null;
+    if (realSupabase && typeof termsClient.channel === "function") {
+      try {
+        realtimeChannel = termsClient
+          .channel(`terms-documents-${currentUser.id}`)
+          .on(
+            "postgres_changes",
+            { event: "INSERT", schema: "public", table: "terms_documents" },
+            () => void checkCurrentTerms(),
+          )
+          .subscribe();
+      } catch (channelError) {
+        console.warn("Não foi possível acompanhar atualizações dos Termos em tempo real:", channelError);
+      }
+    }
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onWindowFocus);
+      window.removeEventListener("storage", onStorage);
+      if (realtimeChannel && typeof termsClient.removeChannel === "function") {
+        void termsClient.removeChannel(realtimeChannel).catch(() => {});
+      }
+    };
+  }, [
+    authenticatedTermsScreen,
+    currentUser.id,
+    currentUser.email,
+    currentUser.city_id,
+    authCityId,
+    isGlobalTenantAdmin,
+    termsRefreshToken,
+  ]);
+
+  const shouldShowTermsGate =
+    authenticatedTermsScreen &&
+    Boolean(currentUser.id) &&
+    termsGate.status !== "accepted" &&
+    termsGate.status !== "exempt";
+
   const [userReports, setUserReports] = useState<any[]>([]);
   const [forgotPasswordStep, setForgotPasswordStep] = useState<"email" | "code" | "reset">("email");
 
@@ -7414,10 +7602,10 @@ export function AppContent() {
     if (resolvedRole !== "admin") {
       const blockStatus = checkAccountBlockStatus(resolvedUser);
       if (blockStatus.isBlocked) {
-        localStorage.removeItem("commuaria_active_session");
+        removeTabSessionValue("commuaria_active_session");
         if (citySupabase) {
           try {
-            await citySupabase.auth.signOut();
+            await citySupabase.auth.signOut({ scope: "local" });
           } catch (_) {}
         }
         setCurrentUser({
@@ -7449,8 +7637,8 @@ export function AppContent() {
     if (resolvedRole !== "admin") setActiveCityId(resolvedCityId || "");
     setUserReports(combinedReports);
 
-    // Store active session in localStorage with its municipality association
-    localStorage.setItem("commuaria_active_session", JSON.stringify(resolvedUser));
+    // Persist the active account and its municipality only in this tab's sessionStorage.
+    setTabSessionValue("commuaria_active_session", JSON.stringify(resolvedUser));
 
     const resolvedPrincipal = resolveLegacyTenantPrincipal(resolvedUser);
     await fetchSystemStatistics(
@@ -7511,7 +7699,7 @@ export function AppContent() {
       const storedProbe = window.sessionStorage.getItem(LOGIN_PROBE_SESSION_KEY);
       if (storedProbe !== null) {
         interruptedLoginProbe = true;
-        localStorage.removeItem("commuaria_active_session");
+        removeTabSessionValue("commuaria_active_session");
         const parsedProbe = JSON.parse(storedProbe);
         if (Array.isArray(parsedProbe)) {
           interruptedProbeCityIds = parsedProbe.filter(
@@ -7566,28 +7754,28 @@ export function AppContent() {
           resolvedSessionCityId ||= session.user.user_metadata?.city_id?.trim() || "";
           if (!resolvedSessionCityId) {
             await initialTenantClient.auth.signOut({ scope: "local" });
-            localStorage.removeItem("commuaria_active_session");
+            removeTabSessionValue("commuaria_active_session");
             return;
           }
           if (resolvedSessionCityId !== authCityId) changeAuthCity(resolvedSessionCityId);
           await fetchUserData(session.user.id, session.user.email, resolvedSessionCityId);
           if (mounted) setScreen("feed");
         } else {
-          localStorage.removeItem("commuaria_active_session");
+          removeTabSessionValue("commuaria_active_session");
         }
       }).catch((error) => console.warn("Erro ao buscar sessão inicial:", error));
     } else if (!interruptedLoginProbe && !isRealSupabaseForCity(authCityId)) {
       // Local-only restoration is accepted only when the session already has a tenant,
       // or it is one of the explicitly preserved global administrators.
       try {
-        const storedSession = localStorage.getItem("commuaria_active_session");
+        const storedSession = getTabSessionValue("commuaria_active_session");
         if (storedSession) {
           const sessionUser = JSON.parse(storedSession);
           if (sessionUser && (sessionUser.email || sessionUser.id)) {
             const isGlobalAdmin = isLegacyGlobalTenantAdmin(sessionUser);
             const restoredCityId = sessionUser.city_id?.trim() || (isGlobalAdmin ? authCityId : "");
             if (!restoredCityId || restoredCityId !== authCityId) {
-              localStorage.removeItem("commuaria_active_session");
+              removeTabSessionValue("commuaria_active_session");
             } else {
               const restoredRole: UserRole = isGlobalAdmin ? "admin" : sessionUser.role || "user";
               const restoredUser = { ...sessionUser, role: restoredRole };
@@ -7669,7 +7857,7 @@ export function AppContent() {
         setUserRole("user");
         setAssignedCategory(null);
         setUserReports([]);
-        localStorage.removeItem("commuaria_active_session");
+        removeTabSessionValue("commuaria_active_session");
         setCurrentUser({
           id: "",
           name: "Usuário",
@@ -7685,6 +7873,85 @@ export function AppContent() {
 
     return () => subscription.unsubscribe();
   }, [authCityId]);
+
+  const handleAcceptCurrentTerms = async () => {
+    if (termsGate.status !== "pending" || isAcceptingTerms) return;
+    setIsAcceptingTerms(true);
+    setTermsGate({ ...termsGate, error: null });
+    try {
+      const termsCityId = currentUser.city_id?.trim() || authCityId;
+      const termsClient = getSupabaseClientForCity(termsCityId);
+      await acceptCurrentTerms(
+        termsClient,
+        isRealSupabaseForCity(termsCityId),
+        currentUser.id || currentUser.email,
+        termsGate.document.version,
+      );
+      setTermsRefreshToken((value) => value + 1);
+    } catch (termsError: any) {
+      const message = termsError?.message || "Não foi possível registrar o aceite. Tente novamente.";
+      setTermsGate((previous) =>
+        previous.status === "pending"
+          ? { ...previous, error: message }
+          : { status: "error", document: null, error: message },
+      );
+      // Recheck in case the administrator published a newer version during acceptance.
+      setTermsRefreshToken((value) => value + 1);
+    } finally {
+      setIsAcceptingTerms(false);
+    }
+  };
+
+  const handleLogoutFromTerms = async () => {
+    const termsCityId = currentUser.city_id?.trim() || authCityId;
+    const termsClient = getSupabaseClientForCity(termsCityId);
+    try {
+      if (!termsClient) throw new Error("Não foi possível encerrar a sessão desta conta.");
+      const { error } = await termsClient.auth.signOut({ scope: "local" });
+      if (error) throw error;
+    } catch (logoutError: any) {
+      const message = logoutError?.message || "Não foi possível sair da conta.";
+      setTermsGate((previous) =>
+        previous.status === "pending"
+          ? { ...previous, error: message }
+          : { status: "error", document: null, error: message },
+      );
+      return;
+    }
+
+    removeTabSessionValue("commuaria_active_session");
+    setCurrentUser({
+      id: "",
+      name: "Usuário",
+      email: "",
+      open: 0,
+      resolved: 0,
+      anonymous: false,
+      role: "user",
+      assigned_category: null,
+    });
+    setIsAdmin(false);
+    setUserRole("user");
+    setAssignedCategory(null);
+    setUserReports([]);
+    setTermsGate({ status: "idle" });
+    setScreen("landing");
+  };
+
+  const handlePublishTerms = async (title: string, content: string) => {
+    if (!isGlobalTenantAdmin) {
+      throw new Error("Somente o ADM Global pode publicar os Termos de Uso.");
+    }
+    const termsCityId = currentUser.city_id?.trim() || authCityId || ARAUCARIA_CITY_ID;
+    const termsClient = getSupabaseClientForCity(termsCityId);
+    return publishTerms(termsClient, isRealSupabaseForCity(termsCityId), title, content);
+  };
+
+  const handleTermsPublished = (_document: TermsDocument) => {
+    // Local demo browsers observe the update through storage events; this also
+    // refreshes any non-admin session rendered in the same App instance.
+    setTermsRefreshToken((value) => value + 1);
+  };
 
   const handleTabChange = (tab: AppNavTab) => {
     if (tab === "home") {
@@ -7794,6 +8061,9 @@ export function AppContent() {
                     setBlockedModalInfo({ blockInfo, email });
                   }}
                   onLogin={(role, assignedCat, data) => {
+                    setTermsGate({ status: "idle" });
+                    setIsAcceptingTerms(false);
+                    setShowAdminTermsModal(false);
                     const determinedRole: UserRole = role || "user";
                     const isAdm = determinedRole === "admin";
                     setIsAdmin(isAdm);
@@ -7841,7 +8111,7 @@ export function AppContent() {
 
                     setCurrentUser(loggedUser);
                     if (determinedRole !== "admin") setActiveCityId(loggedUser.city_id || "");
-                    localStorage.setItem("commuaria_active_session", JSON.stringify(loggedUser));
+                    setTabSessionValue("commuaria_active_session", JSON.stringify(loggedUser));
                     fetchUserData(resolvedId, cleanEmail, selectedAuthCityId);
                     setScreen("feed");
                   }}
@@ -7890,6 +8160,9 @@ export function AppContent() {
                   cities={cities}
                   onCityChange={changeAuthCity}
                   onSignup={(data) => {
+                    setTermsGate({ status: "idle" });
+                    setIsAcceptingTerms(false);
+                    setShowAdminTermsModal(false);
                     setIsAdmin(false);
                     setUserRole("user");
                     setAssignedCategory(null);
@@ -7932,7 +8205,7 @@ export function AppContent() {
 
                     setCurrentUser(newProfile);
                     changeAuthCity(data.city_id);
-                    localStorage.setItem("commuaria_active_session", JSON.stringify(newProfile));
+                    setTabSessionValue("commuaria_active_session", JSON.stringify(newProfile));
                     fetchUserData(newUserId, cleanEmail, data.city_id);
                     setScreen("feed");
                   }}
@@ -8068,7 +8341,12 @@ export function AppContent() {
                     onGoToSettings={() => setScreen("settings")}
                     anonymous={currentUser.anonymous}
                     onLogout={() => {
-                      localStorage.removeItem("commuaria_active_session");
+                      const logoutCityId = currentUser.city_id?.trim() || authCityId;
+                      const logoutClient = getSupabaseClientForCity(logoutCityId);
+                      if (logoutClient) {
+                        void logoutClient.auth.signOut({ scope: "local" });
+                      }
+                      removeTabSessionValue("commuaria_active_session");
                       setScreen("login");
                     }}
                     onRefresh={async () => {
@@ -8145,6 +8423,7 @@ export function AppContent() {
               >
                 <SettingsView
                   anonymous={currentUser.anonymous || false}
+                  isAdmin={isGlobalTenantAdmin}
                   setAnonymous={(v) =>
                     setCurrentUser((prev) => ({ ...prev, anonymous: v }))
                   }
@@ -8154,8 +8433,8 @@ export function AppContent() {
                     setUserRole("user");
                     setAssignedCategory(null);
                     const authSupabase = getSupabaseClientForCity(currentUser.city_id || authCityId);
-                    if (authSupabase) await authSupabase.auth.signOut();
-                    localStorage.removeItem("commuaria_active_session");
+                    if (authSupabase) await authSupabase.auth.signOut({ scope: "local" });
+                    removeTabSessionValue("commuaria_active_session");
                     setScreen("landing");
                   }}
                   onDeleteAccount={async () => {
@@ -8172,7 +8451,7 @@ export function AppContent() {
                     }
                     const { error: deleteError } = await authSupabase.rpc("delete_user");
                     if (deleteError) throw deleteError;
-                    await authSupabase.auth.signOut();
+                    await authSupabase.auth.signOut({ scope: "local" });
 
                     const cleanEmail = currentUser.email.trim().toLowerCase();
                     const sameAccountAndCity = (profile: any) =>
@@ -8185,7 +8464,7 @@ export function AppContent() {
                         localStorage.setItem(storageKey, JSON.stringify(value.filter((profile: any) => !sameAccountAndCity(profile))));
                       }
                     }
-                    localStorage.removeItem("commuaria_active_session");
+                    removeTabSessionValue("commuaria_active_session");
                     setCurrentUser({
                       id: "",
                       name: "Usuário",
@@ -8203,6 +8482,7 @@ export function AppContent() {
                     setScreen("landing");
                   }}
                   onOpenDbManager={() => setShowDbModal(true)}
+                  onManageTerms={() => setShowAdminTermsModal(true)}
                 />
               </motion.div>
             )}
@@ -8488,6 +8768,36 @@ export function AppContent() {
               />
             )}
           </AnimatePresence>
+
+          {showAdminTermsModal && isGlobalTenantAdmin && (
+            <AdminTermsModal
+              client={getSupabaseClientForCity(currentUser.city_id?.trim() || authCityId || ARAUCARIA_CITY_ID)}
+              isRealSupabase={isRealSupabaseForCity(currentUser.city_id?.trim() || authCityId || ARAUCARIA_CITY_ID)}
+              onClose={() => setShowAdminTermsModal(false)}
+              onPublish={handlePublishTerms}
+              onPublished={handleTermsPublished}
+            />
+          )}
+
+          {shouldShowTermsGate && (
+            <TermsAcceptanceModal
+              document={termsGate.status === "pending" ? termsGate.document : null}
+              isLoading={
+                termsGate.status === "idle" ||
+                termsGate.status === "checking" ||
+                (termsGate.status === "pending" && Boolean(termsGate.isChecking))
+              }
+              error={
+                termsGate.status === "pending" || termsGate.status === "error"
+                  ? termsGate.error || null
+                  : null
+              }
+              isAccepting={isAcceptingTerms}
+              onAccept={() => void handleAcceptCurrentTerms()}
+              onRetry={() => setTermsRefreshToken((value) => value + 1)}
+              onLogout={() => void handleLogoutFromTerms()}
+            />
+          )}
         </div>
       </div>
     </div>

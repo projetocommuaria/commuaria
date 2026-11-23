@@ -7,6 +7,7 @@ import {
   DEFAULT_SUPABASE_ANON_KEY,
   DEFAULT_SUPABASE_URL,
   getSupabaseAuthStorageKey,
+  mapSupabaseAuthStorageKey,
   isUsableSupabaseTenantConfig,
   resolveSupabaseTenantConfig,
 } from "./supabaseTenants";
@@ -62,9 +63,30 @@ test("a local override changes the shared project configuration", () => {
   assert.equal(override?.anonKey, "local-publishable-key");
 });
 
-test("all cities in the shared project use one Auth storage key", () => {
+test("all cities in the shared project use one persistent Auth storage key", () => {
   assert.equal(
     getSupabaseAuthStorageKey(DEFAULT_SUPABASE_URL),
     getSupabaseAuthStorageKey(DEFAULT_CURITIBA_SUPABASE_URL),
+  );
+});
+
+test("Supabase runtime Auth channels are unique but map back to stable tab storage", () => {
+  const persistentKey = getSupabaseAuthStorageKey(DEFAULT_SUPABASE_URL);
+  const firstTabKey = getSupabaseAuthStorageKey(DEFAULT_SUPABASE_URL, "tab-one");
+  const secondTabKey = getSupabaseAuthStorageKey(DEFAULT_SUPABASE_URL, "tab-two");
+
+  assert.notEqual(firstTabKey, secondTabKey);
+  assert.equal(mapSupabaseAuthStorageKey(firstTabKey, firstTabKey, persistentKey), persistentKey);
+  assert.equal(
+    mapSupabaseAuthStorageKey(
+      `${firstTabKey}-code-verifier`,
+      firstTabKey,
+      persistentKey,
+    ),
+    `${persistentKey}-code-verifier`,
+  );
+  assert.equal(
+    mapSupabaseAuthStorageKey("unrelated-key", firstTabKey, persistentKey),
+    "unrelated-key",
   );
 });
